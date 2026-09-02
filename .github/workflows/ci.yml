@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
+
+      - name: Run pnpm/action-setup@v4
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.2
+
+      - name: Run actions/setup-node@v4
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # This repo is the source of @helixid/sdk-js/did-hedera/widget, so
+      # unlike helix-server/helix-console it does not consume any private
+      # cross-repo git dependency and needs no HELIXID_CROSS_REPO_TOKEN or
+      # git credential rewrite step.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Build
+        run: pnpm run build
+
+      # Using the root test:unit script (per-package `vitest run tests/unit`
+      # or `vitest run tests`, no coverage) rather than the root `test` /
+      # `test:non-live` turbo tasks. helix-sdk-js's own package.json `test`
+      # script chains `vitest run --coverage` with a hard-coded
+      # `node ../scripts/check-coverage-thresholds.mjs` call -- that script
+      # lives only in helix-server and was never copied into this repo
+      # during the split, so it fails immediately with a missing-module
+      # error. Separately, actual coverage here (~54% lines/statements) is
+      # well short of the 95/95/85/95 thresholds configured in
+      # helix-sdk-js/vitest.config.ts, so fixing the script path alone
+      # would not make that command pass. Both are real, pre-existing gaps
+      # from the split, tracked as a follow-up -- not fixed here to avoid
+      # unilaterally rewriting coverage requirements or lowering
+      # thresholds without a decision on the intended target.
+      - name: Test
+        run: pnpm run test:unit

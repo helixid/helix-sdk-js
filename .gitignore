@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+coverage/
+
+# Runtime and cache
+.turbo/
+tmp/
+*.log
+
+# Local environment files
+.env
+.env.local
+.env.production
+.env.test
+*.env
+
+# OS and editor files
+.DS_Store
+
+# Node compile cache
+node-compile-cache/
+
+# Local runtime state -- never belongs in source control.
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.enc

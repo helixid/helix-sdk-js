@@ -1,0 +1,7 @@
+packages:
+  - 'helix-sdk-js'
+  - 'cli'
+  - 'did-hedera'
+  - 'langchain'
+  - 'mcp'
+  - 'widget'

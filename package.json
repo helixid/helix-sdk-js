@@ -1,0 +1,32 @@
+{
+  "name": "helix-sdk-js-workspace",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "test:non-live": "turbo run test:non-live",
+    "test:unit": "pnpm --filter @helixid/did-hedera test:unit && pnpm --filter @helixid/sdk-js test:unit && pnpm --filter @helixid/mcp test:unit && pnpm --filter @helixid/langchain test:unit && pnpm --filter @helixid/cli test:unit && pnpm --filter @helixid/widget test:unit",
+    "typecheck": "turbo run typecheck",
+    "format": "prettier --write \"**/*.{ts,json,md}\" --ignore-path .gitignore"
+  },
+  "packageManager": "pnpm@9.15.2",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "fast-uri": "3.1.2",
+      "protobufjs": "8.0.2"
+    }
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.3.0",
+    "turbo": "^2.3.0",
+    "typescript": "^6.0.3"
+  }
+}
