@@ -4,9 +4,9 @@ export interface StructuredTool {
   name: string;
   metadata?: {
     requiredScope?: string;
-    [key: string]: any;
+    [key: string]: unknown;
   };
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 export async function filterToolsByScope<T extends StructuredTool>(

@@ -24,11 +24,14 @@ const DEFAULT_STATUS_LIST_LENGTH = 131072;
 export async function runDidCreate(options: DidCreateOptions): Promise<void> {
   const passphrase = requirePassphrase();
 
+  let walletAlreadyExists = true;
   try {
     await access(options.wallet);
-    error(`Wallet file already exists: ${options.wallet}. Use a different path or remove the file.`);
   } catch {
-    // expected — wallet must not exist
+    walletAlreadyExists = false;
+  }
+  if (walletAlreadyExists) {
+    error(`Wallet file already exists: ${options.wallet}. Use a different path or remove the file.`);
   }
 
   const keyPair = generateKeyPair();

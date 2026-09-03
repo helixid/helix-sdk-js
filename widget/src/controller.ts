@@ -111,12 +111,12 @@ export function createConsentController(props: HelixConsentWidgetProps): Consent
   return {
     getState: () => state,
 
-    subscribe(listener) {
+    subscribe(listener): () => void {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
 
-    async load() {
+    async load(): Promise<void> {
       // scopeOptions wins outright: scopesEndpoint is treated as unused and
       // no fetch is issued.
       if (hasInlineOptions) return;
@@ -153,7 +153,7 @@ export function createConsentController(props: HelixConsentWidgetProps): Consent
       }
     },
 
-    toggleScope(scope) {
+    toggleScope(scope): void {
       const option = state.scopeOptions.find((entry) => entry.scope === scope);
       // Required scopes cannot be unchecked; Decline is the way not to proceed.
       if (!option || option.required === true) return;
@@ -164,11 +164,11 @@ export function createConsentController(props: HelixConsentWidgetProps): Consent
       setState({ selectedScopes: selected });
     },
 
-    setDurability(value) {
+    setDurability(value): void {
       setState({ durability: value });
     },
 
-    async accept() {
+    async accept(): Promise<void> {
       if (!state.canAccept) return;
       const selection: ConsentSelection = {
         scopes: [...state.selectedScopes],
@@ -177,7 +177,7 @@ export function createConsentController(props: HelixConsentWidgetProps): Consent
       await props.onAccept(selection);
     },
 
-    decline() {
+    decline(): void {
       // Available in every state, including the D3 error state.
       props.onDecline();
     },

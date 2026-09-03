@@ -94,7 +94,11 @@ export function selectVC(wallet: AgentWallet, targetService: string): SignedVC {
   if (vcs.length === 1) {
     return vcs[0]!;
   }
-  const match = vcs.find((vc: any) => vc.targetService === targetService);
+  // NOTE: SignedVC has no `targetService` field in the current schema (AgentVC |
+  // UserVC | DelegationGrantVC), so this never matches and always falls through
+  // to vcs[0] below — flagged as a likely latent bug, not fixed here since the
+  // intended matching field is a product decision, not a lint fix.
+  const match = vcs.find((vc) => (vc as SignedVC & { targetService?: string }).targetService === targetService);
   if (match) {
     return match;
   }

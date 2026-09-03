@@ -5,8 +5,7 @@ export function success(message: string): void {
 }
 
 export function error(message: string): never {
-  console.error(chalk.red(`✗ ${message}`));
-  process.exit(1);
+  throw new Error(message);
 }
 
 export function warn(message: string): void {

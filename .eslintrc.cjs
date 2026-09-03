@@ -17,32 +17,36 @@ module.exports = {
     'no-console': 'warn',
     '@typescript-eslint/no-explicit-any': 'error',
     '@typescript-eslint/explicit-function-return-type': 'error',
-    '@typescript-eslint/no-unused-vars': 'error',
+    '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
   },
   overrides: [
     {
       files: ['helix-sdk-js/**/*.ts'],
-      parserOptions: { project: ['./helix-sdk-js/tsconfig.json'] },
+      parserOptions: { project: ['./helix-sdk-js/tsconfig.eslint.json'] },
     },
     {
       files: ['cli/**/*.ts'],
-      parserOptions: { project: ['./cli/tsconfig.json'] },
+      parserOptions: { project: ['./cli/tsconfig.eslint.json'] },
     },
     {
       files: ['did-hedera/**/*.ts'],
-      parserOptions: { project: ['./did-hedera/tsconfig.json'] },
+      parserOptions: { project: ['./did-hedera/tsconfig.eslint.json'] },
     },
     {
       files: ['langchain/**/*.ts'],
-      parserOptions: { project: ['./langchain/tsconfig.json'] },
+      parserOptions: { project: ['./langchain/tsconfig.eslint.json'] },
     },
     {
-      files: ['mcp/**/*.ts'],
-      parserOptions: { project: ['./mcp/tsconfig.json'] },
+      files: ['mcp-middleware/**/*.ts'],
+      parserOptions: { project: ['./mcp-middleware/tsconfig.eslint.json'] },
+    },
+    {
+      files: ['mcp-server/**/*.ts'],
+      parserOptions: { project: ['./mcp-server/tsconfig.eslint.json'] },
     },
     {
       files: ['widget/**/*.ts'],
-      parserOptions: { project: ['./widget/tsconfig.json'] },
+      parserOptions: { project: ['./widget/tsconfig.eslint.json'] },
     },
     {
       files: ['**/tests/**/*.ts', '**/*.test.ts', 'vitest.config.ts'],

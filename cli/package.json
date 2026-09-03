@@ -30,6 +30,30 @@
       "import": "./dist/index.js",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./lib/wallet": {
+      "types": "./dist/lib/wallet.d.ts",
+      "import": "./dist/lib/wallet.js"
+    },
+    "./lib/issuer-ops": {
+      "types": "./dist/lib/issuer-ops.d.ts",
+      "import": "./dist/lib/issuer-ops.js"
+    },
+    "./lib/duration": {
+      "types": "./dist/lib/duration.d.ts",
+      "import": "./dist/lib/duration.js"
+    },
+    "./lib/env": {
+      "types": "./dist/lib/env.d.ts",
+      "import": "./dist/lib/env.js"
+    },
+    "./core/keys": {
+      "types": "./dist/core/keys.d.ts",
+      "import": "./dist/core/keys.js"
+    },
+    "./core/did": {
+      "types": "./dist/core/did.d.ts",
+      "import": "./dist/core/did.js"
     }
   },
   "scripts": {

@@ -1,22 +1,20 @@
 import { access } from 'node:fs/promises';
 import { AgentWallet } from '@helixid/sdk-js';
-import chalk from 'chalk';
 import type { IssuerKeyMaterial } from './issuer-ops.js';
 
 export async function loadWallet(walletPath: string, passphrase: string): Promise<AgentWallet> {
   try {
     await access(walletPath);
   } catch {
-    console.error(chalk.red(`Error: Wallet file not found: ${walletPath}`));
-    console.error(chalk.yellow('Create one with: helix did create --method web --domain example.com --wallet <path>'));
-    process.exit(1);
+    throw new Error(
+      `Wallet file not found: ${walletPath}. Create one with: helix did create --method web --domain example.com --wallet <path>`,
+    );
   }
 
   try {
     return await AgentWallet.load(walletPath, passphrase);
   } catch {
-    console.error(chalk.red('Error: Invalid passphrase or corrupted wallet'));
-    process.exit(1);
+    throw new Error('Invalid passphrase or corrupted wallet');
   }
 }
 

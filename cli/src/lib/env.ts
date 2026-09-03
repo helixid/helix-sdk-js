@@ -1,10 +1,7 @@
-import chalk from 'chalk';
-
 export function requirePassphrase(): string {
   const passphrase = process.env.HELIX_WALLET_PASSPHRASE;
   if (!passphrase) {
-    console.error(chalk.red('Error: HELIX_WALLET_PASSPHRASE environment variable is required'));
-    process.exit(1);
+    throw new Error('HELIX_WALLET_PASSPHRASE environment variable is required');
   }
   return passphrase;
 }
@@ -13,8 +10,7 @@ export function requireHederaOperator(): { operatorId: string; operatorKey: stri
   const operatorId = process.env.HEDERA_OPERATOR_ID;
   const operatorKey = process.env.HEDERA_OPERATOR_KEY;
   if (!operatorId || !operatorKey) {
-    console.error(chalk.red('Error: HEDERA_OPERATOR_ID and HEDERA_OPERATOR_KEY environment variables are required'));
-    process.exit(1);
+    throw new Error('HEDERA_OPERATOR_ID and HEDERA_OPERATOR_KEY environment variables are required');
   }
   return { operatorId, operatorKey };
 }

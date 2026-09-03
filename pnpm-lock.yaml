@@ -156,14 +156,43 @@ importers:
         specifier: ^4.1.8
         version: 4.1.11(@types/node@20.19.43)(@vitest/coverage-v8@4.1.11)(vite@8.2.2(@types/node@20.19.43)(esbuild@0.28.2)(terser@5.51.2)(tsx@4.23.12))
 
-  mcp:
+  mcp-middleware:
     dependencies:
       '@helixid/sdk-js':
-        specifier: link:../helix-sdk-js
+        specifier: workspace:^
         version: link:../helix-sdk-js
       '@modelcontextprotocol/sdk':
         specifier: '*'
         version: 1.30.0(@cfworker/json-schema@4.1.1)(zod@3.25.76)
+    devDependencies:
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.43
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.8
+        version: 4.1.11(@types/node@20.19.43)(@vitest/coverage-v8@4.1.11)(vite@8.2.2(@types/node@20.19.43)(esbuild@0.28.2)(terser@5.51.2)(tsx@4.23.12))
+
+  mcp-server:
+    dependencies:
+      '@helixid/cli':
+        specifier: workspace:^
+        version: link:../cli
+      '@helixid/sdk-js':
+        specifier: workspace:^
+        version: link:../helix-sdk-js
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.30.0
+        version: 1.30.0(@cfworker/json-schema@4.1.1)(zod@3.25.76)
+      zod:
+        specifier: ^3.23.0
+        version: 3.25.76
+    optionalDependencies:
+      '@helixid/did-hedera':
+        specifier: workspace:*
+        version: link:../did-hedera
     devDependencies:
       '@types/node':
         specifier: ^20.0.0

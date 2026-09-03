@@ -1,7 +1,7 @@
 import { AuditEvents } from '../core/audit-events.js';
 import { generateKeyPair, signData, type KeyPair } from '../core/keys.js';
 import { signBytes } from '../core/vp-crypto.js';
-import { HelixError, SDKOnlyModeNoAPIError } from '../errors/index.js';
+import { SDKOnlyModeNoAPIError } from '../errors/index.js';
 import { verifyJWT } from '../core/jwt.js';
 import type { HelixJWTPayload } from '../core/schemas/jwt.js';
 import type { DIDDocument, ServiceEndpoint } from '../core/did.js';

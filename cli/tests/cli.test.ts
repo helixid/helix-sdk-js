@@ -39,13 +39,8 @@ describe('helix CLI', () => {
 
   it('requires HELIX_WALLET_PASSPHRASE for all commands', () => {
     delete process.env.HELIX_WALLET_PASSPHRASE;
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
-      throw new Error(`exit:${code ?? 0}`);
-    }) as typeof process.exit);
 
-    expect(() => requirePassphrase()).toThrow('exit:1');
-    expect(stderr.some((line) => line.includes('HELIX_WALLET_PASSPHRASE environment variable is required'))).toBe(true);
-    exitSpy.mockRestore();
+    expect(() => requirePassphrase()).toThrow('HELIX_WALLET_PASSPHRASE environment variable is required');
   });
 
   it('helix did create --method web creates wallet and prints did.json', async () => {
@@ -221,7 +216,7 @@ describe('helix CLI', () => {
     expect(stdout.some((line) => line.includes('Bit flipped:  0 → 1'))).toBe(true);
   });
 
-  it('helix revoke unknown vc-id exits with clear error', async () => {
+  it('helix revoke unknown vc-id throws a clear error', async () => {
     const issuerWallet = join(tempDir, 'issuer.enc');
     const statusListPath = join(tempDir, 'status.json');
 
@@ -233,18 +228,11 @@ describe('helix CLI', () => {
       wallet: issuerWallet,
     });
 
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
-      throw new Error(`exit:${code ?? 0}`);
-    }) as typeof process.exit);
-
     await expect(runRevoke({
       vcId: 'urn:uuid:missing',
       statusList: statusListPath,
       wallet: issuerWallet,
-    })).rejects.toThrow('exit:1');
-
-    expect(stderr.some((line) => line.includes('VC ID not found'))).toBe(true);
-    exitSpy.mockRestore();
+    })).rejects.toThrow('VC ID not found');
   });
 
   it('helix wallet inspect prints wallet info without private key', async () => {

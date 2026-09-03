@@ -6,13 +6,13 @@
     "lint": "turbo run lint",
     "test": "turbo run test",
     "test:non-live": "turbo run test:non-live",
-    "test:unit": "pnpm --filter @helixid/did-hedera test:unit && pnpm --filter @helixid/sdk-js test:unit && pnpm --filter @helixid/mcp test:unit && pnpm --filter @helixid/langchain test:unit && pnpm --filter @helixid/cli test:unit && pnpm --filter @helixid/widget test:unit",
+    "test:unit": "pnpm --filter @helixid/did-hedera test:unit && pnpm --filter @helixid/sdk-js test:unit && pnpm --filter @helixid/mcp-middleware test:unit && pnpm --filter @helixid/langchain test:unit && pnpm --filter @helixid/cli test:unit && pnpm --filter @helixid/mcp-server test:unit && pnpm --filter @helixid/widget test:unit",
     "typecheck": "turbo run typecheck",
     "format": "prettier --write \"**/*.{ts,json,md}\" --ignore-path .gitignore"
   },
   "packageManager": "pnpm@9.15.2",
   "engines": {
-    "node": ">=20.0.0",
+    "node": "^20.19.0 || >=22.12.0",
     "pnpm": ">=9.0.0"
   },
   "pnpm": {

@@ -1,0 +1,50 @@
+{
+  "name": "@helixid/mcp-server",
+  "version": "0.1.0",
+  "description": "Standalone MCP server exposing HelixID platform-operator workflows (DID/wallet/status-list/VC lifecycle) as tools for an MCP client or agent — the MCP analogue of @helixid/cli.",
+  "type": "module",
+  "bin": {
+    "helix-mcp-server": "./dist/bin/server.js"
+  },
+  "license": "Apache-2.0",
+  "author": "DgVerse <hello@dgverse.in>",
+  "homepage": "https://www.dgverse.in/products/helix-id",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/helixid/helix-sdk-js",
+    "directory": "mcp-server"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "prepare": "npm run build",
+    "prepublishOnly": "pnpm build",
+    "start": "node dist/bin/server.js",
+    "test": "vitest run --passWithNoTests",
+    "test:non-live": "vitest run --passWithNoTests",
+    "test:unit": "vitest run tests --passWithNoTests",
+    "lint": "eslint src tests",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@helixid/cli": "workspace:^",
+    "@helixid/sdk-js": "workspace:^",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.23.0"
+  },
+  "optionalDependencies": {
+    "@helixid/did-hedera": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.8"
+  }
+}

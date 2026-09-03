@@ -3,5 +3,6 @@ packages:
   - 'cli'
   - 'did-hedera'
   - 'langchain'
-  - 'mcp'
+  - 'mcp-middleware'
+  - 'mcp-server'
   - 'widget'
