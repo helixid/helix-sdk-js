@@ -159,7 +159,7 @@ importers:
   mcp-middleware:
     dependencies:
       '@helixid/sdk-js':
-        specifier: link:../helix-sdk-js
+        specifier: workspace:^
         version: link:../helix-sdk-js
       '@modelcontextprotocol/sdk':
         specifier: '*'
