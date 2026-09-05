@@ -40,7 +40,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@helixid/sdk-js": "workspace:^"
+    "@helixid/sdk-js": "link:../helix-sdk-js"
   },
   "peerDependencies": {
     "@modelcontextprotocol/sdk": "*"
