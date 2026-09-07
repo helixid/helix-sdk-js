@@ -1,5 +1,11 @@
 // Agent
-export { AgentWallet } from './wallet/AgentWallet.js';
+export { AgentWallet, FileWalletStorage, PostgresWalletStorage } from './wallet/AgentWallet.js';
+export type {
+  PassphraseInput,
+  WalletStorage,
+  StoredWalletData,
+  PgQueryable,
+} from './wallet/AgentWallet.js';
 export { VPBuilder } from './vp-builder.js';
 export { delegate } from './delegation.js';
 export type { DelegateOptions } from './delegation.js';

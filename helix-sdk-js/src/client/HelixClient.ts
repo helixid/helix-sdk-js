@@ -10,7 +10,7 @@ import type { SignedVC } from '../core/schemas/vc.js';
 import type { SignedVP } from '../core/schemas/vp.js';
 import type { VerifyVPOptions, VerifyVPResult } from '../core/verification-types.js';
 import { HttpAdapter } from '../http/HttpAdapter.js';
-import { AgentWallet } from '../wallet/AgentWallet.js';
+import { AgentWallet, type PassphraseInput } from '../wallet/AgentWallet.js';
 
 function bootstrapProofPayload(input: {
   bootstrapToken: string;
@@ -255,6 +255,11 @@ const SDK_ONLY_HTTP_ADAPTER: HttpAdapterLike = {
 
 export class HelixClient {
   private http: HttpAdapterLike;
+  // TODO: this always defaults to FileWalletStorage — completeOnboarding()
+  // has no way to write into a caller-supplied WalletStorage (e.g.
+  // PostgresWalletStorage) yet. AgentWallet.create()/load() already support
+  // it directly; threading a `storage` option through HelixClientOptions
+  // and this field is the next step for onboarding-time DB storage.
   private readonly wallet = new AgentWallet();
   private pendingKeyPair: PendingKeyPair | null = null;
   private readonly sdkOnlyMode: boolean;
@@ -519,7 +524,7 @@ export class HelixClient {
   async completeOnboarding(
     challengeId: string,
     nonce: string,
-    walletPassphrase: string,
+    walletPassphrase: PassphraseInput,
     walletFilePath: string,
   ): Promise<{ agentDid: string; vcId: string; walletSaved: true }> {
     this.assertAPIConfigured();

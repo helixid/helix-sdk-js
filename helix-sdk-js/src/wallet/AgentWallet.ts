@@ -35,7 +35,7 @@ export interface WalletCredential {
   updatedAt: string;
 }
 
-interface StoredWalletData {
+export interface StoredWalletData {
   version: number;
   did: string;
   publicKeyHex: string;
@@ -48,6 +48,116 @@ interface StoredWalletData {
   updatedAt: string;
 }
 
+/**
+ * Where the encrypted wallet payload actually lives — a file on disk
+ * (default), or anything a caller wires up instead (their own Postgres
+ * table, Redis, S3, ...). `locator` is opaque to AgentWallet: a filesystem
+ * path for FileWalletStorage, or any caller-defined key (an agent DID
+ * works well) for anything else. AgentWallet only ever hands this the
+ * already-encrypted payload — it has no idea whether the private key ever
+ * touched a file, a database, or the network on its way to disk.
+ */
+export interface WalletStorage {
+  exists(locator: string): Promise<boolean>;
+  save(locator: string, data: StoredWalletData): Promise<void>;
+  load(locator: string): Promise<StoredWalletData>;
+}
+
+export class FileWalletStorage implements WalletStorage {
+  async exists(locator: string): Promise<boolean> {
+    try {
+      await access(locator);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async save(locator: string, data: StoredWalletData): Promise<void> {
+    await writeFile(locator, JSON.stringify(data, null, 2), 'utf8');
+  }
+
+  async load(locator: string): Promise<StoredWalletData> {
+    const raw = await readFile(locator, 'utf8');
+    return JSON.parse(raw) as StoredWalletData;
+  }
+}
+
+/**
+ * Structural, not a dependency on `pg` — matches the `.query()` shape that
+ * `pg.Pool`/`pg.Client` (and most Postgres clients) already expose, so this
+ * works with whatever client the integrator already has without adding one
+ * to helix-sdk-js. The integrator owns the connection and the schema; this
+ * class only ever runs SELECT/INSERT/UPDATE against a table they created.
+ *
+ * One-time setup (run this yourself — this class never runs DDL):
+ *   CREATE TABLE agent_wallets (
+ *     locator    TEXT PRIMARY KEY,
+ *     data       JSONB NOT NULL,
+ *     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+ *   );
+ *
+ * TODO: this is a reference implementation, not a hardened multi-tenant
+ * design — one flat table, no row-level security, no per-tenant key
+ * separation beyond whatever `locator` values the caller chooses. Revisit
+ * before using this for anything where isolation between locators matters
+ * at the database layer, not just the application layer.
+ */
+export interface PgQueryable {
+  query<T = unknown>(sql: string, values?: unknown[]): Promise<{ rows: T[] }>;
+}
+
+export class PostgresWalletStorage implements WalletStorage {
+  constructor(
+    private readonly db: PgQueryable,
+    private readonly tableName = 'agent_wallets',
+  ) {}
+
+  async exists(locator: string): Promise<boolean> {
+    const { rows } = await this.db.query(`SELECT 1 FROM "${this.tableName}" WHERE "locator" = $1`, [
+      locator,
+    ]);
+    return rows.length > 0;
+  }
+
+  async save(locator: string, data: StoredWalletData): Promise<void> {
+    await this.db.query(
+      `INSERT INTO "${this.tableName}" ("locator", "data", "updated_at") VALUES ($1, $2, now())
+       ON CONFLICT ("locator") DO UPDATE SET "data" = $2, "updated_at" = now()`,
+      [locator, JSON.stringify(data)],
+    );
+  }
+
+  async load(locator: string): Promise<StoredWalletData> {
+    const { rows } = await this.db.query<{ data: StoredWalletData | string }>(
+      `SELECT "data" FROM "${this.tableName}" WHERE "locator" = $1`,
+      [locator],
+    );
+    const row = rows[0];
+    if (!row) {
+      throw new Error(`No wallet found for locator: ${locator}`);
+    }
+    return typeof row.data === 'string' ? (JSON.parse(row.data) as StoredWalletData) : row.data;
+  }
+}
+
+/**
+ * A passphrase, or a function that produces one on demand — for callers who
+ * don't want a raw passphrase living as a literal string in their own code
+ * or config (env var, interactive prompt, a secrets manager / KMS call).
+ * Resolved exactly once per public wallet operation, never cached across
+ * calls, and never logged or stored anywhere by this module.
+ */
+export type PassphraseInput = string | (() => string | Promise<string>);
+
+async function resolvePassphrase(input: PassphraseInput): Promise<string> {
+  const value = typeof input === 'function' ? await input() : input;
+  if (!value) {
+    throw new Error('Passphrase resolved to an empty value');
+  }
+  return value;
+}
+
 export interface AgentWalletOptions {
   client?: HelixClient;
   privateKeyHex?: string;
@@ -57,6 +167,8 @@ export interface AgentWalletOptions {
   credentials?: WalletCredential[];
   createdAt?: string;
   updatedAt?: string;
+  /** Defaults to FileWalletStorage — pass a PostgresWalletStorage (or your own WalletStorage) to persist elsewhere. */
+  storage?: WalletStorage;
 }
 
 export class AgentWallet {
@@ -66,6 +178,7 @@ export class AgentWallet {
   private didValue: string | undefined;
   private walletPath: string | undefined;
   private passphrase: string | undefined;
+  private readonly storage: WalletStorage;
   private walletCredentials: WalletCredential[];
   private createdAt: string | undefined;
   private updatedAt: string | undefined;
@@ -74,6 +187,7 @@ export class AgentWallet {
     this.clientInstance = options.client;
     this.walletPath = options.walletPath;
     this.passphrase = options.passphrase;
+    this.storage = options.storage ?? new FileWalletStorage();
     this.walletCredentials = options.credentials ?? [];
     this.createdAt = options.createdAt;
     this.updatedAt = options.updatedAt;
@@ -144,10 +258,11 @@ export class AgentWallet {
     return signData(data, this.privateKeyHex);
   }
 
-  async save(data: WalletData, passphrase: string, filePath: string): Promise<void> {
+  async save(data: WalletData, passphrase: PassphraseInput, locator: string): Promise<void> {
+    const resolved = await resolvePassphrase(passphrase);
     const salt = randomBytes(16);
     const iv = randomBytes(12);
-    const key = pbkdf2Sync(passphrase, salt, 100_000, 32, 'sha256');
+    const key = pbkdf2Sync(resolved, salt, 100_000, 32, 'sha256');
     const cipher = createCipheriv('aes-256-gcm', key, iv);
     const encrypted = Buffer.concat([cipher.update(data.privateKeyHex, 'utf8'), cipher.final()]);
     const authTag = cipher.getAuthTag();
@@ -164,7 +279,7 @@ export class AgentWallet {
       createdAt: data.createdAt,
       updatedAt: data.updatedAt,
     };
-    await writeFile(filePath, JSON.stringify(payload, null, 2), 'utf8');
+    await this.storage.save(locator, payload);
   }
 
   private async saveCurrent(): Promise<void> {
@@ -193,11 +308,11 @@ export class AgentWallet {
     this.updatedAt = now;
   }
 
-  async load(passphrase: string, filePath: string): Promise<WalletData> {
-    const raw = await readFile(filePath, 'utf8');
-    const parsed = JSON.parse(raw) as StoredWalletData;
+  async load(passphrase: PassphraseInput, locator: string): Promise<WalletData> {
+    const resolved = await resolvePassphrase(passphrase);
+    const parsed = await this.storage.load(locator);
     try {
-      const key = pbkdf2Sync(passphrase, Buffer.from(parsed.salt, 'hex'), 100_000, 32, 'sha256');
+      const key = pbkdf2Sync(resolved, Buffer.from(parsed.salt, 'hex'), 100_000, 32, 'sha256');
       const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(parsed.iv, 'hex'));
       decipher.setAuthTag(Buffer.from(parsed.authTag, 'hex'));
       const decrypted = Buffer.concat([
@@ -217,7 +332,7 @@ export class AgentWallet {
     }
   }
 
-  async getPrivateKey(passphrase: string, filePath: string): Promise<string> {
+  async getPrivateKey(passphrase: PassphraseInput, filePath: string): Promise<string> {
     const data = await this.load(passphrase, filePath);
     return data.privateKeyHex;
   }
@@ -227,13 +342,13 @@ export class AgentWallet {
     vcId: string,
     vcJson: string,
     filePath: string,
-    passphrase: string,
+    passphrase: PassphraseInput,
   ): Promise<void>;
   async addCredential(
     vcOrId: SignedVC | string,
     vcJson?: string,
     filePath?: string,
-    passphrase?: string,
+    passphrase?: PassphraseInput,
   ): Promise<void> {
     if (typeof vcOrId !== 'string') {
       if (!this.didValue) {
@@ -257,12 +372,16 @@ export class AgentWallet {
       throw new Error('vcJson, filePath, and passphrase are required');
     }
     const vcId = vcOrId;
-    const existing = await this.load(passphrase, filePath);
+    // Resolved once here, not left to load()/save() to each resolve it
+    // separately — a function passphrase (prompt, secrets-manager call)
+    // must fire once per logical operation, not once per file touch.
+    const resolvedPassphrase = await resolvePassphrase(passphrase);
+    const existing = await this.load(resolvedPassphrase, filePath);
     const credential = AgentWallet.credentialFromVC(vcId, vcJson);
     const credentials = [...existing.credentials.filter((item) => item.vcId !== vcId), credential];
     await this.save(
       { ...existing, credentials, updatedAt: new Date().toISOString() },
-      passphrase,
+      resolvedPassphrase,
       filePath,
     );
   }
@@ -309,31 +428,32 @@ export class AgentWallet {
     vcId: string,
     vcJson: string,
     filePath: string,
-    passphrase: string,
+    passphrase: PassphraseInput,
   ): Promise<void> {
     await this.addCredential(vcId, vcJson, filePath, passphrase);
   }
 
-  async removeCredential(vcId: string, filePath: string, passphrase: string): Promise<void> {
-    const existing = await this.load(passphrase, filePath);
+  async removeCredential(vcId: string, filePath: string, passphrase: PassphraseInput): Promise<void> {
+    const resolvedPassphrase = await resolvePassphrase(passphrase);
+    const existing = await this.load(resolvedPassphrase, filePath);
     await this.save(
       {
         ...existing,
         credentials: existing.credentials.filter((item) => item.vcId !== vcId),
         updatedAt: new Date().toISOString(),
       },
-      passphrase,
+      resolvedPassphrase,
       filePath,
     );
   }
 
-  async listCredentials(passphrase: string, filePath: string): Promise<WalletCredential[]> {
+  async listCredentials(passphrase: PassphraseInput, filePath: string): Promise<WalletCredential[]> {
     return (await this.load(passphrase, filePath)).credentials;
   }
 
   async getCredential(
     vcId: string,
-    passphrase: string,
+    passphrase: PassphraseInput,
     filePath: string,
   ): Promise<WalletCredential | null> {
     return (
@@ -361,7 +481,7 @@ export class AgentWallet {
 
   async getLatestCredential(
     options: { vcType?: string } | undefined,
-    passphrase: string,
+    passphrase: PassphraseInput,
     filePath: string,
   ): Promise<WalletCredential | null> {
     const credentials = (await this.load(passphrase, filePath)).credentials
@@ -427,14 +547,16 @@ export class AgentWallet {
    */
   static async create(
     walletPath: string,
-    passphrase: string,
+    passphrase: PassphraseInput,
     client?: HelixClient,
+    storage?: WalletStorage,
   ): Promise<AgentWallet> {
-    try {
-      await access(walletPath);
-      return AgentWallet.load(walletPath, passphrase, client);
-    } catch {
-      // file does not exist yet — create a new wallet
+    // Resolved once up front: a function passphrase must fire once per
+    // create()/load() call, not once per internal read/write below.
+    const resolvedPassphrase = await resolvePassphrase(passphrase);
+    const resolvedStorage = storage ?? new FileWalletStorage();
+    if (await resolvedStorage.exists(walletPath)) {
+      return AgentWallet.load(walletPath, resolvedPassphrase, client, resolvedStorage);
     }
 
     const keyPair = generateKeyPair();
@@ -447,17 +569,20 @@ export class AgentWallet {
       createdAt: now,
       updatedAt: now,
     };
-    await new AgentWallet().save(data, passphrase, walletPath);
-    return AgentWallet.fromWalletData(data, walletPath, passphrase, client);
+    await new AgentWallet({ storage: resolvedStorage }).save(data, resolvedPassphrase, walletPath);
+    return AgentWallet.fromWalletData(data, walletPath, resolvedPassphrase, client, resolvedStorage);
   }
 
   static async load(
     walletPath: string,
-    passphrase: string,
+    passphrase: PassphraseInput,
     client?: HelixClient,
+    storage?: WalletStorage,
   ): Promise<AgentWallet> {
-    const data = await new AgentWallet().load(passphrase, walletPath);
-    return AgentWallet.fromWalletData(data, walletPath, passphrase, client);
+    const resolvedPassphrase = await resolvePassphrase(passphrase);
+    const resolvedStorage = storage ?? new FileWalletStorage();
+    const data = await new AgentWallet({ storage: resolvedStorage }).load(resolvedPassphrase, walletPath);
+    return AgentWallet.fromWalletData(data, walletPath, resolvedPassphrase, client, resolvedStorage);
   }
 
   private static fromWalletData(
@@ -465,6 +590,7 @@ export class AgentWallet {
     walletPath: string,
     passphrase: string,
     client?: HelixClient,
+    storage?: WalletStorage,
   ): AgentWallet {
     return new AgentWallet({
       did: data.did,
@@ -474,6 +600,7 @@ export class AgentWallet {
       credentials: data.credentials,
       createdAt: data.createdAt,
       updatedAt: data.updatedAt,
+      ...(storage ? { storage } : {}),
       // exactOptionalPropertyTypes: only set the key when a client was given.
       ...(client ? { client } : {}),
     });

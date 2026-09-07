@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { runAgentOnboard } from './commands/agent.js';
 import { runDidCreate } from './commands/did.js';
 import { runIssuerInit } from './commands/issuer.js';
 import { runRevoke } from './commands/revoke.js';
@@ -132,6 +133,30 @@ export function createProgram(): Command {
         vcId: options.vcId,
         statusList: options.statusList,
         wallet: options.wallet,
+      });
+    });
+
+  // agent <subcommands>
+  const agent = program.command('agent').description('Agent commands');
+  agent
+    .command('onboard')
+    .description(
+      'Complete onboarding for an agent using an enrollment token (minted via the console or POST /v1/enrollment-tokens), saving an encrypted wallet',
+    )
+    .requiredOption('--token <token>', 'Enrollment token')
+    .requiredOption('--wallet <path>', 'Path to save the encrypted wallet file')
+    .option(
+      '--api-url <url>',
+      'Helix API base URL',
+      process.env.HELIX_API_URL ?? process.env.API_BASE_URL ?? 'http://localhost:3000',
+    )
+    .option('--domains <domains>', 'Comma-separated domains this agent will call')
+    .action(async (options) => {
+      await runAgentOnboard({
+        token: options.token,
+        wallet: options.wallet,
+        apiUrl: options.apiUrl,
+        domains: options.domains,
       });
     });
 
