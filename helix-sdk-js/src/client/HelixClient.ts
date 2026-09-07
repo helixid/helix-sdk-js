@@ -10,7 +10,7 @@ import type { SignedVC } from '../core/schemas/vc.js';
 import type { SignedVP } from '../core/schemas/vp.js';
 import type { VerifyVPOptions, VerifyVPResult } from '../core/verification-types.js';
 import { HttpAdapter } from '../http/HttpAdapter.js';
-import { AgentWallet, type PassphraseInput } from '../wallet/AgentWallet.js';
+import { AgentWallet, type PassphraseInput, type WalletStorage } from '../wallet/AgentWallet.js';
 
 function bootstrapProofPayload(input: {
   bootstrapToken: string;
@@ -169,6 +169,8 @@ export interface SessionPublicKeyResponse {
 
 export interface HelixClientOptions {
   adminApiKey?: string;
+  /** Where completeOnboarding() saves the wallet it creates. Defaults to FileWalletStorage — pass a PostgresWalletStorage (or your own WalletStorage) to persist elsewhere. */
+  storage?: WalletStorage;
 }
 
 // -- prepare/finalize (see docs/proposal-sdk-api-only.md) -----------------
@@ -255,12 +257,7 @@ const SDK_ONLY_HTTP_ADAPTER: HttpAdapterLike = {
 
 export class HelixClient {
   private http: HttpAdapterLike;
-  // TODO: this always defaults to FileWalletStorage — completeOnboarding()
-  // has no way to write into a caller-supplied WalletStorage (e.g.
-  // PostgresWalletStorage) yet. AgentWallet.create()/load() already support
-  // it directly; threading a `storage` option through HelixClientOptions
-  // and this field is the next step for onboarding-time DB storage.
-  private readonly wallet = new AgentWallet();
+  private readonly wallet: AgentWallet;
   private pendingKeyPair: PendingKeyPair | null = null;
   private readonly sdkOnlyMode: boolean;
   private readonly apiAuditEnabled: boolean;
@@ -270,10 +267,14 @@ export class HelixClient {
   constructor(http: HttpAdapter, baseUrl: string);
   constructor(first?: string | HttpAdapter, second?: string | HelixClientOptions) {
     this.sdkOnlyMode = first === undefined;
+    // Only the (baseUrl, options?) overload can carry a HelixClientOptions —
+    // the (http, baseUrl) overload's `second` is a baseUrl string, not options.
+    const options =
+      typeof first === 'string' && typeof second === 'object' && second !== null ? second : undefined;
     this.apiAuditEnabled =
       !this.sdkOnlyMode &&
       (typeof first === 'string'
-        ? typeof second === 'object' && second !== null && Boolean(second.adminApiKey)
+        ? Boolean(options?.adminApiKey)
         : first !== undefined &&
           'hasAdminApiKey' in first &&
           typeof first.hasAdminApiKey === 'function' &&
@@ -282,8 +283,9 @@ export class HelixClient {
       first === undefined
         ? SDK_ONLY_HTTP_ADAPTER
         : typeof first === 'string'
-          ? new HttpAdapter(first, typeof second === 'object' ? second : {})
+          ? new HttpAdapter(first, options ?? {})
           : first;
+    this.wallet = new AgentWallet(options?.storage ? { storage: options.storage } : {});
   }
 
   async createDID(options: CreateDIDOptions): Promise<CreateDIDResult> {
