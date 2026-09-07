@@ -1,77 +1,83 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { HelixClient } from '../../../src/client/HelixClient.js';
 
-async function withWalletPath<T>(run: (walletPath: string) => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(join(tmpdir(), 'helix-onboarding-'));
-  try {
-    return await run(join(dir, 'wallet.json'));
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-}
-
 describe('HelixClient onboarding', () => {
-  it('clears pending keypair after completeOnboarding', async () => {
-    await withWalletPath(async (walletPath) => {
-      const client = new HelixClient('http://localhost:3000');
-      client.__setTestHttpAdapter({
-        post: async (path: string, payload: Record<string, unknown>) => {
-          if (path === '/v1/onboard') {
-            return { challengeId: 'chal:test', nonce: 'ab'.repeat(32), expiresAt: new Date().toISOString() };
-          }
-          if (path === '/v1/onboard/verify') {
-            return {
-              agentDid: 'did:hedera:testnet:agent1',
-              vc: {},
-              hederaTransactionId: 'tx-1',
-              vcId: 'vc-1',
-              signatureEcho: payload.signature
-            };
-          }
-          throw new Error('unknown path');
+  it('onboards an agent in a single call, with no local keygen and no wallet write', async () => {
+    const client = new HelixClient('http://localhost:3000');
+    let onboardPayload: Record<string, unknown> | undefined;
+    client.__setTestHttpAdapter({
+      post: async (path: string, payload: Record<string, unknown>) => {
+        if (path === '/v1/onboard') {
+          onboardPayload = payload;
+          return { agentDid: 'did:hedera:testnet:agent1', vcId: 'vc-1' };
         }
-      } as any);
+        throw new Error('unknown path');
+      },
+    } as any);
 
-      const challenge = await client.requestOnboardingChallenge('enroll:test', ['https://myagent.example.com']);
-      await client.completeOnboarding(challenge.challengeId, challenge.nonce, 'pass', walletPath);
-      expect(client.__getPendingKeyPairForTest()).toBeNull();
+    const result = await client.onboardAgent('enroll:test', ['https://myagent.example.com']);
+
+    expect(onboardPayload).toEqual({
+      enrollmentToken: 'enroll:test',
+      domains: ['https://myagent.example.com'],
     });
+    expect(result).toEqual({ agentDid: 'did:hedera:testnet:agent1', vcId: 'vc-1' });
   });
 
-  it('signs Hiero DID creation payload locally during onboarding', async () => {
-    await withWalletPath(async (walletPath) => {
-      const client = new HelixClient('http://localhost:3000');
-      let verifyPayload: Record<string, unknown> | undefined;
-      client.__setTestHttpAdapter({
-        post: async (path: string, payload: Record<string, unknown>) => {
-          if (path === '/v1/onboard') {
-            return {
-              challengeId: 'chal:test',
-              nonce: 'ab'.repeat(32),
-              expiresAt: new Date().toISOString(),
-              didCreateSigningPayloadHex: Buffer.from('hiero-create-did', 'utf8').toString('hex')
-            };
-          }
-          if (path === '/v1/onboard/verify') {
-            verifyPayload = payload;
-            return {
-              agentDid: 'did:hedera:testnet:agent1',
-              vc: {},
-              hederaTransactionId: 'tx-1',
-              vcId: 'vc-1'
-            };
-          }
-          throw new Error('unknown path');
-        }
-      } as any);
+  it('defaults domains to an empty array', async () => {
+    const client = new HelixClient('http://localhost:3000');
+    let onboardPayload: Record<string, unknown> | undefined;
+    client.__setTestHttpAdapter({
+      post: async (path: string, payload: Record<string, unknown>) => {
+        onboardPayload = payload;
+        return { agentDid: 'did:key:zTest', vcId: 'vc-1' };
+      },
+    } as any);
 
-      const challenge = await client.requestOnboardingChallenge('enroll:test', ['https://myagent.example.com']);
-      await client.completeOnboarding(challenge.challengeId, challenge.nonce, 'pass', walletPath);
+    await client.onboardAgent('enroll:test');
 
-      expect(verifyPayload?.didCreateSignature).toMatch(/^[0-9a-f]{128}$/);
+    expect(onboardPayload).toEqual({ enrollmentToken: 'enroll:test', domains: [] });
+  });
+});
+
+describe('HelixClient signVP', () => {
+  it('signs a VP server-side and returns it', async () => {
+    const client = new HelixClient('http://localhost:3000');
+    let requestedPath: string | undefined;
+    let signPayload: Record<string, unknown> | undefined;
+    const fakeSignedVP = { id: 'vp:test:1', holder: 'did:key:zAgent', proof: {} };
+    client.__setTestHttpAdapter({
+      post: async (path: string, payload: Record<string, unknown>) => {
+        requestedPath = path;
+        signPayload = payload;
+        return { signedVP: fakeSignedVP };
+      },
+    } as any);
+
+    const result = await client.signVP('did:key:zAgent', 'https://svc.example.com', {
+      userDid: 'did:key:zUser',
     });
+
+    expect(requestedPath).toBe('/v1/agents/did%3Akey%3AzAgent/vp');
+    expect(signPayload).toEqual({
+      targetService: 'https://svc.example.com',
+      userDid: 'did:key:zUser',
+    });
+    expect(result).toEqual(fakeSignedVP);
+  });
+
+  it('omits optional fields entirely when not provided', async () => {
+    const client = new HelixClient('http://localhost:3000');
+    let signPayload: Record<string, unknown> | undefined;
+    client.__setTestHttpAdapter({
+      post: async (_path: string, payload: Record<string, unknown>) => {
+        signPayload = payload;
+        return { signedVP: {} };
+      },
+    } as any);
+
+    await client.signVP('did:key:zAgent', 'https://svc.example.com');
+
+    expect(signPayload).toEqual({ targetService: 'https://svc.example.com' });
   });
 });

@@ -18,8 +18,10 @@ export interface MCPMiddlewareOptions {
 }
 
 export interface AttachHelixVPOptions {
-  walletPassphrase: string;
-  walletFilePath: string;
+  /** Agent self-custody has been retired — signing happens server-side via this client, not a local wallet. */
+  client: HelixClient;
+  /** The agent's DID, previously implied by which wallet file was loaded. */
+  agentDid: string;
   targetService: string;
   userDid?: string;
 }

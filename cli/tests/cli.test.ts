@@ -6,9 +6,10 @@ import { runDidCreate } from '../src/commands/did.js';
 import { runIssuerInit } from '../src/commands/issuer.js';
 import { runRevoke } from '../src/commands/revoke.js';
 import { runStatusListCreate } from '../src/commands/status-list.js';
-import { runVcIssue, runVcSelfIssue } from '../src/commands/vc.js';
+import { runVcIssue } from '../src/commands/vc.js';
 import { runWalletInspect } from '../src/commands/wallet.js';
 import { requirePassphrase } from '../src/lib/env.js';
+import { loadWallet } from '../src/lib/wallet.js';
 
 describe('helix CLI', () => {
   let tempDir: string;
@@ -159,22 +160,6 @@ describe('helix CLI', () => {
     expect(stdout.some((line) => line.includes('VC issued'))).toBe(true);
   });
 
-  it('helix vc self-issue adds self-signed VC and prints warning', async () => {
-    const agentWallet = join(tempDir, 'agent.enc');
-    await runDidCreate({ method: 'key', wallet: agentWallet });
-
-    await runVcSelfIssue({
-      scopes: 'read:orders',
-      expires: '24h',
-      wallet: agentWallet,
-    });
-
-    const saved = JSON.parse(await readFile(agentWallet, 'utf8'));
-    expect(saved.credentials).toHaveLength(1);
-    expect(stdout.some((line) => line.includes('Self-signed VC'))).toBe(true);
-    expect(stdout.some((line) => line.includes('local development only'))).toBe(true);
-  });
-
   it('helix revoke flips bit and re-signs status list', async () => {
     const issuerWallet = join(tempDir, 'issuer.enc');
     const agentWallet = join(tempDir, 'agent.enc');
@@ -236,9 +221,37 @@ describe('helix CLI', () => {
   });
 
   it('helix wallet inspect prints wallet info without private key', async () => {
+    const issuerWallet = join(tempDir, 'issuer.enc');
     const agentWallet = join(tempDir, 'agent.enc');
+    const statusListPath = join(tempDir, 'status.json');
+    const vcOutput = join(tempDir, 'vc.json');
+
+    await runDidCreate({ method: 'web', domain: 'example.com', wallet: issuerWallet });
     await runDidCreate({ method: 'key', wallet: agentWallet });
-    await runVcSelfIssue({ scopes: 'read:orders', expires: '24h', wallet: agentWallet });
+    const agentSaved = JSON.parse(await readFile(agentWallet, 'utf8'));
+
+    await runStatusListCreate({
+      length: 128,
+      output: statusListPath,
+      baseUrl: 'https://example.com/status/1',
+      wallet: issuerWallet,
+    });
+    await runVcIssue({
+      agentDid: agentSaved.did,
+      scopes: 'read:orders',
+      expires: '90d',
+      statusList: statusListPath,
+      baseUrl: 'https://example.com/status/1',
+      wallet: issuerWallet,
+      output: vcOutput,
+      maxDelegationDepth: 1,
+    });
+    const vc = JSON.parse(await readFile(vcOutput, 'utf8'));
+
+    // No agent self-issuance anymore — the wallet gets a credential the same
+    // way a real onboarded agent's does, by adding an already-issued VC.
+    const wallet = await loadWallet(agentWallet, requirePassphrase());
+    await wallet.addCredential(vc);
 
     stdout.length = 0;
     await runWalletInspect({ wallet: agentWallet });

@@ -6,8 +6,9 @@ import { didCreate } from '../src/operations/did.js';
 import { issuerInit } from '../src/operations/issuer.js';
 import { revoke } from '../src/operations/revoke.js';
 import { statusListCreate } from '../src/operations/statusList.js';
-import { vcIssue, vcSelfIssue } from '../src/operations/vc.js';
+import { vcIssue } from '../src/operations/vc.js';
 import { walletInspect } from '../src/operations/wallet.js';
+import { loadWallet } from '@helixid/cli/lib/wallet';
 
 describe('mcp-server operations', () => {
   let tempDir: string;
@@ -179,13 +180,32 @@ describe('mcp-server operations', () => {
     ).rejects.toThrow('VC ID not found');
   });
 
-  it('vc_self_issue adds a self-signed VC to the agent wallet', async () => {
+  it('wallet_inspect reports a credential added to the agent wallet', async () => {
+    const issuerWallet = join(tempDir, 'issuer.enc');
     const agentWallet = join(tempDir, 'agent.enc');
-    await didCreate({ method: 'key', wallet: agentWallet });
+    const statusListPath = join(tempDir, 'status.json');
 
-    const result = await vcSelfIssue({ scopes: 'read:orders', expires: '24h', wallet: agentWallet });
+    await didCreate({ method: 'web', domain: 'example.com', wallet: issuerWallet, statusList: false });
+    const agent = await didCreate({ method: 'key', wallet: agentWallet });
+    await statusListCreate({
+      length: 128,
+      output: statusListPath,
+      baseUrl: 'https://example.com/status/1',
+      wallet: issuerWallet,
+    });
+    const issued = await vcIssue({
+      agentDid: agent.did,
+      scopes: 'read:orders',
+      expires: '90d',
+      statusList: statusListPath,
+      baseUrl: 'https://example.com/status/1',
+      wallet: issuerWallet,
+    });
 
-    expect(result.scopes).toEqual(['read:orders']);
+    // No agent self-issuance anymore — add the issuer-signed VC directly,
+    // same as a real onboarding flow hands one to a wallet.
+    const wallet = await loadWallet(agentWallet, 'test-passphrase');
+    await wallet.addCredential(issued.vc as any);
 
     const inspected = await walletInspect({ wallet: agentWallet });
     expect(inspected.credentials).toHaveLength(1);
@@ -195,7 +215,6 @@ describe('mcp-server operations', () => {
   it('wallet_inspect never returns a private key field', async () => {
     const agentWallet = join(tempDir, 'agent.enc');
     await didCreate({ method: 'key', wallet: agentWallet });
-    await vcSelfIssue({ scopes: 'read:orders', expires: '24h', wallet: agentWallet });
 
     const result = await walletInspect({ wallet: agentWallet });
 

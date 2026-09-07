@@ -4,8 +4,7 @@ import {
   CredentialAlreadyInWalletError,
   CredentialNotForThisAgentError,
 } from '../errors/index.js';
-import { derivePublicKey, generateKeyPair, publicKeyToMultibase, signData, type KeyPair } from '../core/keys.js';
-import { selfIssueVC, type SelfIssueOptions } from '../core/self-signed.js';
+import { derivePublicKey, generateKeyPair, publicKeyToMultibase, signData } from '../core/keys.js';
 import type { ServiceEndpoint } from '../core/did.js';
 import type { SignedVC } from '../core/schemas/vc.js';
 import type { DelegationGrantVC } from '../core/schemas/delegation-grant.js';
@@ -412,18 +411,6 @@ export class AgentWallet {
     }
   }
 
-  async selfIssueVC(options: SelfIssueOptions): Promise<SignedVC> {
-    if (!this.didValue || !this.privateKeyHex) {
-      throw new Error('Wallet has no DID or private key');
-    }
-    const vc = await selfIssueVC(options, {
-      did: this.didValue,
-      privateKeyHex: this.privateKeyHex,
-    });
-    await this.addCredential(vc);
-    return vc;
-  }
-
   async updateCredential(
     vcId: string,
     vcJson: string,
@@ -510,35 +497,6 @@ export class AgentWallet {
     if (typeof parsed['issuer'] === 'string') credential.issuer = parsed['issuer'];
     if (typeof subject['id'] === 'string') credential.subjectDid = subject['id'];
     return credential;
-  }
-
-  static generateKeypair(): KeyPair {
-    return generateKeyPair();
-  }
-
-  static fromKeypairAndCredential(
-    keypair: KeyPair,
-    vc: SignedVC | string | Record<string, unknown>,
-  ): AgentWallet {
-    const parsed =
-      typeof vc === 'string' ? (JSON.parse(vc) as Record<string, unknown>) : vc;
-    const vcId = typeof parsed['id'] === 'string' ? parsed['id'] : null;
-    const subject =
-      typeof parsed['credentialSubject'] === 'object' && parsed['credentialSubject'] !== null
-        ? (parsed['credentialSubject'] as Record<string, unknown>)
-        : {};
-    const did = `did:key:${publicKeyToMultibase(keypair.publicKey)}`;
-    if (!vcId) {
-      throw new Error('VC has no id');
-    }
-    if (subject['id'] !== did) {
-      throw new CredentialNotForThisAgentError();
-    }
-    return new AgentWallet({
-      did,
-      privateKeyHex: keypair.privateKey,
-      credentials: [AgentWallet.credentialFromVC(vcId, vc)],
-    });
   }
 
   /**

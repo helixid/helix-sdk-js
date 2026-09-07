@@ -4,8 +4,8 @@ import { HelixClient } from '../../../src/client/HelixClient.js';
 import { createStatusList } from '../../../src/core/status-list-schema.js';
 import { generateKeyPair, publicKeyToMultibase } from '../../../src/core/keys.js';
 import { issueJWT } from '../../../src/core/jwt.js';
-import { selfIssueVC } from '../../../src/core/self-signed.js';
 import { VPBuilder } from '../../../src/vp-builder.js';
+import type { SignedVC } from '../../../src/core/schemas/vc.js';
 
 describe('HelixClient Full Unit Tests', () => {
   let mockHttp: any;
@@ -129,7 +129,20 @@ describe('HelixClient Full Unit Tests', () => {
     // exactly one POST and does not also write its own audit entry.
     const wallet = generateKeyPair();
     const did = `did:key:${publicKeyToMultibase(wallet.publicKey)}`;
-    const vc = await selfIssueVC({ scopes: ['read:orders'] }, { did, privateKeyHex: wallet.privateKey });
+    // A structurally-shaped VC is enough here — this test only checks that
+    // verifyVP() forwards to the API and returns its result as-is; the VC's
+    // own proof is never independently checked (the mock stands in for
+    // whatever the API decides).
+    const vc = {
+      '@context': ['https://www.w3.org/ns/credentials/v2'],
+      id: 'vc:helix:test-1',
+      type: ['VerifiableCredential', 'HelixAgentCredential'],
+      issuer: did,
+      validFrom: new Date().toISOString(),
+      validUntil: new Date(Date.now() + 3_600_000).toISOString(),
+      credentialSubject: { id: did, type: 'HelixAgent', privilegeScopes: ['read:orders'] },
+      proof: { type: 'Ed25519Signature2020', proofValue: 'z' + 'a'.repeat(64) },
+    } as unknown as SignedVC;
     const vp = await new VPBuilder({
       credentials: [vc],
       holderDid: did,
@@ -206,9 +219,16 @@ describe('HelixClient Full Unit Tests', () => {
     );
   });
 
-  it('throws SDK_ONLY_MODE_NO_API for enrollment calls without an API URL', async () => {
+  it('throws SDK_ONLY_MODE_NO_API for onboarding calls without an API URL', async () => {
     const sdkOnly = new HelixClient();
-    await expect(sdkOnly.requestOnboardingChallenge('token')).rejects.toMatchObject({
+    await expect(sdkOnly.onboardAgent('token')).rejects.toMatchObject({
+      code: 'SDK_ONLY_MODE_NO_API',
+    });
+  });
+
+  it('throws SDK_ONLY_MODE_NO_API for signVP calls without an API URL', async () => {
+    const sdkOnly = new HelixClient();
+    await expect(sdkOnly.signVP('did:key:zAgent', 'https://svc.example.com')).rejects.toMatchObject({
       code: 'SDK_ONLY_MODE_NO_API',
     });
   });

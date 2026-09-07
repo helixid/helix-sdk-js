@@ -5,7 +5,7 @@ import { didCreate } from './operations/did.js';
 import { issuerInit } from './operations/issuer.js';
 import { revoke } from './operations/revoke.js';
 import { statusListCreate } from './operations/statusList.js';
-import { vcIssue, vcSelfIssue } from './operations/vc.js';
+import { vcIssue } from './operations/vc.js';
 import { walletInspect } from './operations/wallet.js';
 
 function ok(data: unknown): CallToolResult {
@@ -108,28 +108,6 @@ export function createServer(): McpServer {
     async (args) => {
       try {
         return ok(await vcIssue(args));
-      } catch (err) {
-        return fail(err);
-      }
-    },
-  );
-
-  server.registerTool(
-    'vc_self_issue',
-    {
-      title: 'Self-issue a dev-only credential',
-      description:
-        'Issue a self-signed dev credential directly into an agent wallet. Not trusted in production — ' +
-        'verifyVP() rejects self-signed credentials outside dev mode. Requires HELIX_WALLET_PASSPHRASE.',
-      inputSchema: {
-        scopes: z.string().describe('Comma-separated privilege scopes'),
-        expires: z.string().describe('Validity duration, e.g. 24h'),
-        wallet: z.string().describe('Path to agent wallet file'),
-      },
-    },
-    async (args) => {
-      try {
-        return ok(await vcSelfIssue(args));
       } catch (err) {
         return fail(err);
       }

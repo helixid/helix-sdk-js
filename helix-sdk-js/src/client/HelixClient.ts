@@ -1,6 +1,5 @@
 import { AuditEvents } from '../core/audit-events.js';
-import { generateKeyPair, signData, type KeyPair } from '../core/keys.js';
-import { signBytes } from '../core/vp-crypto.js';
+import { generateKeyPair, type KeyPair } from '../core/keys.js';
 import { SDKOnlyModeNoAPIError } from '../errors/index.js';
 import { verifyJWT } from '../core/jwt.js';
 import type { HelixJWTPayload } from '../core/schemas/jwt.js';
@@ -10,25 +9,6 @@ import type { SignedVC } from '../core/schemas/vc.js';
 import type { SignedVP } from '../core/schemas/vp.js';
 import type { VerifyVPOptions, VerifyVPResult } from '../core/verification-types.js';
 import { HttpAdapter } from '../http/HttpAdapter.js';
-import { AgentWallet, type PassphraseInput, type WalletStorage } from '../wallet/AgentWallet.js';
-
-function bootstrapProofPayload(input: {
-  bootstrapToken: string;
-  agentDid: string;
-  timestamp: number;
-}): string {
-  return JSON.stringify({
-    bootstrapToken: input.bootstrapToken,
-    agentDid: input.agentDid,
-    timestamp: input.timestamp,
-  });
-}
-
-interface PendingKeyPair {
-  publicKey: string;
-  privateKey: string;
-  didCreateSigningPayloadHex?: string | undefined;
-}
 
 /**
  * Full response from `POST /v1/vp/verify` — see docs/proposal-sdk-api-only.md.
@@ -154,12 +134,6 @@ export interface StatusListCredentialResponse {
   [key: string]: unknown;
 }
 
-export interface EnrollResponse {
-  agentDid?: string;
-  vc: SignedVC | Record<string, unknown>;
-  vcId?: string;
-}
-
 export interface SessionPublicKeyResponse {
   publicKeyHex: string;
   publicKeyMultibase: string;
@@ -169,8 +143,6 @@ export interface SessionPublicKeyResponse {
 
 export interface HelixClientOptions {
   adminApiKey?: string;
-  /** Where completeOnboarding() saves the wallet it creates. Defaults to FileWalletStorage — pass a PostgresWalletStorage (or your own WalletStorage) to persist elsewhere. */
-  storage?: WalletStorage;
 }
 
 // -- prepare/finalize (see docs/proposal-sdk-api-only.md) -----------------
@@ -257,8 +229,6 @@ const SDK_ONLY_HTTP_ADAPTER: HttpAdapterLike = {
 
 export class HelixClient {
   private http: HttpAdapterLike;
-  private readonly wallet: AgentWallet;
-  private pendingKeyPair: PendingKeyPair | null = null;
   private readonly sdkOnlyMode: boolean;
   private readonly apiAuditEnabled: boolean;
 
@@ -285,7 +255,6 @@ export class HelixClient {
         : typeof first === 'string'
           ? new HttpAdapter(first, options ?? {})
           : first;
-    this.wallet = new AgentWallet(options?.storage ? { storage: options.storage } : {});
   }
 
   async createDID(options: CreateDIDOptions): Promise<CreateDIDResult> {
@@ -476,82 +445,47 @@ export class HelixClient {
     return verifyJWT(token, publicKeyHex);
   }
 
-  async enroll(bootstrapToken: string, wallet: AgentWallet): Promise<SignedVC> {
-    this.assertAPIConfigured();
-    const timestamp = Date.now();
-    const agentDid = wallet.getDID();
-    const proofSignature = signData(
-      bootstrapProofPayload({ bootstrapToken, agentDid, timestamp }),
-      wallet.getPrivateKeyHex(),
-    );
-
-    const response = await this.http.post<EnrollResponse>('/v1/enroll', {
-      bootstrapToken,
-      agentDid,
-      timestamp,
-      proofSignature,
-    });
-
-    const vc = response.vc as SignedVC;
-    await wallet.addCredential(vc);
-    return vc;
-  }
-
-  async requestOnboardingChallenge(
-    bootstrapToken: string,
+  /**
+   * Onboards an agent in one call — agent self-custody has been retired.
+   * The server generates and holds the private key itself; no local
+   * keypair, no wallet file, no passphrase. `enrollmentToken` must already
+   * exist (see `POST /v1/enrollment-tokens`, not exposed as an SDK method —
+   * it's an agent-owner action, typically taken via Console or a direct API
+   * call, not something the onboarding agent itself does).
+   */
+  async onboardAgent(
+    enrollmentToken: string,
     domains: string[] = [],
-  ): Promise<{
-    challengeId: string;
-    nonce: string;
-    expiresAt: string;
-    didCreateSigningPayloadHex?: string;
-  }> {
+  ): Promise<{ agentDid: string; vcId: string }> {
     this.assertAPIConfigured();
-    const keyPair = generateKeyPair();
-    this.pendingKeyPair = { publicKey: keyPair.publicKey, privateKey: keyPair.privateKey };
-    const challenge = await this.http.post<{
-      challengeId: string;
-      nonce: string;
-      expiresAt: string;
-      didCreateSigningPayloadHex?: string;
-    }>('/v1/onboard', {
-      enrollmentToken: bootstrapToken,
-      publicKeyHex: keyPair.publicKey,
-      domains,
-    });
-    this.pendingKeyPair.didCreateSigningPayloadHex = challenge.didCreateSigningPayloadHex;
-    return challenge;
+    return this.http.post('/v1/onboard', { enrollmentToken, domains });
   }
 
-  async completeOnboarding(
-    challengeId: string,
-    nonce: string,
-    walletPassphrase: PassphraseInput,
-    walletFilePath: string,
-  ): Promise<{ agentDid: string; vcId: string; walletSaved: true }> {
+  /**
+   * Signs a VP on behalf of a server-custody agent — the caller never has,
+   * and never can have, the private key, so this is an API call instead of
+   * local VPBuilder.sign(). The server looks up the agent's active
+   * HelixAgentCredential itself; pass `vcId` to pin a specific one instead
+   * (e.g. right after a renewal, when more than one is active). `grantVC`
+   * is an SP-issued DelegationGrantCredential the caller already holds —
+   * not secret material, just data to include — for the consent-grant flow.
+   */
+  async signVP(
+    did: string,
+    targetService: string,
+    options: { userDid?: string; grantVC?: SignedVC; vcId?: string } = {},
+  ): Promise<SignedVP> {
     this.assertAPIConfigured();
-    if (!this.pendingKeyPair) throw new Error('No pending onboarding keypair');
-    const signature = await signBytes(Buffer.from(nonce, 'hex'), this.pendingKeyPair.privateKey);
-    const didCreateSignature = await this.signPendingDidCreatePayload(challengeId);
-    const result = await this.http.post<{
-      agentDid: string;
-      vc: Record<string, unknown>;
-      vcId: string;
-    }>('/v1/onboard/verify', { challengeId, signature, didCreateSignature });
-    await this.wallet.save(
+    const result = await this.http.post<{ signedVP: SignedVP }>(
+      `/v1/agents/${encodeURIComponent(did)}/vp`,
       {
-        did: result.agentDid,
-        publicKeyHex: this.pendingKeyPair.publicKey,
-        privateKeyHex: this.pendingKeyPair.privateKey,
-        credentials: [AgentWallet.credentialFromVC(result.vcId, result.vc)],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        targetService,
+        ...(options.userDid !== undefined ? { userDid: options.userDid } : {}),
+        ...(options.grantVC !== undefined ? { grantVC: options.grantVC } : {}),
+        ...(options.vcId !== undefined ? { vcId: options.vcId } : {}),
       },
-      walletPassphrase,
-      walletFilePath,
     );
-    this.pendingKeyPair = null;
-    return { agentDid: result.agentDid, vcId: result.vcId, walletSaved: true };
+    return result.signedVP;
   }
 
   async requestUserChallenge(
@@ -569,10 +503,6 @@ export class HelixClient {
 
   __setTestHttpAdapter(adapter: HttpAdapterLike): void {
     this.http = adapter;
-  }
-
-  __getPendingKeyPairForTest(): PendingKeyPair | null {
-    return this.pendingKeyPair;
   }
 
   /**
@@ -594,17 +524,6 @@ export class HelixClient {
     } catch {
       // Audit writes are best-effort. The stored credential remains authoritative.
     }
-  }
-
-  private async signPendingDidCreatePayload(_challengeId: string): Promise<string | undefined> {
-    void _challengeId;
-    if (!this.pendingKeyPair?.didCreateSigningPayloadHex) {
-      return undefined;
-    }
-    return signBytes(
-      Buffer.from(this.pendingKeyPair.didCreateSigningPayloadHex, 'hex'),
-      this.pendingKeyPair.privateKey,
-    );
   }
 
   private assertAPIConfigured(): void {

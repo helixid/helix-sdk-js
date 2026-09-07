@@ -44,8 +44,6 @@ export type {
 } from './core/did.js';
 export { buildDIDDocument } from './core/did.js';
 export type { DelegationLink, VerifyVPOptions, VerifyVPResult } from './core/verification-types.js';
-export { selfIssueVC } from './core/self-signed.js';
-export type { SelfIssueOptions } from './core/self-signed.js';
 export type { SignedVC } from './core/schemas/vc.js';
 export type { SignedVP } from './core/schemas/vp.js';
 export type { VPBuilderOptions } from './core/vp-builder-impl.js';

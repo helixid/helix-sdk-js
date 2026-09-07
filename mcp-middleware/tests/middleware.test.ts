@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { generateKeyPair } from '@helixid/sdk-js';
-import { AgentWallet, verifyVP as verifyVPExport } from '@helixid/sdk-js';
+import { verifyVP as verifyVPExport } from '@helixid/sdk-js';
 import { attachHelixVP } from '../src/attach.js';
 import { helixidMCPMiddleware } from '../src/middleware.js';
 
@@ -90,62 +89,50 @@ describe('helixidMCPMiddleware', () => {
 describe('attachHelixVP', () => {
   const agentDid = 'did:hedera:testnet:agent';
 
-  function createMockWallet(credentials: Record<string, unknown>[] = []) {
-    const keyPair = generateKeyPair();
-    return new AgentWallet({
-      did: agentDid,
-      privateKeyHex: keyPair.privateKey,
-      credentials: credentials.map((c) => ({
-        vcId: String(c.id),
-        vcJson: JSON.stringify(c),
-        type: Array.isArray(c.type) ? c.type : [],
-        addedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      })),
-    });
-  }
-
-  const defaultVC = {
-    id: 'vc:selected',
-    type: ['VerifiableCredential', 'HelixAgentCredential'],
-    issuer: 'did:issuer',
-    validUntil: new Date(Date.now() + 60_000).toISOString(),
-    credentialSubject: { id: agentDid, privilegeScopes: ['read:orders'] },
+  const fakeSignedVP = {
+    id: 'vp:helix:test-1',
+    holder: agentDid,
+    verifiableCredential: [],
     proof: { type: 'Ed25519Signature2020' },
   };
 
-  it('injects _helixVP into tool call input', async () => {
-    const wallet = createMockWallet([defaultVC]);
-    vi.spyOn(AgentWallet, 'load').mockResolvedValue(wallet);
+  it('injects _helixVP into tool call input by calling client.signVP()', async () => {
+    const signVP = vi.fn().mockResolvedValue(fakeSignedVP);
+    const client = { signVP } as unknown as Parameters<typeof attachHelixVP>[1]['client'];
 
     const result = await attachHelixVP(
       { name: 'orders.lookup', input: { orderId: 'ORD-1' } },
-      {
-        walletPassphrase: 'pass',
-        walletFilePath: '/unused',
-        targetService: 'orders',
-        userDid: 'did:hedera:testnet:user',
-      },
+      { client, agentDid, targetService: 'orders', userDid: 'did:hedera:testnet:user' },
     );
 
-    expect(result.input?._helixVP).toEqual(expect.objectContaining({ id: expect.any(String) }));
+    expect(signVP).toHaveBeenCalledWith(agentDid, 'orders', { userDid: 'did:hedera:testnet:user' });
+    expect(result.input?._helixVP).toEqual(fakeSignedVP);
     expect(result.input?.orderId).toBe('ORD-1');
   });
 
-  it('throws when wallet has no credentials', async () => {
-    const wallet = createMockWallet([]);
-    vi.spyOn(AgentWallet, 'load').mockResolvedValue(wallet);
+  it('omits userDid entirely when not provided', async () => {
+    const signVP = vi.fn().mockResolvedValue(fakeSignedVP);
+    const client = { signVP } as unknown as Parameters<typeof attachHelixVP>[1]['client'];
+
+    await attachHelixVP(
+      { name: 'orders.lookup' },
+      { client, agentDid, targetService: 'orders' },
+    );
+
+    expect(signVP).toHaveBeenCalledWith(agentDid, 'orders', {});
+  });
+
+  it('propagates a signing failure from the server (e.g. no active credential)', async () => {
+    const signVP = vi.fn().mockRejectedValue(
+      Object.assign(new Error('No active credential for agent DID'), {
+        code: 'AGENT_ACTIVE_CREDENTIAL_NOT_FOUND',
+      }),
+    );
+    const client = { signVP } as unknown as Parameters<typeof attachHelixVP>[1]['client'];
 
     await expect(
-      attachHelixVP(
-        { name: 'orders.lookup' },
-        {
-          walletPassphrase: 'pass',
-          walletFilePath: '/unused',
-          targetService: 'orders',
-        },
-      ),
-    ).rejects.toMatchObject({ code: 'NO_CREDENTIAL_IN_WALLET' });
+      attachHelixVP({ name: 'orders.lookup' }, { client, agentDid, targetService: 'orders' }),
+    ).rejects.toMatchObject({ code: 'AGENT_ACTIVE_CREDENTIAL_NOT_FOUND' });
   });
 });
 

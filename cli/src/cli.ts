@@ -4,7 +4,7 @@ import { runDidCreate } from './commands/did.js';
 import { runIssuerInit } from './commands/issuer.js';
 import { runRevoke } from './commands/revoke.js';
 import { runStatusListCreate } from './commands/status-list.js';
-import { runVcIssue, runVcSelfIssue } from './commands/vc.js';
+import { runVcIssue } from './commands/vc.js';
 import { runWalletInspect } from './commands/wallet.js';
 
 export function createProgram(): Command {
@@ -108,19 +108,6 @@ export function createProgram(): Command {
       });
     });
 
-  vc.command('self-issue')
-    .description('Issue a self-signed dev credential to an agent wallet')
-    .requiredOption('--scopes <scopes>', 'Comma-separated privilege scopes')
-    .requiredOption('--expires <duration>', 'Validity duration (e.g. 24h)')
-    .requiredOption('--wallet <path>', 'Path to agent wallet file')
-    .action(async (options) => {
-      await runVcSelfIssue({
-        scopes: options.scopes,
-        expires: options.expires,
-        wallet: options.wallet,
-      });
-    });
-
   // revoke
   program
     .command('revoke')
@@ -141,10 +128,9 @@ export function createProgram(): Command {
   agent
     .command('onboard')
     .description(
-      'Complete onboarding for an agent using an enrollment token (minted via the console or POST /v1/enrollment-tokens), saving an encrypted wallet',
+      'Onboard an agent using an enrollment token (minted via the console or POST /v1/enrollment-tokens) — server-side keygen, no wallet file',
     )
     .requiredOption('--token <token>', 'Enrollment token')
-    .requiredOption('--wallet <path>', 'Path to save the encrypted wallet file')
     .option(
       '--api-url <url>',
       'Helix API base URL',
@@ -154,7 +140,6 @@ export function createProgram(): Command {
     .action(async (options) => {
       await runAgentOnboard({
         token: options.token,
-        wallet: options.wallet,
         apiUrl: options.apiUrl,
         domains: options.domains,
       });

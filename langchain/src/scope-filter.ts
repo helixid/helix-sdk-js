@@ -1,4 +1,4 @@
-import { AgentWallet } from '@helixid/sdk-js';
+import type { HelixClient } from '@helixid/sdk-js';
 
 export interface StructuredTool {
   name: string;
@@ -9,21 +9,23 @@ export interface StructuredTool {
   [key: string]: unknown;
 }
 
+/**
+ * Agent self-custody has been retired — there is no local wallet file to
+ * read `credentialSubject.privilegeScopes` from anymore. `listVCs()`
+ * already returns `scopes` directly on each summary, so this is one API
+ * call (no need to separately fetch and parse a full VC).
+ */
 export async function filterToolsByScope<T extends StructuredTool>(
   tools: T[],
-  walletFilePath: string,
-  walletPassphrase: string,
+  client: HelixClient,
+  agentDid: string,
 ): Promise<T[]> {
-  const wallet = await AgentWallet.load(walletFilePath, walletPassphrase);
-  const vcs = wallet.credentials;
-  if (!vcs || vcs.length === 0) {
-    throw new Error('No credential in wallet. Run enrollment first.');
+  const activeVCs = await client.listVCs({ subjectDid: agentDid, status: 'active' });
+  const active = activeVCs[0];
+  if (!active) {
+    throw new Error('No active credential for this agent. Run onboarding first.');
   }
-  const vc = vcs[0]!;
-
-  // read privilegeScopes from credentialSubject
-  const credentialSubject = vc.credentialSubject as { privilegeScopes?: string[] };
-  const scopes = credentialSubject.privilegeScopes ?? [];
+  const scopes = active.scopes ?? [];
 
   return tools.filter((tool) => {
     const requiredScope = tool.metadata?.requiredScope;

@@ -14,6 +14,15 @@ export interface DelegateOptions {
  * (see docs/proposal-sdk-api-only.md). Payload construction — scope-subset
  * and max-depth checks included — happens server-side; only the signature is
  * produced locally, so the wallet's private key never leaves this process.
+ *
+ * KNOWN GAP, not fixed as part of the server-custody migration: agent
+ * self-custody has been retired, so no onboarding path produces a wallet
+ * holding a real key anymore — `wallet.sign()` here has nothing legitimate
+ * to call it with. See helix-core's
+ * tests/live/agent-delegation.live.integration.test.ts for the full
+ * writeup — needs its own design decision (server-custody delegation
+ * signing) before this path is meaningful again. Left in place rather than
+ * deleted since removing it was never part of that decision either.
  */
 export async function delegate(
   options: DelegateOptions,

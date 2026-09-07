@@ -11,7 +11,6 @@ const EXPECTED_TOOLS = [
   'issuer_init',
   'status_list_create',
   'vc_issue',
-  'vc_self_issue',
   'revoke',
   'wallet_inspect',
 ];

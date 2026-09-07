@@ -1,20 +1,19 @@
-import { NoCredentialInWalletError, type SignedVC } from '@helixid/sdk-js';
-import { AgentWallet, VPBuilder } from '@helixid/sdk-js';
 import type { AttachHelixVPOptions, MCPToolCall } from './types.js';
 
+/**
+ * Attaches a signed VP to an outbound MCP tool call. Agent self-custody has
+ * been retired — there is no wallet file to load and no local key to sign
+ * with, so this is now a server-side call (`client.signVP()`) instead of
+ * loading a wallet and signing locally. The server picks the agent's
+ * active credential itself.
+ */
 export async function attachHelixVP(
   toolCall: MCPToolCall,
   options: AttachHelixVPOptions,
 ): Promise<MCPToolCall> {
-  const wallet = await AgentWallet.load(options.walletFilePath, options.walletPassphrase);
-  const vc = selectVC(wallet, options.targetService);
-
-  const vp = await new VPBuilder({
-    credentials: [vc],
-    holderDid: wallet.getDID(),
-    targetService: options.targetService,
-    userDid: options.userDid ?? 'did:key:anonymous',
-  }).sign(wallet.getPrivateKeyHex(), `${wallet.getDID()}#key-1`);
+  const vp = await options.client.signVP(options.agentDid, options.targetService, {
+    ...(options.userDid !== undefined ? { userDid: options.userDid } : {}),
+  });
 
   return {
     ...toolCall,
@@ -23,19 +22,4 @@ export async function attachHelixVP(
       _helixVP: vp,
     },
   };
-}
-
-function selectVC(wallet: AgentWallet, targetService: string): SignedVC {
-  const vcs = wallet.credentials;
-  if (!vcs || vcs.length === 0) {
-    throw new NoCredentialInWalletError('No credential in wallet');
-  }
-  if (vcs.length === 1) {
-    return vcs[0]!;
-  }
-  const match = vcs.find((vc) => (vc as SignedVC & { targetService?: string }).targetService === targetService);
-  if (match) {
-    return match;
-  }
-  return vcs[0]!;
 }
