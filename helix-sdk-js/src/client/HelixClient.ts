@@ -143,6 +143,16 @@ export interface SessionPublicKeyResponse {
 
 export interface HelixClientOptions {
   adminApiKey?: string;
+  /**
+   * Enterprise (server-custody, account-scoped) mode: presence of this
+   * option is what selects it -- signVP() then talks to
+   * /v1/custodial-agents/:did/vp (not core's /v1/agents/:did/vp) and
+   * authenticates with a hosted-account bearer token obtained by logging in
+   * with these credentials (cached, re-logged-in near expiry), not the
+   * admin key. There is no per-agent credential yet -- an enterprise agent
+   * process today has to know the account that onboarded it.
+   */
+  account?: { email: string; password: string };
 }
 
 // -- prepare/finalize (see docs/proposal-sdk-api-only.md) -----------------
@@ -231,6 +241,9 @@ export class HelixClient {
   private http: HttpAdapterLike;
   private readonly sdkOnlyMode: boolean;
   private readonly apiAuditEnabled: boolean;
+  private readonly baseUrl: string | undefined;
+  private readonly accountCreds: { email: string; password: string } | undefined;
+  private accountTokenCache: { accessToken: string; expiresAtMs: number } | undefined;
 
   constructor(apiUrl?: string);
   constructor(baseUrl: string, options?: HelixClientOptions);
@@ -255,6 +268,29 @@ export class HelixClient {
         : typeof first === 'string'
           ? new HttpAdapter(first, options ?? {})
           : first;
+    this.baseUrl = typeof first === 'string' ? first.replace(/\/$/, '') : undefined;
+    this.accountCreds = options?.account;
+  }
+
+  /** Bearer token for enterprise account-scoped calls (signVP in enterprise mode). Logs in once, caches, re-logs-in near expiry. */
+  private async ensureAccountToken(): Promise<string> {
+    if (!this.accountCreds || !this.baseUrl) {
+      throw new Error('HelixClient: account credentials are not configured (pass { account } to enable enterprise mode)');
+    }
+    if (this.accountTokenCache && this.accountTokenCache.expiresAtMs > Date.now() + 30_000) {
+      return this.accountTokenCache.accessToken;
+    }
+    const res = await fetch(`${this.baseUrl}/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(this.accountCreds),
+    });
+    const body = (await res.json()) as { accessToken?: string; expiresIn?: number; error?: { message?: string } };
+    if (!res.ok || !body.accessToken) {
+      throw new Error(body.error?.message ?? `Account login failed: HTTP ${res.status}`);
+    }
+    this.accountTokenCache = { accessToken: body.accessToken, expiresAtMs: Date.now() + (body.expiresIn ?? 900) * 1000 };
+    return this.accountTokenCache.accessToken;
   }
 
   async createDID(options: CreateDIDOptions): Promise<CreateDIDResult> {
@@ -476,15 +512,32 @@ export class HelixClient {
     options: { userDid?: string; grantVC?: SignedVC; vcId?: string } = {},
   ): Promise<SignedVP> {
     this.assertAPIConfigured();
-    const result = await this.http.post<{ signedVP: SignedVP }>(
-      `/v1/agents/${encodeURIComponent(did)}/vp`,
-      {
-        targetService,
-        ...(options.userDid !== undefined ? { userDid: options.userDid } : {}),
-        ...(options.grantVC !== undefined ? { grantVC: options.grantVC } : {}),
-        ...(options.vcId !== undefined ? { vcId: options.vcId } : {}),
-      },
-    );
+    const body = {
+      targetService,
+      ...(options.userDid !== undefined ? { userDid: options.userDid } : {}),
+      ...(options.grantVC !== undefined ? { grantVC: options.grantVC } : {}),
+      ...(options.vcId !== undefined ? { vcId: options.vcId } : {}),
+    };
+
+    // Enterprise mode (this.accountCreds set): custodial signing is
+    // account-scoped, a different route + auth than core's admin-key-gated
+    // /v1/agents/:did/vp -- see HelixClientOptions.account's doc comment.
+    if (this.accountCreds) {
+      if (!this.baseUrl) throw new Error('HelixClient: enterprise mode requires a baseUrl');
+      const accessToken = await this.ensureAccountToken();
+      const res = await fetch(`${this.baseUrl}/v1/custodial-agents/${encodeURIComponent(did)}/vp`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify(body),
+      });
+      const result = (await res.json()) as { signedVP?: SignedVP; error?: { message?: string } };
+      if (!res.ok || !result.signedVP) {
+        throw new Error(result.error?.message ?? `signVP failed: HTTP ${res.status}`);
+      }
+      return result.signedVP;
+    }
+
+    const result = await this.http.post<{ signedVP: SignedVP }>(`/v1/agents/${encodeURIComponent(did)}/vp`, body);
     return result.signedVP;
   }
 
