@@ -58,10 +58,24 @@ describe('standalone SDK exports', () => {
       };
       const client = new HelixClient(http as any, 'http://api');
       const wallet = await AgentWallet.create(path, 'pass', client);
-      const parent = await wallet.selfIssueVC({
-        scopes: ['read:orders', 'write:orders'],
-        maxDelegationDepth: 1,
-      });
+      // Agent self-issuance is gone — add an already-issued VC directly,
+      // same as a real (server-custody) onboarding flow would hand back.
+      const parent = {
+        '@context': ['https://www.w3.org/ns/credentials/v2'],
+        id: 'vc:helix:parent-1',
+        type: ['VerifiableCredential', 'HelixAgentCredential'],
+        issuer: wallet.getDID(),
+        validFrom: new Date().toISOString(),
+        validUntil: new Date(Date.now() + 3_600_000).toISOString(),
+        credentialSubject: {
+          id: wallet.getDID(),
+          type: 'HelixAgent',
+          privilegeScopes: ['read:orders', 'write:orders'],
+          maxDelegationDepth: 1,
+        },
+        proof: { type: 'Ed25519Signature2020', proofValue: 'z' + 'a'.repeat(64) },
+      } as any;
+      await wallet.addCredential(parent);
 
       http.post.mockImplementation(async (urlPath: string, body: any) => {
         if (urlPath === '/v1/vcs/delegation/prepare') {

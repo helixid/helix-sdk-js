@@ -1,51 +1,26 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { generateKeyPair } from '@helixid/sdk-js';
-import { AgentWallet } from '@helixid/sdk-js';
+import { describe, expect, it, vi } from 'vitest';
+import type { HelixClient } from '@helixid/sdk-js';
 import { HelixIDMiddleware, HelixIDToolWrapper, filterToolsByScope } from '../src/index.js';
 
 describe('@helixid/langchain', () => {
-  let keyPair: { publicKey: string; privateKey: string };
   const agentDid = 'did:hedera:testnet:agent';
 
-  beforeEach(() => {
-    keyPair = generateKeyPair();
-    vi.restoreAllMocks();
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  function createMockWallet(credentials: any[] = []) {
-    return new AgentWallet({
-      did: agentDid,
-      privateKeyHex: keyPair.privateKey,
-      credentials: credentials.map((c) => ({
-        vcId: c.id,
-        vcJson: JSON.stringify(c),
-        type: c.type,
-        addedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      })),
-    });
-  }
-
-  const defaultVC = {
-    id: 'vc:selected',
-    type: ['VerifiableCredential', 'HelixAgentCredential'],
-    issuer: 'did:issuer',
-    validUntil: new Date(Date.now() + 60_000).toISOString(),
-    credentialSubject: { id: agentDid, privilegeScopes: ['read:orders'] },
+  const fakeSignedVP = {
+    id: 'vp:helix:test-1',
+    holder: agentDid,
+    verifiableCredential: [],
     proof: { type: 'Ed25519Signature2020' },
   };
 
-  it('injects _helixVP from handleToolStart', async () => {
-    const wallet = createMockWallet([defaultVC]);
-    const loadSpy = vi.spyOn(AgentWallet, 'load').mockResolvedValue(wallet);
+  function fakeClient(signVP = vi.fn().mockResolvedValue(fakeSignedVP)) {
+    return { signVP } as unknown as HelixClient;
+  }
 
+  it('injects _helixVP from handleToolStart by calling client.signVP()', async () => {
+    const signVP = vi.fn().mockResolvedValue(fakeSignedVP);
     const middleware = HelixIDMiddleware({
-      walletPassphrase: 'pass',
-      walletFilePath: '/unused',
+      client: fakeClient(signVP),
+      agentDid,
       targetService: 'orders',
       userDid: 'did:hedera:testnet:user',
     });
@@ -53,38 +28,27 @@ describe('@helixid/langchain', () => {
     const input: Record<string, unknown> = { query: 'book order' };
     await middleware.callbacks[0]!.handleToolStart({ name: 'orders' }, input);
 
+    expect(signVP).toHaveBeenCalledWith(agentDid, 'orders', { userDid: 'did:hedera:testnet:user' });
     expect(input._helixVP).toEqual(expect.any(String));
-    expect(loadSpy).toHaveBeenCalledTimes(1);
   });
 
   it('wraps a tool and passes the VP to the original _call input', async () => {
-    const wallet = createMockWallet([defaultVC]);
-    const loadSpy = vi.spyOn(AgentWallet, 'load').mockResolvedValue(wallet);
-
     const originalCall = vi.fn().mockResolvedValue('done');
     const wrapped = HelixIDToolWrapper(
       { name: 'orders', _call: originalCall },
-      {
-        walletPassphrase: 'pass',
-        walletFilePath: '/unused',
-        targetService: 'orders',
-        userDid: 'did:hedera:testnet:user',
-      },
+      { client: fakeClient(), agentDid, targetService: 'orders', userDid: 'did:hedera:testnet:user' },
     );
 
     const input: Record<string, unknown> = { query: 'book order' };
     await expect(wrapped._call(input)).resolves.toBe('done');
     expect(originalCall).toHaveBeenCalledWith(expect.objectContaining({ _helixVP: expect.any(String) }));
-    expect(loadSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('loads wallet once, not per call across multiple invocations', async () => {
-    const wallet = createMockWallet([defaultVC]);
-    const loadSpy = vi.spyOn(AgentWallet, 'load').mockResolvedValue(wallet);
-
+  it('calls client.signVP() once per invocation', async () => {
+    const signVP = vi.fn().mockResolvedValue(fakeSignedVP);
     const middleware = HelixIDMiddleware({
-      walletPassphrase: 'pass',
-      walletFilePath: '/unused',
+      client: fakeClient(signVP),
+      agentDid,
       targetService: 'orders',
       userDid: 'did:hedera:testnet:user',
     });
@@ -97,16 +61,18 @@ describe('@helixid/langchain', () => {
 
     expect(input1._helixVP).toEqual(expect.any(String));
     expect(input2._helixVP).toEqual(expect.any(String));
-    expect(loadSpy).toHaveBeenCalledTimes(1);
+    expect(signVP).toHaveBeenCalledTimes(2);
   });
 
-  it('throws if wallet has no credentials', async () => {
-    const wallet = createMockWallet([]);
-    vi.spyOn(AgentWallet, 'load').mockResolvedValue(wallet);
-
+  it('propagates a signing failure from the server (e.g. no active credential)', async () => {
+    const signVP = vi.fn().mockRejectedValue(
+      Object.assign(new Error('No active credential for agent DID'), {
+        code: 'AGENT_ACTIVE_CREDENTIAL_NOT_FOUND',
+      }),
+    );
     const middleware = HelixIDMiddleware({
-      walletPassphrase: 'pass',
-      walletFilePath: '/unused',
+      client: fakeClient(signVP),
+      agentDid,
       targetService: 'orders',
       userDid: 'did:hedera:testnet:user',
     });
@@ -114,55 +80,65 @@ describe('@helixid/langchain', () => {
     const input: Record<string, unknown> = { query: 'test' };
     await expect(
       middleware.callbacks[0]!.handleToolStart({ name: 'orders' }, input),
-    ).rejects.toThrow('No credential in wallet. Run enrollment first.');
+    ).rejects.toMatchObject({ code: 'AGENT_ACTIVE_CREDENTIAL_NOT_FOUND' });
   });
 
   describe('filterToolsByScope', () => {
-    const vcWithScopes = {
-      id: 'vc:selected',
-      type: ['VerifiableCredential', 'HelixAgentCredential'],
-      issuer: 'did:issuer',
-      validUntil: new Date(Date.now() + 60_000).toISOString(),
-      credentialSubject: { id: agentDid, privilegeScopes: ['read:orders', 'write:orders'] },
-      proof: { type: 'Ed25519Signature2020' },
-    };
+    function fakeClientWithScopes(scopes: string[] | null) {
+      const listVCs = vi.fn().mockResolvedValue(
+        scopes === null
+          ? []
+          : [
+              {
+                vcId: 'vc:selected',
+                subjectDid: agentDid,
+                scopes,
+                status: 'active',
+                issuedAt: new Date().toISOString(),
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+              },
+            ],
+      );
+      return { listVCs } as unknown as HelixClient;
+    }
 
     it('includes tools without requiredScope by default', async () => {
-      const wallet = createMockWallet([vcWithScopes]);
-      vi.spyOn(AgentWallet, 'load').mockResolvedValue(wallet);
-
+      const client = fakeClientWithScopes(['read:orders', 'write:orders']);
       const tools = [
         { name: 'tool1' },
         { name: 'tool2', metadata: {} },
       ];
 
-      const filtered = await filterToolsByScope(tools, '/unused', 'pass');
+      const filtered = await filterToolsByScope(tools, client, agentDid);
       expect(filtered).toHaveLength(2);
     });
 
-    it('excludes tools with requiredScope if scope not in VC', async () => {
-      const wallet = createMockWallet([vcWithScopes]);
-      vi.spyOn(AgentWallet, 'load').mockResolvedValue(wallet);
-
+    it('excludes tools with requiredScope if scope not in the active VC', async () => {
+      const client = fakeClientWithScopes(['read:orders', 'write:orders']);
       const tools = [
         { name: 'tool1', metadata: { requiredScope: 'admin:all' } },
       ];
 
-      const filtered = await filterToolsByScope(tools, '/unused', 'pass');
+      const filtered = await filterToolsByScope(tools, client, agentDid);
       expect(filtered).toHaveLength(0);
     });
 
     it('includes tools with matching scope in VC metadata or name', async () => {
-      const wallet = createMockWallet([vcWithScopes]);
-      vi.spyOn(AgentWallet, 'load').mockResolvedValue(wallet);
-
+      const client = fakeClientWithScopes(['read:orders', 'write:orders']);
       const tools = [
         { name: 'tool1', metadata: { requiredScope: 'read:orders' } },
         { name: 'write:orders' },
       ];
 
-      const filtered = await filterToolsByScope(tools, '/unused', 'pass');
+      const filtered = await filterToolsByScope(tools, client, agentDid);
       expect(filtered).toHaveLength(2);
+    });
+
+    it('throws when the agent has no active credential', async () => {
+      const client = fakeClientWithScopes(null);
+      await expect(filterToolsByScope([{ name: 'tool1' }], client, agentDid)).rejects.toThrow(
+        'No active credential for this agent. Run onboarding first.',
+      );
     });
   });
 });

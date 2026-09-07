@@ -1,5 +1,4 @@
-import { AgentWallet, VPBuilder } from '@helixid/sdk-js';
-import type { SignedVC } from '@helixid/sdk-js';
+import type { HelixClient } from '@helixid/sdk-js';
 
 export interface RunnableConfigLike {
   callbacks: Array<{
@@ -14,39 +13,31 @@ export interface StructuredToolLike {
 }
 
 export interface HelixIDMiddlewareOptions {
-  walletPassphrase: string;
-  walletFilePath: string;
+  /** Agent self-custody has been retired — signing happens server-side via this client, not a local wallet. */
+  client: HelixClient;
+  /** The agent's DID, previously implied by which wallet file was loaded. */
+  agentDid: string;
   targetService: string;
   userDid?: string;
 }
 
 export type LangChainMiddlewareOptions = HelixIDMiddlewareOptions;
 
+async function attachVP(options: LangChainMiddlewareOptions, input: unknown): Promise<void> {
+  const vp = await options.client.signVP(options.agentDid, options.targetService, {
+    ...(options.userDid !== undefined ? { userDid: options.userDid } : {}),
+  });
+
+  const target = ensureObjectInput(input);
+  target._helixVP = encodeBase64UrlJson(vp);
+}
+
 export function HelixIDMiddleware(options: LangChainMiddlewareOptions): RunnableConfigLike {
-  let wallet: AgentWallet | null = null;
-
-  async function getWallet(): Promise<AgentWallet> {
-    if (!wallet) {
-      wallet = await AgentWallet.load(options.walletFilePath, options.walletPassphrase);
-    }
-    return wallet;
-  }
-
   return {
     callbacks: [
       {
         async handleToolStart(_tool, input): Promise<void> {
-          const w = await getWallet();
-          const vc = selectVC(w, options.targetService);
-          const vp = await new VPBuilder({
-            credentials: [vc],
-            holderDid: w.getDID(),
-            targetService: options.targetService,
-            userDid: options.userDid ?? 'did:key:anonymous',
-          }).sign(w.getPrivateKeyHex(), `${w.getDID()}#key-1`);
-
-          const target = ensureObjectInput(input);
-          target._helixVP = encodeBase64UrlJson(vp);
+          await attachVP(options, input);
         },
       },
     ],
@@ -57,52 +48,13 @@ export function HelixIDToolWrapper<T extends StructuredToolLike>(
   tool: T,
   options: LangChainMiddlewareOptions,
 ): T {
-  let wallet: AgentWallet | null = null;
-
-  async function getWallet(): Promise<AgentWallet> {
-    if (!wallet) {
-      wallet = await AgentWallet.load(options.walletFilePath, options.walletPassphrase);
-    }
-    return wallet;
-  }
-
   return {
     ...tool,
     async _call(input: unknown, ...rest: unknown[]): Promise<unknown> {
-      const w = await getWallet();
-      const vc = selectVC(w, options.targetService);
-      const vp = await new VPBuilder({
-        credentials: [vc],
-        holderDid: w.getDID(),
-        targetService: options.targetService,
-        userDid: options.userDid ?? 'did:key:anonymous',
-      }).sign(w.getPrivateKeyHex(), `${w.getDID()}#key-1`);
-
-      const target = ensureObjectInput(input);
-      target._helixVP = encodeBase64UrlJson(vp);
-
+      await attachVP(options, input);
       return tool._call(input, ...rest);
     },
   };
-}
-
-export function selectVC(wallet: AgentWallet, targetService: string): SignedVC {
-  const vcs = wallet.credentials;
-  if (!vcs || vcs.length === 0) {
-    throw new Error('No credential in wallet. Run enrollment first.');
-  }
-  if (vcs.length === 1) {
-    return vcs[0]!;
-  }
-  // NOTE: SignedVC has no `targetService` field in the current schema (AgentVC |
-  // UserVC | DelegationGrantVC), so this never matches and always falls through
-  // to vcs[0] below — flagged as a likely latent bug, not fixed here since the
-  // intended matching field is a product decision, not a lint fix.
-  const match = vcs.find((vc) => (vc as SignedVC & { targetService?: string }).targetService === targetService);
-  if (match) {
-    return match;
-  }
-  return vcs[0]!;
 }
 
 export function ensureObjectInput(input: unknown): Record<string, unknown> {

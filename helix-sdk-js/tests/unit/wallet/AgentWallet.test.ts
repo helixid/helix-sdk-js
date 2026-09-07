@@ -4,8 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { AgentWallet } from '../../../src/wallet/AgentWallet.js';
-import { generateKeyPair, publicKeyToMultibase } from '../../../src/core/keys.js';
-import { selfIssueVC } from '../../../src/core/self-signed.js';
 import type { SignedVC } from '../../../src/core/schemas/vc.js';
 
 const credential = AgentWallet.credentialFromVC('v', {
@@ -126,37 +124,20 @@ describe('AgentWallet Branch Coverage', () => {
     }
   });
 
-  it('generates keypairs locally without creating a DID', () => {
-    const keypair = AgentWallet.generateKeypair();
-    expect(keypair.publicKey).toMatch(/^[0-9a-f]{64}$/);
-    expect(keypair.privateKey).toMatch(/^[0-9a-f]{64}$/);
-  });
-
-  it('builds an in-memory wallet from a keypair and credential', async () => {
-    const keypair = generateKeyPair();
-    const did = `did:key:${publicKeyToMultibase(keypair.publicKey)}`;
-    const vc = await selfIssueVC(
-      { scopes: ['read:orders'] },
-      { did, privateKeyHex: keypair.privateKey },
-    );
-
-    const wallet = AgentWallet.fromKeypairAndCredential(keypair, vc);
-    expect(wallet.getDID()).toBe(did);
-    expect(wallet.credentials).toHaveLength(1);
-    expect(wallet.credentials[0]?.id).toBe(vc.id);
-  });
-
-  it('self-issues and persists credentials for the loaded wallet', async () => {
+  it('adds a server-issued credential, rejecting duplicates and credentials for a different agent', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'helix-wallet-'));
     const path = join(dir, 'wallet.json');
 
     try {
       const wallet = await AgentWallet.create(path, 'pass');
-      const vc = await wallet.selfIssueVC({
-        scopes: ['read:orders', 'write:orders'],
-        maxDelegationDepth: 1,
-      });
-      expect(vc.credentialSubject.id).toBe(wallet.getDID());
+      const vc = {
+        id: 'vc:helix:issued-1',
+        type: ['VerifiableCredential', 'HelixAgentCredential'],
+        issuer: 'did:key:zIssuer',
+        credentialSubject: { id: wallet.getDID(), privilegeScopes: ['read:orders', 'write:orders'] },
+      } as unknown as SignedVC;
+
+      await wallet.addCredential(vc);
       expect(wallet.credentials).toHaveLength(1);
 
       await expect(wallet.addCredential(vc)).rejects.toMatchObject({

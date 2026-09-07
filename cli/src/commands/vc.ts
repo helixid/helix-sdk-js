@@ -3,7 +3,7 @@ import { requirePassphrase } from '../lib/env.js';
 import { parseDuration } from '../lib/duration.js';
 import { issueAgentCredential, parseStatusListFile } from '../lib/issuer-ops.js';
 import { error, success } from '../lib/output.js';
-import { loadIssuerKeyMaterial, loadWallet } from '../lib/wallet.js';
+import { loadIssuerKeyMaterial } from '../lib/wallet.js';
 
 export async function runVcIssue(options: {
   agentDid: string;
@@ -66,26 +66,4 @@ export async function runVcIssue(options: {
     console.log('Send the VC JSON above to the agent out of band.');
   }
   console.log('Agent runs: wallet.addCredential(vc) to store it.');
-}
-
-export async function runVcSelfIssue(options: {
-  scopes: string;
-  expires: string;
-  wallet: string;
-}): Promise<void> {
-  const passphrase = requirePassphrase();
-  const wallet = await loadWallet(options.wallet, passphrase);
-  const scopes = options.scopes.split(',').map((scope) => scope.trim()).filter(Boolean);
-
-  await wallet.selfIssueVC({ scopes, expiresIn: options.expires });
-
-  console.log('');
-  console.log('⚠ Self-signed VC — for local development only');
-  console.log('');
-  console.log('This VC is not trusted in production. Any verifier running');
-  console.log('verifyVP() in production mode will reject it.');
-  console.log('');
-  console.log(`VC added to wallet: ${options.wallet}`);
-  console.log(`Scopes: ${scopes.join(', ')}`);
-  console.log(`Expires: ${options.expires}`);
 }

@@ -2,7 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { requirePassphrase } from '@helixid/cli/lib/env';
 import { parseDuration } from '@helixid/cli/lib/duration';
 import { issueAgentCredential, parseStatusListFile } from '@helixid/cli/lib/issuer-ops';
-import { loadIssuerKeyMaterial, loadWallet } from '@helixid/cli/lib/wallet';
+import { loadIssuerKeyMaterial } from '@helixid/cli/lib/wallet';
 
 export interface VcIssueInput {
   agentDid: string;
@@ -68,26 +68,4 @@ export async function vcIssue(input: VcIssueInput): Promise<VcIssueResult> {
   }
 
   return result;
-}
-
-export interface VcSelfIssueInput {
-  scopes: string;
-  expires: string;
-  wallet: string;
-}
-
-export interface VcSelfIssueResult {
-  scopes: string[];
-  expires: string;
-  walletPath: string;
-}
-
-export async function vcSelfIssue(input: VcSelfIssueInput): Promise<VcSelfIssueResult> {
-  const passphrase = requirePassphrase();
-  const wallet = await loadWallet(input.wallet, passphrase);
-  const scopes = input.scopes.split(',').map((scope) => scope.trim()).filter(Boolean);
-
-  await wallet.selfIssueVC({ scopes, expiresIn: input.expires });
-
-  return { scopes, expires: input.expires, walletPath: input.wallet };
 }

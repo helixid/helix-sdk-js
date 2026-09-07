@@ -110,10 +110,10 @@ describe('HelixClient Branch Coverage', () => {
   });
 
   describe('onboarding branches', () => {
-    it('requests onboarding challenge with default empty domains', async () => {
-        mockHttp.post.mockResolvedValue({ challengeId: 'c1' });
-        await client.requestOnboardingChallenge('token');
-        expect(mockHttp.post).toHaveBeenCalledWith('/v1/onboard', expect.objectContaining({ domains: [] }));
+    it('onboards with default empty domains', async () => {
+        mockHttp.post.mockResolvedValue({ agentDid: 'did:key:z1', vcId: 'vc-1' });
+        await client.onboardAgent('token');
+        expect(mockHttp.post).toHaveBeenCalledWith('/v1/onboard', { enrollmentToken: 'token', domains: [] });
     });
   });
 
