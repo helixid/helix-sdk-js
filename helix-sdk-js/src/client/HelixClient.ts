@@ -530,6 +530,58 @@ export class HelixClient {
     return result.signedVP;
   }
 
+  /**
+   * Delegates a slice of a server-custody agent's authority to another DID —
+   * the custodial counterpart to the (now-defunct, see delegation.ts)
+   * wallet-based delegate(), which needed the delegator's own private key
+   * and so has had nothing legitimate to call since agent self-custody was
+   * retired. Same trust boundary as signVP(): the caller never has, and
+   * never can have, the delegator's private key, so this is an API call
+   * that authorizes HelixID to sign on the delegator's behalf, not a local
+   * signature.
+   *
+   * Mirrors signVP()'s two modes exactly: enterprise (this.apiKey set) hits
+   * the account-scoped custodial route; core/OSS hits the admin-key-gated
+   * route. Pass `vcId` to pin which of the delegator's active credentials to
+   * delegate from (e.g. it already holds more than one, ambiguous to the
+   * default subject-only lookup).
+   */
+  async delegateAuthority(
+    did: string,
+    to: string,
+    scopes: string[],
+    expiresIn: number,
+    options: { vcId?: string } = {},
+  ): Promise<SignedVC> {
+    this.assertAPIConfigured();
+    const body = {
+      to,
+      scopes,
+      expiresIn,
+      ...(options.vcId !== undefined ? { vcId: options.vcId } : {}),
+    };
+
+    if (this.apiKey) {
+      if (!this.baseUrl) throw new Error('HelixClient: enterprise mode requires a baseUrl');
+      const res = await fetch(`${this.baseUrl}/v1/custodial-agents/${encodeURIComponent(did)}/delegate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
+        body: JSON.stringify(body),
+      });
+      const result = (await res.json()) as { delegatedVC?: SignedVC; error?: { message?: string } };
+      if (!res.ok || !result.delegatedVC) {
+        throw new Error(result.error?.message ?? `delegateAuthority failed: HTTP ${res.status}`);
+      }
+      return result.delegatedVC;
+    }
+
+    const result = await this.http.post<{ delegatedVC: SignedVC }>(
+      `/v1/agents/${encodeURIComponent(did)}/delegate`,
+      body,
+    );
+    return result.delegatedVC;
+  }
+
   async requestUserChallenge(
     userDid: string,
   ): Promise<{ challengeId: string; nonce: string; expiresAt: string }> {
