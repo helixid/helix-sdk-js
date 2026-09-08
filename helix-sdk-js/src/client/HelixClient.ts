@@ -145,14 +145,22 @@ export interface HelixClientOptions {
   adminApiKey?: string;
   /**
    * Enterprise (server-custody, account-scoped) mode: presence of this
-   * option is what selects it -- signVP() then talks to
+   * option (or `apiKey`) is what selects it -- signVP() then talks to
    * /v1/custodial-agents/:did/vp (not core's /v1/agents/:did/vp) and
    * authenticates with a hosted-account bearer token obtained by logging in
    * with these credentials (cached, re-logged-in near expiry), not the
-   * admin key. There is no per-agent credential yet -- an enterprise agent
-   * process today has to know the account that onboarded it.
+   * admin key. Prefer `apiKey` where you can -- no login call, no
+   * credentials for the SDK to hold at all.
    */
   account?: { email: string; password: string };
+  /**
+   * Account-scoped API key (see helix-server-enterprise's
+   * POST /v1/account/api-keys) -- the machine-credential way to select
+   * enterprise mode. Sent as the bearer token directly on every
+   * enterprise-mode call; no login round trip. Takes precedence over
+   * `account` if both are set.
+   */
+  apiKey?: string;
 }
 
 // -- prepare/finalize (see docs/proposal-sdk-api-only.md) -----------------
@@ -237,45 +245,58 @@ const SDK_ONLY_HTTP_ADAPTER: HttpAdapterLike = {
   },
 };
 
+/** Used only when enterprise-mode credentials (apiKey/account) are given with no explicit URL — see the constructor. Not a claim that any fixed URL is "the" enterprise instance; just the default port any local helix-api listens on. */
+const DEFAULT_ENTERPRISE_URL = 'http://localhost:3000';
+
 export class HelixClient {
   private http: HttpAdapterLike;
   private readonly sdkOnlyMode: boolean;
   private readonly apiAuditEnabled: boolean;
   private readonly baseUrl: string | undefined;
   private readonly accountCreds: { email: string; password: string } | undefined;
+  private readonly apiKey: string | undefined;
   private accountTokenCache: { accessToken: string; expiresAtMs: number } | undefined;
 
   constructor(apiUrl?: string);
-  constructor(baseUrl: string, options?: HelixClientOptions);
+  constructor(baseUrl?: string, options?: HelixClientOptions);
   constructor(http: HttpAdapter, baseUrl: string);
   constructor(first?: string | HttpAdapter, second?: string | HelixClientOptions) {
-    this.sdkOnlyMode = first === undefined;
-    // Only the (baseUrl, options?) overload can carry a HelixClientOptions —
+    const isHttpAdapterOverload = first !== undefined && typeof first !== 'string';
+    // Only the (baseUrl?, options?) overload can carry a HelixClientOptions —
     // the (http, baseUrl) overload's `second` is a baseUrl string, not options.
-    const options =
-      typeof first === 'string' && typeof second === 'object' && second !== null ? second : undefined;
+    const options = !isHttpAdapterOverload && typeof second === 'object' && second !== null ? second : undefined;
+
+    // No explicit URL, but enterprise-mode credentials were given: don't
+    // fall back to offline SDK-only mode, default the URL instead --
+    // process.env.HELIX_API_URL (Node) if set, else DEFAULT_ENTERPRISE_URL.
+    // Explicit URL argument always wins when given.
+    let resolvedUrl = typeof first === 'string' ? first : undefined;
+    if (resolvedUrl === undefined && !isHttpAdapterOverload && (options?.apiKey || options?.account)) {
+      resolvedUrl =
+        (typeof process !== 'undefined' && typeof process.env !== 'undefined' && process.env.HELIX_API_URL) ||
+        DEFAULT_ENTERPRISE_URL;
+    }
+
+    this.sdkOnlyMode = first === undefined && resolvedUrl === undefined;
     this.apiAuditEnabled =
       !this.sdkOnlyMode &&
-      (typeof first === 'string'
-        ? Boolean(options?.adminApiKey)
-        : first !== undefined &&
-          'hasAdminApiKey' in first &&
-          typeof first.hasAdminApiKey === 'function' &&
-          first.hasAdminApiKey());
-    this.http =
-      first === undefined
+      (isHttpAdapterOverload
+        ? 'hasAdminApiKey' in first && typeof first.hasAdminApiKey === 'function' && first.hasAdminApiKey()
+        : Boolean(options?.adminApiKey));
+    this.http = isHttpAdapterOverload
+      ? first
+      : this.sdkOnlyMode
         ? SDK_ONLY_HTTP_ADAPTER
-        : typeof first === 'string'
-          ? new HttpAdapter(first, options ?? {})
-          : first;
-    this.baseUrl = typeof first === 'string' ? first.replace(/\/$/, '') : undefined;
+        : new HttpAdapter(resolvedUrl as string, options ?? {});
+    this.baseUrl = !isHttpAdapterOverload && resolvedUrl ? resolvedUrl.replace(/\/$/, '') : undefined;
     this.accountCreds = options?.account;
+    this.apiKey = options?.apiKey;
   }
 
-  /** Bearer token for enterprise account-scoped calls (signVP in enterprise mode). Logs in once, caches, re-logs-in near expiry. */
+  /** Bearer token for enterprise account-scoped calls when using `account` creds (skipped entirely when `apiKey` is set — see signVP()). Logs in once, caches, re-logs-in near expiry. */
   private async ensureAccountToken(): Promise<string> {
     if (!this.accountCreds || !this.baseUrl) {
-      throw new Error('HelixClient: account credentials are not configured (pass { account } to enable enterprise mode)');
+      throw new Error('HelixClient: account credentials are not configured (pass { account } or { apiKey } to enable enterprise mode)');
     }
     if (this.accountTokenCache && this.accountTokenCache.expiresAtMs > Date.now() + 30_000) {
       return this.accountTokenCache.accessToken;
@@ -519,15 +540,17 @@ export class HelixClient {
       ...(options.vcId !== undefined ? { vcId: options.vcId } : {}),
     };
 
-    // Enterprise mode (this.accountCreds set): custodial signing is
-    // account-scoped, a different route + auth than core's admin-key-gated
-    // /v1/agents/:did/vp -- see HelixClientOptions.account's doc comment.
-    if (this.accountCreds) {
+    // Enterprise mode (this.apiKey or this.accountCreds set): custodial
+    // signing is account-scoped, a different route + auth than core's
+    // admin-key-gated /v1/agents/:did/vp -- see HelixClientOptions'
+    // apiKey/account doc comments. apiKey needs no login round trip; it's
+    // sent as the bearer token directly.
+    if (this.apiKey || this.accountCreds) {
       if (!this.baseUrl) throw new Error('HelixClient: enterprise mode requires a baseUrl');
-      const accessToken = await this.ensureAccountToken();
+      const bearerToken = this.apiKey ?? (await this.ensureAccountToken());
       const res = await fetch(`${this.baseUrl}/v1/custodial-agents/${encodeURIComponent(did)}/vp`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${accessToken}` },
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${bearerToken}` },
         body: JSON.stringify(body),
       });
       const result = (await res.json()) as { signedVP?: SignedVP; error?: { message?: string } };
