@@ -23,7 +23,7 @@ guides, and reference. This README covers only what is specific to this reposito
 
 | Package | What it is |
 |---|---|
-| [`helix-sdk-js`](helix-sdk-js) — `@helixid/sdk-js` | Core SDK: DID/VC/VP primitives, `AgentWallet`, `HelixClient`, delegation, verification. Every other package here builds on this one. |
+| [`helix-sdk-js`](helix-sdk-js) — `@helixid/sdk-js` | Core SDK: `HelixClient` (onboarding, server-side VP signing, delegation, verification) plus DID/VC/VP primitives. Every other package here builds on this one. |
 | [`cli`](cli) — `@helixid/cli` | The `helix` command-line tool for platform operators — DID/wallet/status-list/VC lifecycle. Single canonical implementation (see `docs/decision-cli-mcp-scope.md` in `helixid/helixid`); not duplicated per SDK language. |
 | [`mcp-server`](mcp-server) — `@helixid/mcp-server` | Standalone MCP server exposing the same platform-operator workflows as `cli`, as tools for an MCP client/agent instead of shell commands. |
 | [`mcp-middleware`](mcp-middleware) — `@helixid/mcp-middleware` | Library for *other* MCP servers/clients — inbound VP verification and outbound VP attachment for agent-to-tool calls. Not a server itself; see that package's README for how it differs from `mcp-server`. |
