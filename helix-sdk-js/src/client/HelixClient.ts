@@ -250,14 +250,20 @@ export class HelixClient {
 
   constructor(apiUrl?: string);
   constructor(baseUrl?: string, options?: HelixClientOptions);
-  constructor(first?: string, second?: HelixClientOptions) {
-    const options = typeof second === 'object' && second !== null ? second : undefined;
+  constructor(options?: HelixClientOptions);
+  constructor(first?: string | HelixClientOptions, second?: HelixClientOptions) {
+    const options =
+      typeof first === 'object' && first !== null
+        ? first
+        : typeof second === 'object' && second !== null
+          ? second
+          : undefined;
 
     // No explicit URL, but an apiKey was given: don't fall back to offline
     // SDK-only mode, default the URL instead -- DEFAULT_ENTERPRISE_URL.
     // Explicit URL argument always wins when given; ambient env vars are not
     // consulted here (pass the URL explicitly to override the default).
-    let resolvedUrl = first;
+    let resolvedUrl = typeof first === 'string' ? first : undefined;
     if (resolvedUrl === undefined && options?.apiKey) {
       resolvedUrl = DEFAULT_ENTERPRISE_URL;
     }
