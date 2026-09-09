@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Unlike helix-core/helix-server, this repo is the source of
+      # @helixid/sdk-js, cli, did-hedera, langchain, mcp-middleware,
+      # mcp-server and widget -- it consumes no private cross-repo git
+      # dependency, so no HELIXID_CROSS_REPO_TOKEN / git credential rewrite
+      # step is needed here (see ci.yml).
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.15.0'
+          cache: 'pnpm'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Deliberately NOT upgrading npm here -- keep Node 24.15.0's bundled
+      # npm (11.12.1). See helix-core/.github/workflows/release.yml for why:
+      # a newer npm breaks `pnpm publish --no-git-checks`, which forwards
+      # that pnpm-only flag through to npm's own config parser on some npm
+      # versions, which then rejects it as unknown (EUNKNOWNCONFIG).
+      - name: Install dependencies
+        run: corepack enable && pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm run build
+
+      # On every push to main: if there are pending .changeset/*.md files,
+      # opens/updates a "Version Packages" PR that applies them (bumps each
+      # package's package.json, writes CHANGELOG.md, deletes the consumed
+      # changesets) -- nothing is published yet. Merging that PR is itself a
+      # push to main, which is what actually triggers the publish step
+      # below. Any package whose current version isn't yet on npm (e.g. a
+      # first-ever release) is published immediately, even with no pending
+      # changeset.
+      #
+      # Uses a classic NPM_TOKEN rather than npm's OIDC Trusted Publisher --
+      # see helix-core/.github/workflows/release.yml for the specific
+      # @changesets/cli + pnpm bug (patched in
+      # patches/@changesets__cli@3.0.2.patch) that motivates this.
+      - name: Create Release PR or publish
+        uses: changesets/action@v1
+        with:
+          version: pnpm run version
+          publish: pnpm run release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

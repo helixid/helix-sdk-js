@@ -8,7 +8,10 @@
     "test:non-live": "turbo run test:non-live",
     "test:unit": "pnpm --filter @helixid/did-hedera test:unit && pnpm --filter @helixid/sdk-js test:unit && pnpm --filter @helixid/mcp-middleware test:unit && pnpm --filter @helixid/langchain test:unit && pnpm --filter @helixid/cli test:unit && pnpm --filter @helixid/mcp-server test:unit && pnpm --filter @helixid/widget test:unit",
     "typecheck": "turbo run typecheck",
-    "format": "prettier --write \"**/*.{ts,json,md}\" --ignore-path .gitignore"
+    "format": "prettier --write \"**/*.{ts,json,md}\" --ignore-path .gitignore",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "changeset publish"
   },
   "packageManager": "pnpm@9.15.2",
   "engines": {
@@ -19,9 +22,13 @@
     "overrides": {
       "fast-uri": "3.1.2",
       "protobufjs": "8.0.2"
+    },
+    "patchedDependencies": {
+      "@changesets/cli@3.0.2": "patches/@changesets__cli@3.0.2.patch"
     }
   },
   "devDependencies": {
+    "@changesets/cli": "^3.0.2",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^8.57.0",

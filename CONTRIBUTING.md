@@ -170,7 +170,7 @@ This appends a `Signed-off-by: Your Name <your.email@example.com>` line. Our CI 
 - [ ] Run `pnpm lint && pnpm test && pnpm build` locally and pass
 - [ ] Add or update tests — no untested code merges
 - [ ] Update docs if you changed public API
-- [ ] Note any public API change in the PR description — consumers track `main` directly
+- [ ] Add a changeset (`pnpm changeset`) if your change is user-visible
 - [ ] Every commit is DCO-signed
 
 ### PR Description
@@ -254,21 +254,22 @@ We acknowledge within 48 hours, triage within 7 business days, and practice coor
 
 ## Release Process
 
-These packages are **not published to npm**. Consumers install them straight from
-this repository as git dependencies:
+Every package in this workspace is published to npm as a **public package** and
+is versioned with [changesets](https://github.com/changesets/changesets).
 
-```jsonc
-"@helixid/sdk-js": "github:helixid/helix-sdk-js#path:helix-sdk-js",
-"@helixid/widget":  "github:helixid/helix-sdk-js#path:widget"
+```bash
+pnpm changeset          # describe your change; commit the generated file
+pnpm changeset version  # maintainers: bump versions and write changelogs
+pnpm release            # maintainers: publish
 ```
 
-Two consequences worth internalising:
+Publishing runs from `.github/workflows/release.yml`. Contributors only need the
+first command.
 
-- **`main` is the release channel.** Anything merged is immediately reachable by
-  every consumer, so breaking changes need to be called out in the PR.
-- The `#path:` fragment is **pnpm-specific syntax**. npm ignores it and installs
-  the workspace root instead, which has no build output. Consumers must use pnpm,
-  or pin a subdirectory another way.
+Some consumers may still pin a package straight from this repository as a git
+dependency (e.g. `"@helixid/sdk-js": "github:helixid/helix-sdk-js#path:helix-sdk-js"`)
+instead of from npm — that keeps working, but new consumers should prefer the
+published npm package.
 
 ---
 
@@ -301,3 +302,4 @@ Contributions are licensed under [Apache License 2.0](LICENSE), same as the proj
 | Lint | `pnpm lint` |
 | Typecheck | `pnpm typecheck` |
 | Format | `pnpm format` |
+| Add a changeset | `pnpm changeset` |
