@@ -1,6 +1,6 @@
 {
   "name": "@helixid/cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Command-line interface for HelixID operator workflows \u2014 agent enrollment, bootstrap token management, wallet inspection, and credential lifecycle operations.",
   "type": "module",
   "bin": {

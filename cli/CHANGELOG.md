@@ -1,5 +1,13 @@
 # @helixid/cli
 
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [ee2b9e9]
+- Updated dependencies [8066fcc]
+  - @helixid/sdk-js@0.3.0
+
 ## 0.2.0
 
 ### Minor Changes
