@@ -1,6 +1,6 @@
 {
   "name": "@helixid/mcp-server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Standalone MCP server exposing HelixID platform-operator workflows (DID/wallet/status-list/VC lifecycle) as tools for an MCP client or agent — the MCP analogue of @helixid/cli.",
   "type": "module",
   "bin": {
