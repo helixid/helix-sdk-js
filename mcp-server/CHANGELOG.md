@@ -1,5 +1,13 @@
 # @helixid/mcp-server
 
+## 0.1.5
+
+### Patch Changes
+
+- Updated dependencies [e8fcb27]
+  - @helixid/sdk-js@0.4.0
+  - @helixid/cli@0.2.2
+
 ## 0.1.4
 
 ### Patch Changes

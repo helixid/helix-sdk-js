@@ -1,5 +1,11 @@
 # @helixid/sdk-js
 
+## 0.4.0
+
+### Minor Changes
+
+- e8fcb27: `HelixClient`'s constructor now also accepts a single `HelixClientOptions` object with no leading URL argument (`new HelixClient({ apiKey })`), in addition to the existing `(apiUrl?)` and `(baseUrl?, options?)` forms.
+
 ## 0.3.0
 
 ### Minor Changes

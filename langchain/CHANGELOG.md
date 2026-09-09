@@ -1,5 +1,12 @@
 # @helixid/langchain
 
+## 0.2.2
+
+### Patch Changes
+
+- Updated dependencies [e8fcb27]
+  - @helixid/sdk-js@0.4.0
+
 ## 0.2.1
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # @helixid/mcp-middleware
 
+## 0.1.6
+
+### Patch Changes
+
+- Updated dependencies [e8fcb27]
+  - @helixid/sdk-js@0.4.0
+
 ## 0.1.5
 
 ### Patch Changes
