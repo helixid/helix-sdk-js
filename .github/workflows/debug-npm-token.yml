@@ -17,7 +17,16 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: List accessible packages
-        run: npm access list packages
+      - name: List accessible packages in @helixid scope
+        run: npm access list packages @helixid
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Check collaborators on each package
+        run: |
+          for pkg in "@helixid/sdk-js" "@helixid/cli" "@helixid/langchain" "@helixid/mcp-middleware" "@helixid/widget" "@helixid/mcp-server"; do
+            echo "=== $pkg ==="
+            npm access list collaborators "$pkg" || true
+          done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
