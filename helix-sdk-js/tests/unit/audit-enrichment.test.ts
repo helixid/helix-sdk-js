@@ -20,9 +20,9 @@ import { AgentWallet } from '../../src/wallet/AgentWallet.js';
 import { HelixClient } from '../../src/client/HelixClient.js';
 import type { SignedVC } from '../../src/core/schemas/vc.js';
 
-/** HttpAdapter-shaped mock. `hasAdminApiKey` is what gates audit emission. */
-function mockHttp(): { post: ReturnType<typeof vi.fn>; hasAdminApiKey: () => boolean } {
-  return { post: vi.fn().mockResolvedValue({}), hasAdminApiKey: () => true };
+/** HttpAdapter-shaped mock. Passing `adminApiKey` to the client is what gates audit emission. */
+function mockHttp(): { post: ReturnType<typeof vi.fn> } {
+  return { post: vi.fn().mockResolvedValue({}) };
 }
 
 function auditCalls(http: { post: ReturnType<typeof vi.fn> }, path: string): unknown[] {
@@ -93,7 +93,8 @@ describe('§2a CONSENT_GRANTED', () => {
 
   it('emits the grant payload when a DelegationGrantCredential is stored', async () => {
     const http = mockHttp();
-    const client = new HelixClient(http as any, 'http://localhost');
+    const client = new HelixClient('http://localhost', { adminApiKey: 'test-admin-key' });
+    client.__setTestHttpAdapter(http);
     const wallet = await AgentWallet.create(walletPath, 'pw', client);
 
     await wallet.addCredential(grantVC(wallet.did));
@@ -114,7 +115,8 @@ describe('§2a CONSENT_GRANTED', () => {
 
   it('stays silent for ordinary (non-grant) credentials', async () => {
     const http = mockHttp();
-    const client = new HelixClient(http as any, 'http://localhost');
+    const client = new HelixClient('http://localhost', { adminApiKey: 'test-admin-key' });
+    client.__setTestHttpAdapter(http);
     const wallet = await AgentWallet.create(walletPath, 'pw', client);
 
     await wallet.addCredential(agentVC(wallet.did));
@@ -132,7 +134,8 @@ describe('§2a CONSENT_GRANTED', () => {
   it('still stores the grant when the audit POST fails', async () => {
     const http = mockHttp();
     http.post.mockRejectedValue(new Error('helix-api unreachable'));
-    const client = new HelixClient(http as any, 'http://localhost');
+    const client = new HelixClient('http://localhost', { adminApiKey: 'test-admin-key' });
+    client.__setTestHttpAdapter(http);
     const wallet = await AgentWallet.create(walletPath, 'pw', client);
 
     await expect(wallet.addCredential(grantVC(wallet.did))).resolves.toBeUndefined();
@@ -140,8 +143,9 @@ describe('§2a CONSENT_GRANTED', () => {
   });
 
   it('does not emit when the client has no admin key (audit disabled)', async () => {
-    const http = { post: vi.fn().mockResolvedValue({}), hasAdminApiKey: () => false };
-    const client = new HelixClient(http as any, 'http://localhost');
+    const http = { post: vi.fn().mockResolvedValue({}) };
+    const client = new HelixClient('http://localhost');
+    client.__setTestHttpAdapter(http);
     const wallet = await AgentWallet.create(walletPath, 'pw', client);
 
     await wallet.addCredential(grantVC(wallet.did));

@@ -16,9 +16,9 @@ describe('HelixClient Full Unit Tests', () => {
       get: vi.fn(),
       post: vi.fn(),
       delete: vi.fn(),
-      hasAdminApiKey: vi.fn(() => false),
     };
-    client = new HelixClient(mockHttp, 'http://api');
+    client = new HelixClient('http://api');
+    client.__setTestHttpAdapter(mockHttp);
   });
 
   it('resolves DID with live option', async () => {

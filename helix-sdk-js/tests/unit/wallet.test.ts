@@ -22,7 +22,8 @@ describe('AgentWallet', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());
     const http = new HttpAdapter(baseUrl);
-    client = new HelixClient(http, baseUrl);
+    client = new HelixClient(baseUrl);
+    client.__setTestHttpAdapter(http);
   });
 
   it('generates a new keypair when no key provided without guessing a live DID', () => {

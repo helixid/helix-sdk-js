@@ -13,7 +13,8 @@ describe('HelixClient Branch Coverage', () => {
       get: vi.fn(),
       delete: vi.fn(),
     };
-    client = new HelixClient(mockHttp as any, 'http://localhost');
+    client = new HelixClient('http://localhost');
+    client.__setTestHttpAdapter(mockHttp);
   });
 
   it('constructor handles string baseUrl', () => {
@@ -57,32 +58,38 @@ describe('HelixClient Branch Coverage', () => {
 
   describe('adapter checks', () => {
     it('throws for removeServiceEndpoint if DELETE missing', async () => {
-        const c2 = new HelixClient({ post: vi.fn() } as any, 'http://localhost');
+        const c2 = new HelixClient('http://localhost');
+        c2.__setTestHttpAdapter({ post: vi.fn() });
         await expect(c2.removeServiceEndpoint('did:1', 's1')).rejects.toThrow('DELETE not implemented by adapter');
     });
 
     it('throws for getVC if GET missing', async () => {
-        const c2 = new HelixClient({ post: vi.fn() } as any, 'http://localhost');
+        const c2 = new HelixClient('http://localhost');
+        c2.__setTestHttpAdapter({ post: vi.fn() });
         await expect(c2.getVC('vc1')).rejects.toThrow('GET not implemented by adapter');
     });
 
     it('throws for listVCs if GET missing', async () => {
-        const c2 = new HelixClient({ post: vi.fn() } as any, 'http://localhost');
+        const c2 = new HelixClient('http://localhost');
+        c2.__setTestHttpAdapter({ post: vi.fn() });
         await expect(c2.listVCs()).rejects.toThrow('GET not implemented by adapter');
     });
 
     it('throws for getStatusList if GET missing', async () => {
-        const c2 = new HelixClient({ post: vi.fn() } as any, 'http://localhost');
+        const c2 = new HelixClient('http://localhost');
+        c2.__setTestHttpAdapter({ post: vi.fn() });
         await expect(c2.getStatusList('l1')).rejects.toThrow('GET not implemented by adapter');
     });
 
     it('throws for getAuditLog if GET missing', async () => {
-        const c2 = new HelixClient({ post: vi.fn() } as any, 'http://localhost');
+        const c2 = new HelixClient('http://localhost');
+        c2.__setTestHttpAdapter({ post: vi.fn() });
         await expect(c2.getAuditLog()).rejects.toThrow('GET not implemented by adapter');
     });
 
     it('throws for fetchSessionPublicKey if GET missing', async () => {
-        const c2 = new HelixClient({ post: vi.fn() } as any, 'http://localhost');
+        const c2 = new HelixClient('http://localhost');
+        c2.__setTestHttpAdapter({ post: vi.fn() });
         await expect(c2.fetchSessionPublicKey()).rejects.toThrow('GET not implemented by adapter');
     });
   });
@@ -104,7 +111,8 @@ describe('HelixClient Branch Coverage', () => {
     });
 
     it('throws if the adapter has no GET support', async () => {
-        const c2 = new HelixClient({ post: vi.fn() } as any, 'http://localhost');
+        const c2 = new HelixClient('http://localhost');
+        c2.__setTestHttpAdapter({ post: vi.fn() });
         await expect(c2.checkVCStatus({ id: 'vc:1' } as any)).rejects.toThrow('GET not implemented by adapter');
     });
   });

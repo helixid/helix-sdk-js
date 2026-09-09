@@ -54,9 +54,9 @@ describe('standalone SDK exports', () => {
         get: vi.fn(),
         post: vi.fn(),
         delete: vi.fn(),
-        hasAdminApiKey: vi.fn(() => false),
       };
-      const client = new HelixClient(http as any, 'http://api');
+      const client = new HelixClient('http://api');
+      client.__setTestHttpAdapter(http as any);
       const wallet = await AgentWallet.create(path, 'pass', client);
       // Agent self-issuance is gone — add an already-issued VC directly,
       // same as a real (server-custody) onboarding flow would hand back.

@@ -238,8 +238,8 @@ const SDK_ONLY_HTTP_ADAPTER: HttpAdapterLike = {
   },
 };
 
-/** Used only when apiKey is given with no explicit URL — see the constructor. Not a claim that any fixed URL is "the" enterprise instance; just the default port any local helix-api listens on. */
-const DEFAULT_ENTERPRISE_URL = 'http://localhost:3000';
+/** Used only when apiKey is given with no explicit URL — see the constructor. The hosted HelixID enterprise API. */
+const DEFAULT_ENTERPRISE_URL = 'https://api.helixid.dev';
 
 export class HelixClient {
   private http: HttpAdapterLike;
@@ -250,36 +250,22 @@ export class HelixClient {
 
   constructor(apiUrl?: string);
   constructor(baseUrl?: string, options?: HelixClientOptions);
-  constructor(http: HttpAdapter, baseUrl: string);
-  constructor(first?: string | HttpAdapter, second?: string | HelixClientOptions) {
-    const isHttpAdapterOverload = first !== undefined && typeof first !== 'string';
-    // Only the (baseUrl?, options?) overload can carry a HelixClientOptions —
-    // the (http, baseUrl) overload's `second` is a baseUrl string, not options.
-    const options = !isHttpAdapterOverload && typeof second === 'object' && second !== null ? second : undefined;
+  constructor(first?: string, second?: HelixClientOptions) {
+    const options = typeof second === 'object' && second !== null ? second : undefined;
 
     // No explicit URL, but an apiKey was given: don't fall back to offline
-    // SDK-only mode, default the URL instead -- process.env.HELIX_API_URL
-    // (Node) if set, else DEFAULT_ENTERPRISE_URL. Explicit URL argument
-    // always wins when given.
-    let resolvedUrl = typeof first === 'string' ? first : undefined;
-    if (resolvedUrl === undefined && !isHttpAdapterOverload && options?.apiKey) {
-      resolvedUrl =
-        (typeof process !== 'undefined' && typeof process.env !== 'undefined' && process.env.HELIX_API_URL) ||
-        DEFAULT_ENTERPRISE_URL;
+    // SDK-only mode, default the URL instead -- DEFAULT_ENTERPRISE_URL.
+    // Explicit URL argument always wins when given; ambient env vars are not
+    // consulted here (pass the URL explicitly to override the default).
+    let resolvedUrl = first;
+    if (resolvedUrl === undefined && options?.apiKey) {
+      resolvedUrl = DEFAULT_ENTERPRISE_URL;
     }
 
-    this.sdkOnlyMode = first === undefined && resolvedUrl === undefined;
-    this.apiAuditEnabled =
-      !this.sdkOnlyMode &&
-      (isHttpAdapterOverload
-        ? 'hasAdminApiKey' in first && typeof first.hasAdminApiKey === 'function' && first.hasAdminApiKey()
-        : Boolean(options?.adminApiKey));
-    this.http = isHttpAdapterOverload
-      ? first
-      : this.sdkOnlyMode
-        ? SDK_ONLY_HTTP_ADAPTER
-        : new HttpAdapter(resolvedUrl as string, options ?? {});
-    this.baseUrl = !isHttpAdapterOverload && resolvedUrl ? resolvedUrl.replace(/\/$/, '') : undefined;
+    this.sdkOnlyMode = resolvedUrl === undefined;
+    this.apiAuditEnabled = !this.sdkOnlyMode && Boolean(options?.adminApiKey);
+    this.http = this.sdkOnlyMode ? SDK_ONLY_HTTP_ADAPTER : new HttpAdapter(resolvedUrl as string, options ?? {});
+    this.baseUrl = resolvedUrl ? resolvedUrl.replace(/\/$/, '') : undefined;
     this.apiKey = options?.apiKey;
   }
 
