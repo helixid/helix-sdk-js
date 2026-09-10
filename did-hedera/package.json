@@ -1,11 +1,11 @@
 {
   "name": "@helixid/did-hedera",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Optional Hedera DID method support for HelixID equipped for next major release only",
   "type": "module",
   "license": "Apache-2.0",
   "author": "DgVerse <hello@dgverse.in>",
-  "homepage": "https://www.dgverse.in/products/helix-id",
+  "homepage": "https://helixid.dev/",
   "repository": {
     "type": "git",
     "url": "https://github.com/helixid/helix-sdk-js",

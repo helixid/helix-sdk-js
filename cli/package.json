@@ -1,6 +1,6 @@
 {
   "name": "@helixid/cli",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Command-line interface for HelixID operator workflows \u2014 agent enrollment, bootstrap token management, wallet inspection, and credential lifecycle operations.",
   "type": "module",
   "bin": {
@@ -8,7 +8,7 @@
   },
   "license": "Apache-2.0",
   "author": "DgVerse <hello@dgverse.in>",
-  "homepage": "https://www.dgverse.in/products/helix-id",
+  "homepage": "https://helixid.dev/",
   "repository": {
     "type": "git",
     "url": "https://github.com/helixid/helix-sdk-js",

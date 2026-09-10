@@ -1,11 +1,11 @@
 {
   "name": "@helixid/widget",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "HelixID consent widget \u2014 SP-side scope resolution and a headless consent-selection controller for issuing DelegationGrantCredentials.",
   "type": "module",
   "license": "Apache-2.0",
   "author": "DgVerse <hello@dgverse.in>",
-  "homepage": "https://www.dgverse.in/products/helix-id",
+  "homepage": "https://helixid.dev/",
   "repository": {
     "type": "git",
     "url": "https://github.com/helixid/helix-sdk-js",

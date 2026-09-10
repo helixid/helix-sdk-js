@@ -1,11 +1,11 @@
 {
   "name": "@helixid/sdk-js",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Cryptographic identity and authorization SDK for AI agents",
   "type": "module",
   "license": "Apache-2.0",
   "author": "DgVerse <hello@dgverse.in>",
-  "homepage": "https://www.dgverse.in/products/helix-id",
+  "homepage": "https://helixid.dev/",
   "repository": {
     "type": "git",
     "url": "https://github.com/helixid/helix-sdk-js",
