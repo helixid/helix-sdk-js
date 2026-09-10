@@ -36,7 +36,6 @@ The server speaks MCP over stdio. All tool operations are local and offline (sam
 | `issuer_init` | `helix issuer init` | Load an issuer wallet and report its DID and public key. |
 | `status_list_create` | `helix status-list create` | Create a signed BitstringStatusList credential file. |
 | `vc_issue` | `helix vc issue` | Issue a HelixAgentCredential to an agent DID, updating the issuer status list. |
-| `vc_self_issue` | `helix vc self-issue` | Issue a self-signed dev-only credential directly into an agent wallet. |
 | `revoke` | `helix revoke` | Revoke a credential by flipping its status list bit. |
 | `wallet_inspect` | `helix wallet inspect` | Inspect wallet contents. Never returns the private key. |
 

@@ -90,17 +90,6 @@ helix vc issue \
 
 Send the output VC file to the agent out of band. The agent stores it with `wallet.addCredential(vc)`.
 
-### `helix vc self-issue`
-
-Dev-only self-signed credential for local testing.
-
-```bash
-helix vc self-issue \
-  --scopes read:orders \
-  --expires 24h \
-  --wallet ./agent.enc
-```
-
 ### `helix revoke`
 
 Revoke a credential by flipping its status list bit.
