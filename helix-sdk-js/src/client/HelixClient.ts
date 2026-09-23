@@ -161,16 +161,6 @@ export interface HelixClientOptions {
 // than imported, since helix-api is a server-only package the SDK doesn't
 // (and shouldn't) depend on — only the wire shape needs to match.
 
-export interface PrepareDelegationInput {
-  /** DID of the delegator — becomes `issuer` and `credentialSubject.delegatedFrom`. */
-  delegatorDid: string;
-  /** The delegator's own currently-held agent-authority VC. */
-  fromVC: SignedVC;
-  to: string;
-  scopes: string[];
-  expiresIn: number;
-}
-
 export interface PrepareResult {
   token: string;
   unsignedPayload: Record<string, unknown>;
@@ -189,28 +179,6 @@ export interface PrepareGrantInput {
   /** Current status list credential, unmodified — caller (SP) owns storage. */
   statusList: { credentialSubject: { encodedList: string } };
   statusListCredentialUrl: string;
-}
-
-export interface PrepareAgentRenewalInput {
-  /**
-   * The agent's current (soon-to-expire or already-expired-within-grace) VC.
-   * Must carry a `credentialStatus` entry — renewal can't check revocation
-   * without one. Renewal is signed by whoever signed this VC (`issuer`).
-   */
-  currentVC: SignedVC;
-  /**
-   * Status list the currentVC's credentialStatus entry lives on, unmodified.
-   * Caller owns storage, same as PrepareGrantInput.statusList.
-   */
-  statusList: { credentialSubject: { encodedList: string } };
-  statusListCredentialUrl: string;
-  expiresIn: number;
-  /**
-   * Optional narrower scope set for the renewed VC. Must be a subset of
-   * currentVC's scopes — renewal can only narrow, never widen. Omit to keep
-   * the same scopes.
-   */
-  scopes?: string[];
 }
 
 export interface FinalizeInput {
@@ -382,28 +350,12 @@ export class HelixClient {
   // an unsigned payload + hash; the caller signs the hash locally (private
   // key never leaves the client) and finalize() attaches the signature.
 
-  async prepareDelegation(input: PrepareDelegationInput): Promise<PrepareResult> {
-    return this.http.post('/v1/vcs/delegation/prepare', input);
-  }
-
-  async finalizeDelegation(input: FinalizeInput): Promise<SignedVC> {
-    return this.http.post('/v1/vcs/delegation/finalize', input);
-  }
-
   async prepareGrant(input: PrepareGrantInput): Promise<PrepareResult> {
     return this.http.post('/v1/vcs/grant/prepare', input);
   }
 
   async finalizeGrant(input: FinalizeInput): Promise<SignedVC> {
     return this.http.post('/v1/vcs/grant/finalize', input);
-  }
-
-  async prepareAgentRenewal(input: PrepareAgentRenewalInput): Promise<PrepareResult> {
-    return this.http.post('/v1/vcs/agent-renewal/prepare', input);
-  }
-
-  async finalizeAgentRenewal(input: FinalizeInput): Promise<SignedVC> {
-    return this.http.post('/v1/vcs/agent-renewal/finalize', input);
   }
 
   async getStatusList(listId: string): Promise<StatusListCredentialResponse> {

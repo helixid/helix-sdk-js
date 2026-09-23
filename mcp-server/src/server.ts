@@ -25,11 +25,12 @@ export function createServer(): McpServer {
     {
       title: 'Create a HelixID DID and wallet',
       description:
-        'Create a new DID (did:web, did:key, or did:hedera) and its encrypted wallet file. ' +
+        'Create a new DID (did:web or did:hedera) and its encrypted wallet file. ' +
         'did:web also creates its initial status list unless statusList is set to false. ' +
-        'Requires the HELIX_WALLET_PASSPHRASE environment variable.',
+        'Requires the HELIX_WALLET_PASSPHRASE environment variable. Agents no longer use ' +
+        'this tool — agent self-custody is retired; agents onboard via the API instead.',
       inputSchema: {
-        method: z.enum(['web', 'hedera', 'key']),
+        method: z.enum(['web', 'hedera']),
         domain: z.string().optional().describe('Domain for did:web (required for method "web")'),
         network: z.enum(['testnet', 'previewnet', 'mainnet']).optional().describe('Hedera network (method "hedera" only)'),
         wallet: z.string().describe('Path to write the new encrypted wallet file'),

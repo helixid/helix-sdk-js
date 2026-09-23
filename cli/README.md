@@ -44,10 +44,11 @@ helix did create --method web --domain example.com --wallet ./issuer.enc
 
 # Issuer without the status-list step (previous behavior)
 helix did create --method web --domain example.com --wallet ./issuer.enc --no-status-list
-
-# Agent (did:key)
-helix did create --method key --wallet ./agent.enc
 ```
+
+Agents don't use this command — agent self-custody has been retired.
+Agents onboard via the API (`POST /v1/onboard`), which generates and holds
+the agent's key server-side.
 
 Status-list flags (did:web only): `--no-status-list` to opt out,
 `--status-list-length <bits>`, `--status-list-output <path>`,

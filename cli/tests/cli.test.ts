@@ -9,7 +9,21 @@ import { runStatusListCreate } from '../src/commands/status-list.js';
 import { runVcIssue } from '../src/commands/vc.js';
 import { runWalletInspect } from '../src/commands/wallet.js';
 import { requirePassphrase } from '../src/lib/env.js';
-import { loadWallet } from '../src/lib/wallet.js';
+import { loadWallet, saveNewWallet } from '../src/lib/wallet.js';
+import { generateKeyPair, publicKeyToMultibase } from '../src/core/keys.js';
+
+// `did create` no longer has a `key` method (agent self-custody is retired —
+// agents onboard via the API, not a local CLI keypair). Several tests below
+// still need *some* did:key + wallet file to stand in for "an agent that
+// already exists", purely as a fixture for exercising issuer-side commands
+// (vc issue / revoke / wallet inspect) against — this builds that fixture
+// directly instead of going through a public CLI command.
+async function createTestAgentWallet(walletPath: string, passphrase: string): Promise<string> {
+  const keyPair = generateKeyPair();
+  const did = `did:key:${publicKeyToMultibase(keyPair.publicKey)}`;
+  await saveNewWallet(walletPath, passphrase, did, keyPair);
+  return did;
+}
 
 describe('helix CLI', () => {
   let tempDir: string;
@@ -86,14 +100,6 @@ describe('helix CLI', () => {
     expect(stdout.some((line) => line.includes('StatusList created'))).toBe(false);
   });
 
-  it('helix did create --method key creates did:key wallet', async () => {
-    const walletPath = join(tempDir, 'agent.enc');
-    await runDidCreate({ method: 'key', wallet: walletPath });
-    const saved = JSON.parse(await readFile(walletPath, 'utf8'));
-    expect(saved.did).toMatch(/^did:key:z/);
-    expect(stdout.some((line) => line.includes('Agent DID created:'))).toBe(true);
-  });
-
   it('helix issuer init loads wallet and prints DID info', async () => {
     const walletPath = join(tempDir, 'issuer.enc');
     await runDidCreate({ method: 'web', domain: 'example.com', wallet: walletPath });
@@ -131,7 +137,7 @@ describe('helix CLI', () => {
     const vcOutput = join(tempDir, 'vc.json');
 
     await runDidCreate({ method: 'web', domain: 'example.com', wallet: issuerWallet });
-    await runDidCreate({ method: 'key', wallet: agentWallet });
+    await createTestAgentWallet(agentWallet, requirePassphrase());
     const agentSaved = JSON.parse(await readFile(agentWallet, 'utf8'));
 
     await runStatusListCreate({
@@ -167,7 +173,7 @@ describe('helix CLI', () => {
     const vcOutput = join(tempDir, 'vc.json');
 
     await runDidCreate({ method: 'web', domain: 'example.com', wallet: issuerWallet });
-    await runDidCreate({ method: 'key', wallet: agentWallet });
+    await createTestAgentWallet(agentWallet, requirePassphrase());
     const agentSaved = JSON.parse(await readFile(agentWallet, 'utf8'));
 
     await runStatusListCreate({
@@ -227,7 +233,7 @@ describe('helix CLI', () => {
     const vcOutput = join(tempDir, 'vc.json');
 
     await runDidCreate({ method: 'web', domain: 'example.com', wallet: issuerWallet });
-    await runDidCreate({ method: 'key', wallet: agentWallet });
+    await createTestAgentWallet(agentWallet, requirePassphrase());
     const agentSaved = JSON.parse(await readFile(agentWallet, 'utf8'));
 
     await runStatusListCreate({

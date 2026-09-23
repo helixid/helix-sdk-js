@@ -1,5 +1,5 @@
 import { buildDIDDocument } from '../core/did.js';
-import { generateKeyPair, publicKeyToMultibase } from '../core/keys.js';
+import { generateKeyPair } from '../core/keys.js';
 import { access } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { requireHederaOperator, requirePassphrase } from '../lib/env.js';
@@ -8,7 +8,7 @@ import { saveNewWallet } from '../lib/wallet.js';
 import { runStatusListCreate } from './status-list.js';
 
 export interface DidCreateOptions {
-  method: 'web' | 'hedera' | 'key';
+  method: 'web' | 'hedera';
   domain?: string;
   network?: 'testnet' | 'previewnet' | 'mainnet';
   wallet: string;
@@ -70,15 +70,6 @@ export async function runDidCreate(options: DidCreateOptions): Promise<void> {
       console.log(`  1. DID document -> https://${options.domain}/.well-known/did.json`);
       console.log(`  2. Status list  -> ${statusListBaseUrl} (file: ${statusListOutput})`);
     }
-    return;
-  }
-
-  if (options.method === 'key') {
-    const did = `did:key:${publicKeyToMultibase(keyPair.publicKey)}`;
-    await saveNewWallet(options.wallet, passphrase, did, keyPair);
-    success(`Agent DID created: ${did}`);
-    console.log('');
-    console.log('Note: did:key is for agents, not issuers.');
     return;
   }
 

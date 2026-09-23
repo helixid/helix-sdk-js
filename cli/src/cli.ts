@@ -17,7 +17,7 @@ export function createProgram(): Command {
   did
     .command('create')
     .description('Create a new DID and wallet (did:web also creates its initial status list)')
-    .requiredOption('--method <method>', 'DID method: web, hedera, or key')
+    .requiredOption('--method <method>', 'DID method: web or hedera')
     .option('--domain <domain>', 'Domain for did:web (required for web method)')
     .option('--network <network>', 'Hedera network: testnet, previewnet, or mainnet', 'testnet')
     .requiredOption('--wallet <path>', 'Path to encrypted wallet file')
