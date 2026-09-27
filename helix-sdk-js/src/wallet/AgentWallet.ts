@@ -500,37 +500,15 @@ export class AgentWallet {
   }
 
   /**
+   * Loads an existing wallet file -- an issuer/SP wallet written by
+   * `helix did create`, not an agent's: agents hold no keys since agent
+   * self-custody was retired (see HelixClient.onboardAgent()). There is
+   * deliberately no create(); generating a fresh local keypair for a new
+   * identity was the self-custody onboarding path.
+   *
    * `client` is optional and only used for best-effort audit emission (e.g.
    * `CONSENT_GRANTED`). Wallets loaded without one behave exactly as before.
    */
-  static async create(
-    walletPath: string,
-    passphrase: PassphraseInput,
-    client?: HelixClient,
-    storage?: WalletStorage,
-  ): Promise<AgentWallet> {
-    // Resolved once up front: a function passphrase must fire once per
-    // create()/load() call, not once per internal read/write below.
-    const resolvedPassphrase = await resolvePassphrase(passphrase);
-    const resolvedStorage = storage ?? new FileWalletStorage();
-    if (await resolvedStorage.exists(walletPath)) {
-      return AgentWallet.load(walletPath, resolvedPassphrase, client, resolvedStorage);
-    }
-
-    const keyPair = generateKeyPair();
-    const now = new Date().toISOString();
-    const data: WalletData = {
-      did: `did:key:${publicKeyToMultibase(keyPair.publicKey)}`,
-      publicKeyHex: keyPair.publicKey,
-      privateKeyHex: keyPair.privateKey,
-      credentials: [],
-      createdAt: now,
-      updatedAt: now,
-    };
-    await new AgentWallet({ storage: resolvedStorage }).save(data, resolvedPassphrase, walletPath);
-    return AgentWallet.fromWalletData(data, walletPath, resolvedPassphrase, client, resolvedStorage);
-  }
-
   static async load(
     walletPath: string,
     passphrase: PassphraseInput,
