@@ -8,7 +8,19 @@ import { revoke } from '../src/operations/revoke.js';
 import { statusListCreate } from '../src/operations/statusList.js';
 import { vcIssue } from '../src/operations/vc.js';
 import { walletInspect } from '../src/operations/wallet.js';
-import { loadWallet } from '@helixid/cli/lib/wallet';
+import { loadWallet, saveNewWallet } from '@helixid/cli/lib/wallet';
+import { generateKeyPair, publicKeyToMultibase } from '@helixid/cli/core/keys';
+
+// `did_create` no longer has a `key` method (agent self-custody is retired —
+// agents onboard via the API, not a local did:key wallet). These tests still
+// need *some* did:key + wallet file to exercise issuer-side operations
+// (vc_issue / wallet_inspect) against — this builds that fixture directly.
+async function createTestAgentWallet(walletPath: string, passphrase: string): Promise<string> {
+  const keyPair = generateKeyPair();
+  const did = `did:key:${publicKeyToMultibase(keyPair.publicKey)}`;
+  await saveNewWallet(walletPath, passphrase, did, keyPair);
+  return did;
+}
 
 describe('mcp-server operations', () => {
   let tempDir: string;
@@ -26,7 +38,7 @@ describe('mcp-server operations', () => {
   it('did_create requires HELIX_WALLET_PASSPHRASE', async () => {
     delete process.env.HELIX_WALLET_PASSPHRASE;
     await expect(
-      didCreate({ method: 'key', wallet: join(tempDir, 'agent.enc') }),
+      didCreate({ method: 'web', domain: 'example.com', wallet: join(tempDir, 'issuer.enc') }),
     ).rejects.toThrow('HELIX_WALLET_PASSPHRASE environment variable is required');
   });
 
@@ -61,19 +73,13 @@ describe('mcp-server operations', () => {
     await expect(readFile(join(tempDir, 'status-list.json'), 'utf8')).rejects.toThrow();
   });
 
-  it('did_create method key creates a did:key wallet', async () => {
-    const walletPath = join(tempDir, 'agent.enc');
-    const result = await didCreate({ method: 'key', wallet: walletPath });
-    expect(result.did).toMatch(/^did:key:z/);
-  });
-
   it('did_create refuses to overwrite an existing wallet file', async () => {
-    const walletPath = join(tempDir, 'agent.enc');
-    await didCreate({ method: 'key', wallet: walletPath });
+    const walletPath = join(tempDir, 'issuer.enc');
+    await didCreate({ method: 'web', domain: 'example.com', wallet: walletPath });
 
-    await expect(didCreate({ method: 'key', wallet: walletPath })).rejects.toThrow(
-      'Wallet file already exists',
-    );
+    await expect(
+      didCreate({ method: 'web', domain: 'example.com', wallet: walletPath }),
+    ).rejects.toThrow('Wallet file already exists');
   });
 
   it('issuer_init reports the issuer DID and public key', async () => {
@@ -111,7 +117,7 @@ describe('mcp-server operations', () => {
     const vcOutput = join(tempDir, 'vc.json');
 
     await didCreate({ method: 'web', domain: 'example.com', wallet: issuerWallet, statusList: false });
-    const agent = await didCreate({ method: 'key', wallet: agentWallet });
+    const agentDid = await createTestAgentWallet(agentWallet, 'test-passphrase');
     await statusListCreate({
       length: 128,
       output: statusListPath,
@@ -120,7 +126,7 @@ describe('mcp-server operations', () => {
     });
 
     const issued = await vcIssue({
-      agentDid: agent.did,
+      agentDid,
       scopes: 'read:orders,write:bookings',
       expires: '90d',
       statusList: statusListPath,
@@ -186,7 +192,7 @@ describe('mcp-server operations', () => {
     const statusListPath = join(tempDir, 'status.json');
 
     await didCreate({ method: 'web', domain: 'example.com', wallet: issuerWallet, statusList: false });
-    const agent = await didCreate({ method: 'key', wallet: agentWallet });
+    const agentDid = await createTestAgentWallet(agentWallet, 'test-passphrase');
     await statusListCreate({
       length: 128,
       output: statusListPath,
@@ -194,7 +200,7 @@ describe('mcp-server operations', () => {
       wallet: issuerWallet,
     });
     const issued = await vcIssue({
-      agentDid: agent.did,
+      agentDid,
       scopes: 'read:orders',
       expires: '90d',
       statusList: statusListPath,
@@ -214,7 +220,7 @@ describe('mcp-server operations', () => {
 
   it('wallet_inspect never returns a private key field', async () => {
     const agentWallet = join(tempDir, 'agent.enc');
-    await didCreate({ method: 'key', wallet: agentWallet });
+    await createTestAgentWallet(agentWallet, 'test-passphrase');
 
     const result = await walletInspect({ wallet: agentWallet });
 

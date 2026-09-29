@@ -1,13 +1,13 @@
 import { access } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { buildDIDDocument } from '@helixid/cli/core/did';
-import { generateKeyPair, publicKeyToMultibase } from '@helixid/cli/core/keys';
+import { generateKeyPair } from '@helixid/cli/core/keys';
 import { requireHederaOperator, requirePassphrase } from '@helixid/cli/lib/env';
 import { saveNewWallet } from '@helixid/cli/lib/wallet';
 import { statusListCreate } from './statusList.js';
 
 export interface DidCreateInput {
-  method: 'web' | 'hedera' | 'key';
+  method: 'web' | 'hedera';
   domain?: string | undefined;
   network?: 'testnet' | 'previewnet' | 'mainnet' | undefined;
   wallet: string;
@@ -70,12 +70,6 @@ export async function didCreate(input: DidCreateInput): Promise<DidCreateResult>
     }
 
     return result;
-  }
-
-  if (input.method === 'key') {
-    const did = `did:key:${publicKeyToMultibase(keyPair.publicKey)}`;
-    await saveNewWallet(input.wallet, passphrase, did, keyPair);
-    return { did, walletPath: input.wallet };
   }
 
   if (input.method === 'hedera') {

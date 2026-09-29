@@ -2,8 +2,9 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { AgentWallet } from '../../../src/wallet/AgentWallet.js';
+import { generateKeyPair } from '../../../src/core/keys.js';
 import type { SignedVC } from '../../../src/core/schemas/vc.js';
 
 const credential = AgentWallet.credentialFromVC('v', {
@@ -12,6 +13,17 @@ const credential = AgentWallet.credentialFromVC('v', {
   issuer: 'did:issuer',
   credentialSubject: { id: 'did:agent' },
 });
+
+/** Writes a wallet file the way `helix did create` does. */
+async function seedWalletFile(path: string, passphrase: string, did = 'did:web:wallet-holder.example'): Promise<void> {
+  const keyPair = generateKeyPair();
+  const now = new Date().toISOString();
+  await new AgentWallet().save(
+    { did, publicKeyHex: keyPair.publicKey, privateKeyHex: keyPair.privateKey, credentials: [], createdAt: now, updatedAt: now },
+    passphrase,
+    path,
+  );
+}
 
 describe('AgentWallet Branch Coverage', () => {
   it('constructor handles no options', () => {
@@ -105,20 +117,17 @@ describe('AgentWallet Branch Coverage', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('creates and loads an encrypted did:key wallet', async () => {
+  it('loads an encrypted wallet file', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'helix-wallet-'));
     const path = join(dir, 'wallet.json');
 
     try {
-      const created = await AgentWallet.create(path, 'pass');
-      expect(created.getDID()).toMatch(/^did:key:z/);
-      expect(created.getPublicKey()).toMatch(/^[0-9a-f]{64}$/);
-      const loadedAgain = await AgentWallet.create(path, 'pass');
-      expect(loadedAgain.getDID()).toBe(created.getDID());
-
+      await seedWalletFile(path, 'pass', 'did:web:issuer.example');
       const loaded = await AgentWallet.load(path, 'pass');
-      expect(loaded.getDID()).toBe(created.getDID());
+      expect(loaded.getDID()).toBe('did:web:issuer.example');
+      expect(loaded.getPublicKey()).toMatch(/^[0-9a-f]{64}$/);
       expect(loaded.credentials).toEqual([]);
+      await expect(AgentWallet.load(path, 'wrong-pass')).rejects.toThrow();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -129,7 +138,8 @@ describe('AgentWallet Branch Coverage', () => {
     const path = join(dir, 'wallet.json');
 
     try {
-      const wallet = await AgentWallet.create(path, 'pass');
+      await seedWalletFile(path, 'pass');
+      const wallet = await AgentWallet.load(path, 'pass');
       const vc = {
         id: 'vc:helix:issued-1',
         type: ['VerifiableCredential', 'HelixAgentCredential'],

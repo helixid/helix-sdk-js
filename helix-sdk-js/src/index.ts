@@ -7,10 +7,6 @@ export type {
   PgQueryable,
 } from './wallet/AgentWallet.js';
 export { VPBuilder } from './vp-builder.js';
-export { delegate } from './delegation.js';
-export type { DelegateOptions } from './delegation.js';
-export { renewAgentVC } from './renewal.js';
-export type { RenewAgentVCOptions } from './renewal.js';
 
 // Issuer / SP
 export { issueGrant } from './grant.js';

@@ -44,17 +44,17 @@ describe('helix-mcp-server', () => {
 
   it('did_create tool call returns structured content over the wire', async () => {
     const client = await connectedClient();
-    const walletPath = join(tempDir, 'agent.enc');
+    const walletPath = join(tempDir, 'issuer.enc');
 
     const result = await client.callTool({
       name: 'did_create',
-      arguments: { method: 'key', wallet: walletPath },
+      arguments: { method: 'web', domain: 'example.com', wallet: walletPath },
     });
 
     expect(result.isError).toBeFalsy();
     const content = result.content as Array<{ type: string; text: string }>;
     const payload = JSON.parse(content[0]!.text);
-    expect(payload.did).toMatch(/^did:key:z/);
+    expect(payload.did).toBe('did:web:example.com');
   });
 
   it('a failing tool call comes back as isError, not a thrown/killed connection', async () => {

@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentWallet } from '../../src/wallet/AgentWallet.js';
+import { generateKeyPair } from '../../src/core/keys.js';
 import { HelixClient } from '../../src/client/HelixClient.js';
 import type { SignedVC } from '../../src/core/schemas/vc.js';
 
@@ -41,6 +42,25 @@ describe('§2a CONSENT_GRANTED', () => {
   afterEach(async () => {
     await rm(workDir, { recursive: true, force: true });
   });
+
+  /** Writes a wallet file the way `helix did create` does, then loads it. */
+  async function seededWallet(client?: HelixClient): Promise<AgentWallet> {
+    const keyPair = generateKeyPair();
+    const now = new Date().toISOString();
+    await new AgentWallet().save(
+      {
+        did: 'did:web:wallet-holder.example',
+        publicKeyHex: keyPair.publicKey,
+        privateKeyHex: keyPair.privateKey,
+        credentials: [],
+        createdAt: now,
+        updatedAt: now,
+      },
+      'pw',
+      walletPath,
+    );
+    return AgentWallet.load(walletPath, 'pw', client);
+  }
 
   function grantVC(agentDid: string): SignedVC {
     return {
@@ -95,7 +115,7 @@ describe('§2a CONSENT_GRANTED', () => {
     const http = mockHttp();
     const client = new HelixClient('http://localhost', { adminApiKey: 'test-admin-key' });
     client.__setTestHttpAdapter(http);
-    const wallet = await AgentWallet.create(walletPath, 'pw', client);
+    const wallet = await seededWallet(client);
 
     await wallet.addCredential(grantVC(wallet.did));
 
@@ -117,7 +137,7 @@ describe('§2a CONSENT_GRANTED', () => {
     const http = mockHttp();
     const client = new HelixClient('http://localhost', { adminApiKey: 'test-admin-key' });
     client.__setTestHttpAdapter(http);
-    const wallet = await AgentWallet.create(walletPath, 'pw', client);
+    const wallet = await seededWallet(client);
 
     await wallet.addCredential(agentVC(wallet.did));
 
@@ -125,7 +145,7 @@ describe('§2a CONSENT_GRANTED', () => {
   });
 
   it('still stores the grant when no client is attached', async () => {
-    const wallet = await AgentWallet.create(walletPath, 'pw');
+    const wallet = await seededWallet();
 
     await expect(wallet.addCredential(grantVC(wallet.did))).resolves.toBeUndefined();
     expect(wallet.credentials.map((vc) => vc.id)).toContain('vc:helix:grant-1');
@@ -136,7 +156,7 @@ describe('§2a CONSENT_GRANTED', () => {
     http.post.mockRejectedValue(new Error('helix-api unreachable'));
     const client = new HelixClient('http://localhost', { adminApiKey: 'test-admin-key' });
     client.__setTestHttpAdapter(http);
-    const wallet = await AgentWallet.create(walletPath, 'pw', client);
+    const wallet = await seededWallet(client);
 
     await expect(wallet.addCredential(grantVC(wallet.did))).resolves.toBeUndefined();
     expect(wallet.credentials.map((vc) => vc.id)).toContain('vc:helix:grant-1');
@@ -146,7 +166,7 @@ describe('§2a CONSENT_GRANTED', () => {
     const http = { post: vi.fn().mockResolvedValue({}) };
     const client = new HelixClient('http://localhost');
     client.__setTestHttpAdapter(http);
-    const wallet = await AgentWallet.create(walletPath, 'pw', client);
+    const wallet = await seededWallet(client);
 
     await wallet.addCredential(grantVC(wallet.did));
 

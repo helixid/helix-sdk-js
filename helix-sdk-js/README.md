@@ -32,9 +32,7 @@ Service Provider's own key material), not for agent onboarding.
 | `session/` | `SessionManager` — session-token issuance/verification |
 | `http/` | `HttpAdapter` — internal HTTP client |
 | `audit/` | SDK-side audit log implementation |
-| `delegation.ts` | Wallet-based `delegate()` — builds and signs a delegation VC via the API's prepare/finalize endpoints, for callers that still hold their own key |
 | `grant.ts` | SP-side `issueGrant()` / `revokeGrant()` — signs and revokes `DelegationGrantCredential`s with the SP's own key |
-| `renewal.ts` | `renewAgentVC()` — renews a VC via the prepare/finalize flow |
 | `scope.ts` | `checkScope()` / `requireScope()` — local checks against a verification result's `effectiveScopes` |
 | `verify.ts` | `verifyVP()` — thin wrapper over `HelixClient.verifyVP()`; there is no local verification fallback by design |
 | `vp-builder.ts` | `VPBuilder` — local VP construction and signing (the explicit private-key carveout above) |
