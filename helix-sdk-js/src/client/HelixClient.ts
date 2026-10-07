@@ -110,6 +110,10 @@ export interface VCSummary {
 export interface AuditLogFilters {
   eventType?: string;
   since?: string;
+  /** Enterprise only: events strictly older than this ISO timestamp -- pass the last row's to page back. */
+  before?: string;
+  /** Enterprise only: events that name this agent DID. */
+  agentDid?: string;
   limit?: number;
 }
 
@@ -118,13 +122,25 @@ export interface AuditLogEvent {
   eventType: string;
   timestamp: string;
   subjectDid?: string;
+  /** A credential id. Enterprise reports a presentation's id separately, as `vpId`. */
   vcId?: string;
+  vpId?: string;
   targetService?: string;
   result?: string;
   delegatedFrom?: string;
   delegatedTo?: string;
   parentVcId?: string;
   delegationDepth?: number;
+  /** Read off a presentation that failed verification: what it claimed, unverified. */
+  attemptedVcId?: string;
+  attemptedHolderDid?: string;
+  attemptedTargetService?: string;
+  /**
+   * Enterprise only. 'self' / 'external' when the event was reported to the
+   * audit API by the calling account / by another one; absent when the
+   * server recorded it itself.
+   */
+  reporter?: 'self' | 'external';
 }
 
 export interface StatusListCredentialResponse {
@@ -147,8 +163,8 @@ export interface HelixClientOptions {
   /**
    * Enterprise (server-custody, account-scoped) mode: presence of this
    * option is what selects it -- signVP() then talks to
-   * /v1/custodial-agents/:did/vp (not core's /v1/agents/:did/vp) and sends
-   * this directly as the bearer token. See helix-server-enterprise's
+   * /v1/custodial-agents/:did/vp (not core's /v1/agents/:did/vp), and every
+   * call sends this as the bearer token. See helix-server-enterprise's
    * POST /v1/account/api-keys. No email/password, no login call -- an
    * agent process holds only this, the same way an OSS agent holds only
    * `adminApiKey`.
@@ -237,7 +253,9 @@ export class HelixClient {
     }
 
     this.sdkOnlyMode = resolvedUrl === undefined;
-    this.apiAuditEnabled = !this.sdkOnlyMode && Boolean(options?.adminApiKey);
+    // Audit posting needs a credential the server will accept: the admin key
+    // in OSS/core mode, the account API key in enterprise mode.
+    this.apiAuditEnabled = !this.sdkOnlyMode && Boolean(options?.adminApiKey || options?.apiKey);
     this.http = this.sdkOnlyMode ? SDK_ONLY_HTTP_ADAPTER : new HttpAdapter(resolvedUrl as string, options ?? {});
     this.baseUrl = resolvedUrl ? resolvedUrl.replace(/\/$/, '') : undefined;
     this.apiKey = options?.apiKey;
@@ -376,6 +394,8 @@ export class HelixClient {
       `/v1/audit-log${toQueryString({
         eventType: filters.eventType,
         since: filters.since,
+        before: filters.before,
+        agentDid: filters.agentDid,
         limit: filters.limit,
       })}`,
     );
