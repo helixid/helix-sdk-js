@@ -95,4 +95,25 @@ describe('HttpAdapter Branch Coverage', () => {
       message: 'Enrollment token was not found'
     });
   });
+
+  it('sends the account API key as a bearer token on calls to the API', async () => {
+    vi.mocked(fetch).mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) } as any);
+    const enterprise = new HttpAdapter(baseUrl, { apiKey: 'hak_test' });
+
+    await enterprise.get('/v1/audit-log');
+    await enterprise.post('/v1/vp/verify', { signedVP: {} });
+
+    expect(vi.mocked(fetch).mock.calls.map(([, init]) => init?.headers)).toEqual([
+      { authorization: 'Bearer hak_test' },
+      { 'content-type': 'application/json', authorization: 'Bearer hak_test' },
+    ]);
+  });
+
+  it('keeps the account API key away from other hosts', async () => {
+    vi.mocked(fetch).mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) } as any);
+
+    await new HttpAdapter(baseUrl, { apiKey: 'hak_test' }).get('https://external.com/status-list/1');
+
+    expect(fetch).toHaveBeenCalledWith('https://external.com/status-list/1', expect.objectContaining({ headers: {} }));
+  });
 });
