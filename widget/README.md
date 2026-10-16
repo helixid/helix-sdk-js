@@ -149,7 +149,8 @@ Accept is disabled; **Decline stays available**. There is no retry.
 
 ## Downstream
 
-`onAccept`'s handler is the SP's own route: it calls `issueGrant()` with
-`selection.scopes` and `selection.durability`, persists the returned grant VC
-and updated status list, and returns the grant to the caller. The browser
-never sees the SP's private key.
+`onAccept`'s handler is the SP's own route: it calls
+`HelixClient.issueServiceDelegationGrant()` with `selection.scopes` and
+`selection.durability`, and returns the grant to the caller. HelixID holds
+the service's key and signs on its behalf, so neither the browser nor the SP
+process ever sees a private key.

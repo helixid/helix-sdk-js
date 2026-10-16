@@ -156,38 +156,27 @@ export interface HelixClientOptions {
   apiKey?: string;
 }
 
-// -- prepare/finalize (see docs/proposal-sdk-api-only.md) -----------------
-// Mirrors helix-api's IPreparedPayloadService types. Duplicated here rather
-// than imported, since helix-api is a server-only package the SDK doesn't
-// (and shouldn't) depend on — only the wire shape needs to match.
+// -- Service Providers (custodial, like agents) ----------------------------
 
-export interface PrepareResult {
-  token: string;
-  unsignedPayload: Record<string, unknown>;
-  canonicalHash: string;
-  expiresAt: string;
+export interface CreateServiceInput {
+  /** Short handle, also the `targetService` a VP names. Unique per server. */
+  serviceName: string;
+  displayName: string;
+  /** Origin the service is reachable at, e.g. https://sp.example. */
+  verifiedDomain: string;
+  apiEndpoint?: string;
 }
 
-export interface PrepareGrantInput {
-  /** SP's own issuer DID — becomes `issuer` of the grant VC. */
-  issuerDid: string;
+export interface IssueServiceDelegationGrantInput {
+  /** The service granting on the user's behalf -- the grant's `issuer`. */
+  serviceDid: string;
+  /** The agent the user is delegating to -- the grant's subject. */
   agentDid: string;
+  /** The consenting user, recorded as given (never resolved). */
   userDid: string;
   scopes: string[];
-  durability: 'standing' | 'session';
-  serviceDid?: string;
-  /** Current status list credential, unmodified — caller (SP) owns storage. */
-  statusList: { credentialSubject: { encodedList: string } };
-  statusListCredentialUrl: string;
-}
-
-export interface FinalizeInput {
-  token: string;
-  verificationMethod: string;
-  /** Hex-encoded raw Ed25519 signature over the hash returned by prepare(). */
-  signatureHex: string;
-  /** Optional; defaults to now if omitted. */
-  proofCreatedAt?: string;
+  /** `standing` (default, ~10 years) or `session` (24 hours). */
+  durability?: 'standing' | 'session';
 }
 
 export interface CreateStatusListOptions {
@@ -346,16 +335,27 @@ export class HelixClient {
     return this.http.post(`/v1/vcs/${encodeURIComponent(vcId)}/renew`, overrides);
   }
 
-  // -- prepare/finalize: see docs/proposal-sdk-api-only.md. prepare() returns
-  // an unsigned payload + hash; the caller signs the hash locally (private
-  // key never leaves the client) and finalize() attaches the signature.
+  // -- Service Providers ---------------------------------------------------
+  // Services hold no keys: the server mints the service DID, keeps its key,
+  // and signs consent grants on the service's behalf. Same custody model as
+  // agents (onboardAgent/signVP/delegateAuthority), so both are API calls.
 
-  async prepareGrant(input: PrepareGrantInput): Promise<PrepareResult> {
-    return this.http.post('/v1/vcs/grant/prepare', input);
+  /** Enroll a service (self-hosted servers; hosted accounts enroll through the console/account API). */
+  async createService(input: CreateServiceInput): Promise<{ serviceDid: string; serviceName: string }> {
+    this.assertAPIConfigured();
+    return this.http.post('/v1/services', input);
   }
 
-  async finalizeGrant(input: FinalizeInput): Promise<SignedVC> {
-    return this.http.post('/v1/vcs/grant/finalize', input);
+  /**
+   * Issues a DelegationGrantCredential from `serviceDid` to `agentDid` on
+   * `userDid`'s behalf: built, signed with the service's server-held key
+   * and stored with a revocable status-list entry, in one call. Revoke it
+   * with {@link revokeVC}.
+   */
+  async issueServiceDelegationGrant(input: IssueServiceDelegationGrantInput): Promise<SignedVC> {
+    this.assertAPIConfigured();
+    const result = await this.http.post<{ grantVC: SignedVC }>('/v1/service-delegation-grants', input);
+    return result.grantVC;
   }
 
   async getStatusList(listId: string): Promise<StatusListCredentialResponse> {

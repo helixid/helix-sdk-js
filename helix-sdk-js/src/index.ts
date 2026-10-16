@@ -8,12 +8,6 @@ export type {
 } from './wallet/AgentWallet.js';
 export { VPBuilder } from './vp-builder.js';
 
-// Issuer / SP
-export { issueGrant } from './grant.js';
-export type { IssuerKeyMaterial, IssueGrantOptions, IssueGrantResult } from './grant.js';
-// Local (non-API) revocation -- the SP's own status list, no prepare/finalize
-// involved (see the comment on revokeGrant() in grant.ts).
-export { revokeGrant, type RevokeGrantTarget, type SignedStatusListCredential } from './grant.js';
 
 // Verifier
 export { verifyVP } from './verify.js';
@@ -27,7 +21,12 @@ export { SessionManager } from './session/index.js';
 
 // Enrollment only / issuer API operations
 export { HelixClient } from './client/HelixClient.js';
-export type { CreateStatusListOptions, VerifyVPApiResult } from './client/HelixClient.js';
+export type {
+  CreateStatusListOptions,
+  CreateServiceInput,
+  IssueServiceDelegationGrantInput,
+  VerifyVPApiResult,
+} from './client/HelixClient.js';
 
 export * from './errors/index.js';
 export * from './resolver/IDidResolver.js';
