@@ -133,4 +133,66 @@ describe('HelixClient Branch Coverage', () => {
         expect(res.vcId).toBe('v2');
     });
   });
+
+  describe('enterprise (apiKey) mode', () => {
+    const DID = 'did:web:helix.test:agents:a1';
+    let enterprise: HelixClient;
+
+    beforeEach(() => {
+      enterprise = new HelixClient('http://localhost', { apiKey: 'hak_test' });
+      enterprise.__setTestHttpAdapter(mockHttp);
+    });
+
+    it('builds its adapter with the api key so every call carries the bearer token', () => {
+      const c2 = new HelixClient('http://localhost', { apiKey: 'hak_test' });
+      expect(((c2 as any).http as HttpAdapter).hasApiKey()).toBe(true);
+      expect(((c2 as any).http as HttpAdapter).hasAdminApiKey()).toBe(false);
+    });
+
+    it('signVP goes through the adapter to the custodial route', async () => {
+      mockHttp.post.mockResolvedValue({ signedVP: { id: 'vp-1' } });
+      const vp = await enterprise.signVP(DID, 'orders', { vcId: 'vc-2' });
+      expect(vp).toEqual({ id: 'vp-1' });
+      expect(mockHttp.post).toHaveBeenCalledWith(
+        `/v1/custodial-agents/${encodeURIComponent(DID)}/vp`,
+        { targetService: 'orders', vcId: 'vc-2' },
+      );
+    });
+
+    it('delegateAuthority goes through the adapter to the custodial route', async () => {
+      mockHttp.post.mockResolvedValue({ delegatedVC: { id: 'vc-child' } });
+      const vc = await enterprise.delegateAuthority(DID, 'did:key:z6Mkchild', ['read:orders'], 3600);
+      expect(vc).toEqual({ id: 'vc-child' });
+      expect(mockHttp.post).toHaveBeenCalledWith(
+        `/v1/custodial-agents/${encodeURIComponent(DID)}/delegate`,
+        { to: 'did:key:z6Mkchild', scopes: ['read:orders'], expiresIn: 3600 },
+      );
+    });
+
+    it('core mode keeps the admin-gated agent routes', async () => {
+      mockHttp.post.mockResolvedValue({ signedVP: { id: 'vp-1' } });
+      await client.signVP(DID, 'orders');
+      expect(mockHttp.post).toHaveBeenCalledWith(`/v1/agents/${encodeURIComponent(DID)}/vp`, { targetService: 'orders' });
+    });
+
+    it('issueServiceDelegationGrant uses the same adapter (and so the same credential)', async () => {
+      mockHttp.post.mockResolvedValue({ grantVC: { id: 'vc-grant' } });
+      const vc = await enterprise.issueServiceDelegationGrant({
+        serviceDid: 'did:web:sp', agentDid: DID, userDid: 'did:key:z6Mkuser', scopes: ['read:orders'],
+      });
+      expect(vc).toEqual({ id: 'vc-grant' });
+      expect(mockHttp.post).toHaveBeenCalledWith('/v1/service-delegation-grants', expect.objectContaining({ serviceDid: 'did:web:sp' }));
+    });
+
+    it('registerVC posts the signed credential', async () => {
+      mockHttp.post.mockResolvedValue({ vcId: 'vc-grant', alreadyRegistered: false });
+      const res = await enterprise.registerVC({ id: 'vc-grant' } as any);
+      expect(res).toEqual({ vcId: 'vc-grant', alreadyRegistered: false });
+      expect(mockHttp.post).toHaveBeenCalledWith('/v1/vcs/register', { vc: { id: 'vc-grant' } });
+    });
+
+    it('registerVC refuses in SDK-only mode', async () => {
+      await expect(new HelixClient().registerVC({ id: 'vc-grant' } as any)).rejects.toThrow();
+    });
+  });
 });

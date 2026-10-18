@@ -146,9 +146,10 @@ export interface HelixClientOptions {
   adminApiKey?: string;
   /**
    * Enterprise (server-custody, account-scoped) mode: presence of this
-   * option is what selects it -- signVP() then talks to
-   * /v1/custodial-agents/:did/vp (not core's /v1/agents/:did/vp) and sends
-   * this directly as the bearer token. See helix-server-enterprise's
+   * option is what selects it. Every call then sends it as the bearer
+   * token (enterprise has no admin key), and signVP()/delegateAuthority()
+   * talk to /v1/custodial-agents/:did/... instead of core's
+   * /v1/agents/:did/.... See helix-server-enterprise's
    * POST /v1/account/api-keys. No email/password, no login call -- an
    * agent process holds only this, the same way an OSS agent holds only
    * `adminApiKey`.
@@ -177,6 +178,13 @@ export interface IssueServiceDelegationGrantInput {
   scopes: string[];
   /** `standing` (default, ~10 years) or `session` (24 hours). */
   durability?: 'standing' | 'session';
+  /**
+   * Also revoke every other grant this service holds for the same user and
+   * agent, so the new one is the only consent that stands. Off by default:
+   * a consent with a different scope set is added beside the existing ones,
+   * and consenting again to exactly the same scopes refreshes that grant.
+   */
+  revokeExisting?: boolean;
 }
 
 export interface CreateStatusListOptions {
@@ -202,7 +210,6 @@ export class HelixClient {
   private http: HttpAdapterLike;
   private readonly sdkOnlyMode: boolean;
   private readonly apiAuditEnabled: boolean;
-  private readonly baseUrl: string | undefined;
   private readonly apiKey: string | undefined;
 
   constructor(apiUrl?: string);
@@ -226,9 +233,13 @@ export class HelixClient {
     }
 
     this.sdkOnlyMode = resolvedUrl === undefined;
-    this.apiAuditEnabled = !this.sdkOnlyMode && Boolean(options?.adminApiKey);
+    // Enterprise's /v1/audit-log/consent-granted takes an account, so an
+    // API key enables the consent audit write just as the admin key does.
+    this.apiAuditEnabled = !this.sdkOnlyMode && Boolean(options?.adminApiKey || options?.apiKey);
+    // The adapter sends whichever credential was given on every call, so
+    // enterprise (apiKey) and core (adminApiKey) differ only in which routes
+    // a method targets, never in how it authenticates.
     this.http = this.sdkOnlyMode ? SDK_ONLY_HTTP_ADAPTER : new HttpAdapter(resolvedUrl as string, options ?? {});
-    this.baseUrl = resolvedUrl ? resolvedUrl.replace(/\/$/, '') : undefined;
     this.apiKey = options?.apiKey;
   }
 
@@ -335,6 +346,18 @@ export class HelixClient {
     return this.http.post(`/v1/vcs/${encodeURIComponent(vcId)}/renew`, overrides);
   }
 
+  /**
+   * Registers a VC that was signed outside the platform (an SP-signed
+   * DelegationGrantCredential, typically) so the server holds it and can
+   * list/revoke/renew it. The server verifies the proof. Distinct from
+   * {@link issueVC}, which has the platform sign a new VC. Idempotent by
+   * vc id.
+   */
+  async registerVC(vc: SignedVC): Promise<{ vcId: string; alreadyRegistered: boolean }> {
+    this.assertAPIConfigured();
+    return this.http.post('/v1/vcs/register', { vc });
+  }
+
   // -- Service Providers ---------------------------------------------------
   // Services hold no keys: the server mints the service DID, keeps its key,
   // and signs consent grants on the service's behalf. Same custody model as
@@ -436,9 +459,15 @@ export class HelixClient {
    * and never can have, the private key, so this is an API call instead of
    * local VPBuilder.sign(). The server looks up the agent's active
    * HelixAgentCredential itself; pass `vcId` to pin a specific one instead
-   * (e.g. right after a renewal, when more than one is active). `grantVC`
-   * is an SP-issued DelegationGrantCredential the caller already holds —
-   * not secret material, just data to include — for the consent-grant flow.
+   * (e.g. right after a renewal, when more than one is active).
+   *
+   * `targetService` is the DID of the service the VP is for. With a
+   * `userDid` the agent is acting on that user's behalf, and the server
+   * attaches every active DelegationGrantCredential that service issued to
+   * this agent for that user; none at all fails with
+   * CONSENT_GRANT_NOT_FOUND, meaning the user has not consented yet. A
+   * caller that already holds a grant may pass it as `grantVC` instead of
+   * having it looked up.
    */
   async signVP(
     did: string,
@@ -454,23 +483,14 @@ export class HelixClient {
     };
 
     // Enterprise mode (this.apiKey set): custodial signing is
-    // account-scoped, a different route + auth than core's admin-key-gated
-    // /v1/agents/:did/vp -- see HelixClientOptions.apiKey's doc comment.
-    if (this.apiKey) {
-      if (!this.baseUrl) throw new Error('HelixClient: enterprise mode requires a baseUrl');
-      const res = await fetch(`${this.baseUrl}/v1/custodial-agents/${encodeURIComponent(did)}/vp`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
-        body: JSON.stringify(body),
-      });
-      const result = (await res.json()) as { signedVP?: SignedVP; error?: { message?: string } };
-      if (!res.ok || !result.signedVP) {
-        throw new Error(result.error?.message ?? `signVP failed: HTTP ${res.status}`);
-      }
-      return result.signedVP;
-    }
-
-    const result = await this.http.post<{ signedVP: SignedVP }>(`/v1/agents/${encodeURIComponent(did)}/vp`, body);
+    // account-scoped, so it targets /v1/custodial-agents/:did/vp instead of
+    // core's admin-key-gated /v1/agents/:did/vp. The bearer token itself is
+    // sent by HttpAdapter, like every other call -- so errors map to typed
+    // HelixErrors here too, not a bare Error.
+    const result = await this.http.post<{ signedVP: SignedVP }>(
+      `/v1/${this.agentRoutePrefix()}/${encodeURIComponent(did)}/vp`,
+      body,
+    );
     return result.signedVP;
   }
 
@@ -505,25 +525,16 @@ export class HelixClient {
       ...(options.vcId !== undefined ? { vcId: options.vcId } : {}),
     };
 
-    if (this.apiKey) {
-      if (!this.baseUrl) throw new Error('HelixClient: enterprise mode requires a baseUrl');
-      const res = await fetch(`${this.baseUrl}/v1/custodial-agents/${encodeURIComponent(did)}/delegate`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
-        body: JSON.stringify(body),
-      });
-      const result = (await res.json()) as { delegatedVC?: SignedVC; error?: { message?: string } };
-      if (!res.ok || !result.delegatedVC) {
-        throw new Error(result.error?.message ?? `delegateAuthority failed: HTTP ${res.status}`);
-      }
-      return result.delegatedVC;
-    }
-
     const result = await this.http.post<{ delegatedVC: SignedVC }>(
-      `/v1/agents/${encodeURIComponent(did)}/delegate`,
+      `/v1/${this.agentRoutePrefix()}/${encodeURIComponent(did)}/delegate`,
       body,
     );
     return result.delegatedVC;
+  }
+
+  /** Where custodial agent actions live: enterprise's account-scoped routes, or core's admin-key-gated ones. */
+  private agentRoutePrefix(): 'custodial-agents' | 'agents' {
+    return this.apiKey ? 'custodial-agents' : 'agents';
   }
 
   async requestUserChallenge(
