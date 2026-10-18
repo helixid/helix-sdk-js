@@ -5,7 +5,7 @@ import type { SignedVC } from './schemas/vc.js';
 import type { SignedVP } from './schemas/vp.js';
 
 export interface VPBuilderOptions {
-  /** Exactly one agent-authority VC, plus any number of consent grants (the verifier unions their scopes). */
+  /** At least one agent-authority VC, plus any number of consent grants (the verifier unions each kind's scopes). */
   credentials: SignedVC[];
   holderDid: string;
   targetService: string;
@@ -47,9 +47,9 @@ export class VPBuilder {
     }
     const agentEntries = credentials.filter(isAgentAuthorityType);
     const grantEntries = credentials.filter(isGrantType);
-    if (agentEntries.length !== 1 || agentEntries.length + grantEntries.length !== credentials.length) {
+    if (agentEntries.length < 1 || agentEntries.length + grantEntries.length !== credentials.length) {
       throw new VPInvalidStructureError(
-        'VP credential array must contain exactly one agent-authority credential, and otherwise only consent grants',
+        'VP credential array must contain at least one agent-authority credential, and otherwise only consent grants',
       );
     }
   }

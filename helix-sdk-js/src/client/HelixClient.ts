@@ -515,7 +515,7 @@ export class HelixClient {
     to: string,
     scopes: string[],
     expiresIn: number,
-    options: { vcId?: string } = {},
+    options: { vcId?: string; revokeExisting?: boolean } = {},
   ): Promise<SignedVC> {
     this.assertAPIConfigured();
     const body = {
@@ -523,6 +523,10 @@ export class HelixClient {
       scopes,
       expiresIn,
       ...(options.vcId !== undefined ? { vcId: options.vcId } : {}),
+      // Same rule as every stored credential: the same scopes delegated
+      // again refresh the earlier delegation, other scopes stand beside it,
+      // revokeExisting clears the others.
+      ...(options.revokeExisting !== undefined ? { revokeExisting: options.revokeExisting } : {}),
     };
 
     const result = await this.http.post<{ delegatedVC: SignedVC }>(
