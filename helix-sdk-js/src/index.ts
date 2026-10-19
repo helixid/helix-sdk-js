@@ -11,6 +11,16 @@ export { VPBuilder } from './vp-builder.js';
 
 // Verifier
 export { verifyVP } from './verify.js';
+export {
+  HELIX_VP_HEADER,
+  HELIX_VP_META_KEY,
+  encodeHelixVP,
+  decodeHelixVP,
+  helixVPHeaders,
+  readHelixVPHeader,
+  readHelixVPMeta,
+  type HeadersLike,
+} from './vp-transport.js';
 // Local Ed25519 linked-data proof create/verify -- signing stays client-side
 // (see docs/proposal-sdk-api-only.md); needed by issuers that aren't
 // registered with helix-api (e.g. independent did:web Service Providers)

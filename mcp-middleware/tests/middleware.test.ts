@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { verifyVP as verifyVPExport } from '@helixid/sdk-js';
+import { encodeHelixVP, verifyVP as verifyVPExport, type SignedVP } from '@helixid/sdk-js';
 import { attachHelixVP } from '../src/attach.js';
 import { helixidMCPMiddleware } from '../src/middleware.js';
 
@@ -13,13 +13,52 @@ vi.mock('@helixid/sdk-js', async (importOriginal) => {
 
 const verifyVP = vi.mocked(verifyVPExport);
 
+const meta = (vp: object) => ({ 'x-helix-vp': encodeHelixVP(vp as SignedVP) });
+
 describe('helixidMCPMiddleware', () => {
-  it('throws VP_MISSING when no _helixVP in input', async () => {
+  it('throws VP_MISSING when there is no VP in _meta or headers', async () => {
     const middleware = helixidMCPMiddleware({});
 
     await expect(middleware({ name: 'orders.lookup', input: {} })).rejects.toMatchObject({
       code: 'VP_MISSING',
     });
+  });
+
+  it('ignores a VP placed in the tool arguments', async () => {
+    const middleware = helixidMCPMiddleware({});
+
+    await expect(
+      middleware({ name: 'orders.lookup', input: { _helixVP: { id: 'vp:helix:test' } } }),
+    ).rejects.toMatchObject({ code: 'VP_MISSING' });
+    expect(verifyVP).not.toHaveBeenCalled();
+  });
+
+  it('rejects a _meta VP that is not base64url JSON', async () => {
+    const middleware = helixidMCPMiddleware({});
+
+    await expect(
+      middleware({ name: 'orders.lookup', _meta: { 'x-helix-vp': 'not json' } }),
+    ).rejects.toMatchObject({ code: 'VP_INVALID_STRUCTURE' });
+  });
+
+  it('reads the VP from the X-Helix-VP header (any case)', async () => {
+    verifyVP.mockResolvedValueOnce({
+      valid: true,
+      agentDid: 'did:agent',
+      privilegeScopes: ['read:orders'],
+      effectiveScopes: ['read:orders'],
+      vpId: 'vp:helix:test',
+      delegationChain: [],
+    });
+
+    const middleware = helixidMCPMiddleware({ requiredScopes: ['read:orders'] });
+    const toolCall = {
+      name: 'orders.lookup',
+      headers: { 'x-helix-vp': meta({ id: 'vp:helix:test' })['x-helix-vp'] },
+    };
+
+    await expect(middleware(toolCall)).resolves.toBe(toolCall);
+    expect(verifyVP).toHaveBeenLastCalledWith({ id: 'vp:helix:test' }, undefined, expect.anything());
   });
 
   it('passes through a valid VP', async () => {
@@ -35,12 +74,13 @@ describe('helixidMCPMiddleware', () => {
     const middleware = helixidMCPMiddleware({ requiredScopes: ['read:orders'] });
     const toolCall = {
       name: 'orders.lookup',
-      input: { orderId: 'ORD-1', _helixVP: { id: 'vp:helix:test' } },
+      input: { orderId: 'ORD-1' },
+      _meta: meta({ id: 'vp:helix:test' }),
     };
 
     await expect(middleware(toolCall)).resolves.toBe(toolCall);
     expect(verifyVP).toHaveBeenCalledWith(
-      toolCall.input._helixVP,
+      { id: 'vp:helix:test' },
       undefined,
       expect.objectContaining({ allowSelfSigned: false }),
     );
@@ -60,7 +100,7 @@ describe('helixidMCPMiddleware', () => {
     const middleware = helixidMCPMiddleware({});
 
     await expect(
-      middleware({ input: { _helixVP: { id: 'vp:helix:bad' } } }),
+      middleware({ _meta: meta({ id: 'vp:helix:bad' }) }),
     ).rejects.toMatchObject({
       code: 'VP_VERIFICATION_FAILED',
     });
@@ -79,7 +119,7 @@ describe('helixidMCPMiddleware', () => {
     const middleware = helixidMCPMiddleware({ requiredScopes: ['write:orders'] });
 
     await expect(
-      middleware({ input: { _helixVP: { id: 'vp:helix:test' } } }),
+      middleware({ _meta: meta({ id: 'vp:helix:test' }) }),
     ).rejects.toMatchObject({
       code: 'INSUFFICIENT_SCOPE',
     });
@@ -96,7 +136,7 @@ describe('attachHelixVP', () => {
     proof: { type: 'Ed25519Signature2020' },
   };
 
-  it('injects _helixVP into tool call input by calling client.signVP()', async () => {
+  it('attaches the VP as _meta["x-helix-vp"] by calling client.signVP()', async () => {
     const signVP = vi.fn().mockResolvedValue(fakeSignedVP);
     const client = { signVP } as unknown as Parameters<typeof attachHelixVP>[1]['client'];
 
@@ -106,8 +146,8 @@ describe('attachHelixVP', () => {
     );
 
     expect(signVP).toHaveBeenCalledWith(agentDid, 'orders', { userDid: 'did:hedera:testnet:user' });
-    expect(result.input?._helixVP).toEqual(fakeSignedVP);
-    expect(result.input?.orderId).toBe('ORD-1');
+    expect(result._meta?.['x-helix-vp']).toBe(encodeHelixVP(fakeSignedVP as unknown as SignedVP));
+    expect(result.input).toEqual({ orderId: 'ORD-1' });
   });
 
   it('omits userDid entirely when not provided', async () => {

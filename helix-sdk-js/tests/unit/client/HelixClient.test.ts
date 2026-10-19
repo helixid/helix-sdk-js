@@ -151,11 +151,11 @@ describe('HelixClient Branch Coverage', () => {
 
     it('signVP goes through the adapter to the custodial route', async () => {
       mockHttp.post.mockResolvedValue({ signedVP: { id: 'vp-1' } });
-      const vp = await enterprise.signVP(DID, 'orders', { vcId: 'vc-2' });
+      const vp = await enterprise.signVP(DID, 'orders');
       expect(vp).toEqual({ id: 'vp-1' });
       expect(mockHttp.post).toHaveBeenCalledWith(
         `/v1/custodial-agents/${encodeURIComponent(DID)}/vp`,
-        { targetService: 'orders', vcId: 'vc-2' },
+        { targetService: 'orders' },
       );
     });
 

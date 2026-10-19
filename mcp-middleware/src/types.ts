@@ -1,9 +1,13 @@
 import type { SignedVP } from '@helixid/sdk-js';
-import type { HelixClient } from '@helixid/sdk-js';
+import type { HeadersLike, HelixClient } from '@helixid/sdk-js';
 
 export interface MCPToolCall {
   name?: string;
   input?: Record<string, unknown>;
+  /** The MCP request's `params._meta`; carries the VP as `_meta["x-helix-vp"]`. */
+  _meta?: Record<string, unknown>;
+  /** HTTP request headers, when the MCP server runs over HTTP; carries the VP as `X-Helix-VP`. */
+  headers?: HeadersLike;
   [key: string]: unknown;
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { HelixClient } from '@helixid/sdk-js';
-import { HelixIDMiddleware, HelixIDToolWrapper, filterToolsByScope } from '../src/index.js';
+import { encodeHelixVP, type HelixClient, type SignedVP } from '@helixid/sdk-js';
+import { HelixIDToolWrapper, currentHelixVPHeaders, filterToolsByScope } from '../src/index.js';
 
 describe('@helixid/langchain', () => {
   const agentDid = 'did:hedera:testnet:agent';
@@ -16,52 +16,42 @@ describe('@helixid/langchain', () => {
     return { signVP } as unknown as HelixClient;
   }
 
-  it('injects _helixVP from handleToolStart by calling client.signVP()', async () => {
+  it('signs a VP per call and exposes it as the X-Helix-VP header, not in the input', async () => {
     const signVP = vi.fn().mockResolvedValue(fakeSignedVP);
-    const middleware = HelixIDMiddleware({
-      client: fakeClient(signVP),
-      agentDid,
-      targetService: 'orders',
-      userDid: 'did:hedera:testnet:user',
+    let seenHeaders: Record<string, string> = {};
+    const originalCall = vi.fn(async () => {
+      seenHeaders = currentHelixVPHeaders();
+      return 'done';
     });
-
-    const input: Record<string, unknown> = { query: 'book order' };
-    await middleware.callbacks[0]!.handleToolStart({ name: 'orders' }, input);
-
-    expect(signVP).toHaveBeenCalledWith(agentDid, 'orders', { userDid: 'did:hedera:testnet:user' });
-    expect(input._helixVP).toEqual(expect.any(String));
-  });
-
-  it('wraps a tool and passes the VP to the original _call input', async () => {
-    const originalCall = vi.fn().mockResolvedValue('done');
     const wrapped = HelixIDToolWrapper(
       { name: 'orders', _call: originalCall },
-      { client: fakeClient(), agentDid, targetService: 'orders', userDid: 'did:hedera:testnet:user' },
+      { client: fakeClient(signVP), agentDid, targetService: 'orders', userDid: 'did:hedera:testnet:user' },
     );
 
     const input: Record<string, unknown> = { query: 'book order' };
     await expect(wrapped._call(input)).resolves.toBe('done');
-    expect(originalCall).toHaveBeenCalledWith(expect.objectContaining({ _helixVP: expect.any(String) }));
+
+    expect(signVP).toHaveBeenCalledWith(agentDid, 'orders', { userDid: 'did:hedera:testnet:user' });
+    expect(originalCall).toHaveBeenCalledWith({ query: 'book order' });
+    expect(input).toEqual({ query: 'book order' });
+    expect(seenHeaders).toEqual({ 'X-Helix-VP': encodeHelixVP(fakeSignedVP as unknown as SignedVP) });
   });
 
   it('calls client.signVP() once per invocation', async () => {
     const signVP = vi.fn().mockResolvedValue(fakeSignedVP);
-    const middleware = HelixIDMiddleware({
-      client: fakeClient(signVP),
-      agentDid,
-      targetService: 'orders',
-      userDid: 'did:hedera:testnet:user',
-    });
+    const wrapped = HelixIDToolWrapper(
+      { name: 'orders', _call: vi.fn().mockResolvedValue('done') },
+      { client: fakeClient(signVP), agentDid, targetService: 'orders' },
+    );
 
-    const input1: Record<string, unknown> = { query: 'first call' };
-    const input2: Record<string, unknown> = { query: 'second call' };
+    await wrapped._call({ query: 'first call' });
+    await wrapped._call({ query: 'second call' });
 
-    await middleware.callbacks[0]!.handleToolStart({ name: 'orders' }, input1);
-    await middleware.callbacks[0]!.handleToolStart({ name: 'orders' }, input2);
-
-    expect(input1._helixVP).toEqual(expect.any(String));
-    expect(input2._helixVP).toEqual(expect.any(String));
     expect(signVP).toHaveBeenCalledTimes(2);
+  });
+
+  it('has no VP headers outside a wrapped call', () => {
+    expect(currentHelixVPHeaders()).toEqual({});
   });
 
   it('propagates a signing failure from the server (e.g. no active credential)', async () => {
@@ -70,17 +60,16 @@ describe('@helixid/langchain', () => {
         code: 'AGENT_ACTIVE_CREDENTIAL_NOT_FOUND',
       }),
     );
-    const middleware = HelixIDMiddleware({
-      client: fakeClient(signVP),
-      agentDid,
-      targetService: 'orders',
-      userDid: 'did:hedera:testnet:user',
-    });
+    const originalCall = vi.fn();
+    const wrapped = HelixIDToolWrapper(
+      { name: 'orders', _call: originalCall },
+      { client: fakeClient(signVP), agentDid, targetService: 'orders' },
+    );
 
-    const input: Record<string, unknown> = { query: 'test' };
-    await expect(
-      middleware.callbacks[0]!.handleToolStart({ name: 'orders' }, input),
-    ).rejects.toMatchObject({ code: 'AGENT_ACTIVE_CREDENTIAL_NOT_FOUND' });
+    await expect(wrapped._call({ query: 'test' })).rejects.toMatchObject({
+      code: 'AGENT_ACTIVE_CREDENTIAL_NOT_FOUND',
+    });
+    expect(originalCall).not.toHaveBeenCalled();
   });
 
   describe('filterToolsByScope', () => {

@@ -457,29 +457,25 @@ export class HelixClient {
   /**
    * Signs a VP on behalf of a server-custody agent — the caller never has,
    * and never can have, the private key, so this is an API call instead of
-   * local VPBuilder.sign(). The server looks up the agent's active
-   * HelixAgentCredential itself; pass `vcId` to pin a specific one instead
-   * (e.g. right after a renewal, when more than one is active).
+   * local VPBuilder.sign(). The server picks the credentials from the DIDs
+   * alone: every active HelixAgentCredential the agent holds (its own, plus
+   * any delegated to it).
    *
    * `targetService` is the DID of the service the VP is for. With a
    * `userDid` the agent is acting on that user's behalf, and the server
    * attaches every active DelegationGrantCredential that service issued to
    * this agent for that user; none at all fails with
-   * CONSENT_GRANT_NOT_FOUND, meaning the user has not consented yet. A
-   * caller that already holds a grant may pass it as `grantVC` instead of
-   * having it looked up.
+   * CONSENT_GRANT_NOT_FOUND, meaning the user has not consented yet.
    */
   async signVP(
     did: string,
     targetService: string,
-    options: { userDid?: string; grantVC?: SignedVC; vcId?: string } = {},
+    options: { userDid?: string } = {},
   ): Promise<SignedVP> {
     this.assertAPIConfigured();
     const body = {
       targetService,
       ...(options.userDid !== undefined ? { userDid: options.userDid } : {}),
-      ...(options.grantVC !== undefined ? { grantVC: options.grantVC } : {}),
-      ...(options.vcId !== undefined ? { vcId: options.vcId } : {}),
     };
 
     // Enterprise mode (this.apiKey set): custodial signing is
