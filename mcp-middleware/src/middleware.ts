@@ -13,6 +13,9 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions) {
 
     const result = await verifyVP(vp, options.client, {
       allowSelfSigned: options.allowSelfSigned ?? false,
+      ...(options.expectedTargetService !== undefined
+        ? { expectedTargetService: options.expectedTargetService }
+        : {}),
     });
 
     if (!result.valid) {

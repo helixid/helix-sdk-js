@@ -19,6 +19,11 @@ export interface MCPMiddlewareOptions {
   client: HelixClient;
   requiredScopes?: string[];
   allowSelfSigned?: boolean;
+  /**
+   * This server's own DID. When set, a VP signed for any other service is
+   * rejected, so a VP meant for one service can't be replayed against another.
+   */
+  expectedTargetService?: string;
 }
 
 export interface AttachHelixVPOptions {

@@ -86,6 +86,25 @@ describe('helixidMCPMiddleware', () => {
     );
   });
 
+  it('passes expectedTargetService through to verifyVP', async () => {
+    verifyVP.mockResolvedValueOnce({
+      valid: true,
+      agentDid: 'did:agent',
+      privilegeScopes: [],
+      effectiveScopes: [],
+      vpId: 'vp:helix:test',
+      delegationChain: [],
+    });
+
+    const middleware = helixidMCPMiddleware({ expectedTargetService: 'did:web:svc.example.invalid' });
+    await middleware({ name: 'orders.lookup', _meta: meta({ id: 'vp:helix:test' }) });
+    expect(verifyVP).toHaveBeenLastCalledWith(
+      { id: 'vp:helix:test' },
+      undefined,
+      expect.objectContaining({ expectedTargetService: 'did:web:svc.example.invalid' }),
+    );
+  });
+
   it('throws VP_VERIFICATION_FAILED on invalid VP', async () => {
     verifyVP.mockResolvedValueOnce({
       valid: false,
