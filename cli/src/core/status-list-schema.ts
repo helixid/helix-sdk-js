@@ -11,7 +11,7 @@
 // limitations under the License.
 //
 // Duplicated verbatim from helix-core's status-list/schema.ts +
-// status-list/index.ts (see docs/proposal-retire-core-package.md). Used by
+// status-list/index.ts (see the retire-core-package design). Used by
 // the CLI's local/offline issuer-ops flow (no API call involved).
 
 import { z } from 'zod';

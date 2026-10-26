@@ -5,8 +5,7 @@ primitives, and DID/VC/VP construction and verification.
 
 ## Architecture
 
-Follows the **SDK-API-only** design (see `docs/proposal-sdk-api-only.md`
-and `docs/proposal-retire-core-package.md` in the `helixid/helixid` repo):
+Follows the **SDK-API-only** design:
 every SDK, in every language, depends only on the HelixID API — never on a
 shared "core" package — except for private-key operations that must stay
 local: keygen, sign, canonical-hash, and `VPBuilder.sign()`, which issuers

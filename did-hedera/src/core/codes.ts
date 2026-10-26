@@ -70,7 +70,7 @@ export const ErrorCodes = {
   AGENT_ALREADY_ONBOARDED: 'AGENT_ALREADY_ONBOARDED',
 
   // Prepare/finalize (SDK-API-only payload construction, see
-  // docs/proposal-sdk-api-only.md)
+  // the SDK-API-only design)
   PREPARED_PAYLOAD_NOT_FOUND: 'PREPARED_PAYLOAD_NOT_FOUND',
   PREPARED_PAYLOAD_EXPIRED: 'PREPARED_PAYLOAD_EXPIRED',
   PREPARED_PAYLOAD_ALREADY_CONSUMED: 'PREPARED_PAYLOAD_ALREADY_CONSUMED',
@@ -89,7 +89,7 @@ export const ErrorCodes = {
   SDK_ONLY_MODE_NO_API: 'SDK_ONLY_MODE_NO_API',
   INSUFFICIENT_SCOPE: 'INSUFFICIENT_SCOPE',
 
-  // Hosted accounts & auth (Item #1, see docs/proposal-hosted-instance.md)
+  // Hosted accounts & auth (Item #1, see the hosted-instance design)
   ACCOUNT_ALREADY_EXISTS: 'ACCOUNT_ALREADY_EXISTS',
   ACCOUNT_NOT_FOUND: 'ACCOUNT_NOT_FOUND',
   INVALID_CREDENTIALS: 'INVALID_CREDENTIALS',

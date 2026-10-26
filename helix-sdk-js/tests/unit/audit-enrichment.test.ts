@@ -4,7 +4,7 @@
 //   §1  — VP_REJECTED enrichment (attemptedVcId/attemptedParentVcId/
 //         attemptedDelegatedFrom pulled off the unverified credential) moved
 //         server-side with the rest of VP verification (see
-//         docs/proposal-sdk-api-only.md). helix-api's vp.service unit tests
+//         the SDK-API-only design). helix-api's vp.service unit tests
 //         and its audit-log integration tests own that coverage now; the SDK
 //         no longer runs verification or writes this audit entry itself, so
 //         there is nothing left here to test.

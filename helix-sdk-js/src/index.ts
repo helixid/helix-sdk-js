@@ -22,7 +22,7 @@ export {
   type HeadersLike,
 } from './vp-transport.js';
 // Local Ed25519 linked-data proof create/verify -- signing stays client-side
-// (see docs/proposal-sdk-api-only.md); needed by issuers that aren't
+// (see the SDK-API-only design); needed by issuers that aren't
 // registered with helix-api (e.g. independent did:web Service Providers)
 // to sign their own credentials directly.
 export { createEd25519Proof, verifyEd25519Proof, type LinkedDataProof } from './core/proof.js';
@@ -35,6 +35,8 @@ export type {
   CreateStatusListOptions,
   CreateServiceInput,
   IssueServiceDelegationGrantInput,
+  GetAgentScopesInput,
+  AgentScopesResult,
   VerifyVPApiResult,
 } from './client/HelixClient.js';
 
@@ -62,7 +64,7 @@ export {
 } from './core/keys.js';
 
 // Canonical-hash computation is explicitly a client-side operation (see
-// docs/proposal-sdk-api-only.md § client-side ops) -- needed by verifiers
+// the SDK-API-only design § client-side ops) -- needed by verifiers
 // that self-verify VPs/VCs without calling POST /v1/vp/verify.
 export { hashCanonicalPayload, base58btcEncode, base58btcDecode, toCanonicalJson } from './core/vp-crypto.js';
 
@@ -71,7 +73,7 @@ export { hashCanonicalPayload, base58btcEncode, base58btcDecode, toCanonicalJson
 export { getBit, buildStatusListCredential, createStatusList, type StatusListCredential } from './core/status-list-schema.js';
 
 // Activity-trail event-type catalog -- narrow duplicate of helix-api's own
-// (see docs/proposal-retire-core-package.md); used by independent issuers
+// (see the retire-core-package design); used by independent issuers
 // (e.g. e2e-consent-demo's Service Providers) that emit their own audit
 // trail rather than relying on helix-api's.
 export { AuditEvents, type AuditEvent, type AuditEventType } from './core/audit-events.js';
@@ -81,7 +83,7 @@ export { AuditEvents, type AuditEvent, type AuditEventType } from './core/audit-
 export { clearDIDCache } from './core/local-did-cache.js';
 export type { SessionClaims, SessionIssueInput, SessionManagerOptions } from './session/index.js';
 
-// Dev-only local session-bridge JWT verification (see docs/proposal-sdk-api-only.md § client-side ops).
+// Dev-only local session-bridge JWT verification (see the SDK-API-only design § client-side ops).
 // issueJWT/decodeJWTUnsafe are intentionally not re-exported: issuance is server-side
 // (session-bridge tokens come from POST /v1/vp/verify with session: true), so only
 // verification -- given the API's published session public key -- belongs here.

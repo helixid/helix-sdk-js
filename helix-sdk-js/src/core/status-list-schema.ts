@@ -11,7 +11,7 @@
 // limitations under the License.
 //
 // Duplicated verbatim from helix-core's status-list/schema.ts +
-// status-list/index.ts (see docs/proposal-retire-core-package.md). Fully
+// status-list/index.ts (see the retire-core-package design). Fully
 // self-contained (gzip + base64url + bit twiddling), so duplicating the
 // whole thing rather than hand-extracting a types-only subset is simplest
 // and lowest-risk -- golden vectors catch drift if the two copies diverge.

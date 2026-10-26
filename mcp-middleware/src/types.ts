@@ -14,7 +14,7 @@ export interface MCPToolCall {
 export interface MCPMiddlewareOptions {
   /**
    * Required now that verification calls the API (see
-   * docs/proposal-sdk-api-only.md) rather than verifying locally.
+   * the SDK-API-only design) rather than verifying locally.
    */
   client: HelixClient;
   requiredScopes?: string[];

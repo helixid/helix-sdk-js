@@ -1,6 +1,6 @@
 // No-op, kept for pre-retirement test-suite compatibility.
 //
-// Before the SDK-API-only architecture (docs/proposal-sdk-api-only.md), the
+// Before the SDK-API-only architecture (the SDK-API-only design), the
 // SDK resolved DIDs directly (including did:web over HTTP) and cached the
 // result in a module-level Map, the same way helix-api's own internal
 // src/core/did-resolver.ts still does for its own use. Tests called

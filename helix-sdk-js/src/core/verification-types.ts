@@ -11,7 +11,7 @@
 // limitations under the License.
 //
 // Type-only shapes duplicated from helix-core's vp-verifier.ts and
-// delegation.ts — see docs/proposal-retire-core-package.md. Deliberately
+// delegation.ts — see the retire-core-package design. Deliberately
 // types only: the actual verifyVP()/delegation logic stays in helix-api
 // per the SDK-API-only architecture (proposal-sdk-api-only.md). These
 // interfaces just describe the shape of what the API returns, so the SDK

@@ -60,7 +60,7 @@ import {
 } from '../core/HelixError.js';
 import { ErrorCode } from '../core/codes.js';
 
-// Duplicated from helix-core (see docs/proposal-retire-core-package.md) --
+// Duplicated from helix-core (see the retire-core-package design) --
 // re-export everything so downstream consumers (@helixid/mcp-middleware,
 // @helixid/langchain, etc.) that previously imported error classes
 // straight from @helixid/core can get them from here instead.
