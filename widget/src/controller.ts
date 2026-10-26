@@ -33,6 +33,10 @@ export interface ConsentControllerState {
   durability: 'standing' | 'session';
   /** Always the full list — a `defaultDurability` pre-selects, it never hides. */
   durabilityOptions: DurabilityOption[];
+  /** Whether to render the delegation choice (`offerDelegationChoice`). */
+  delegationChoiceOffered: boolean;
+  /** The user's delegation choice; starts unchecked. */
+  allowDelegation: boolean;
   canAccept: boolean;
   error?: string;
 }
@@ -44,6 +48,8 @@ export interface ConsentController {
   load(): Promise<void>;
   toggleScope(scope: string): void;
   setDurability(value: 'standing' | 'session'): void;
+  /** No-op unless the delegation choice is offered. */
+  setAllowDelegation(value: boolean): void;
   accept(): Promise<void>;
   decline(): void;
 }
@@ -73,6 +79,7 @@ export function createConsentController(props: HelixConsentWidgetProps): Consent
 
   const durabilityOptions = props.durabilityOptions ?? DEFAULT_DURABILITY_OPTIONS;
   const inlineOptions = props.scopeOptions ?? [];
+  const delegationChoiceOffered = props.offerDelegationChoice === true;
 
   let state: ConsentControllerState = hasInlineOptions
     ? {
@@ -81,6 +88,8 @@ export function createConsentController(props: HelixConsentWidgetProps): Consent
         selectedScopes: initialSelection(inlineOptions),
         durability: props.defaultDurability ?? 'standing',
         durabilityOptions,
+        delegationChoiceOffered,
+        allowDelegation: false,
         canAccept: true,
       }
     : {
@@ -89,6 +98,8 @@ export function createConsentController(props: HelixConsentWidgetProps): Consent
         selectedScopes: [],
         durability: props.defaultDurability ?? 'standing',
         durabilityOptions,
+        delegationChoiceOffered,
+        allowDelegation: false,
         canAccept: false,
       };
 
@@ -125,8 +136,7 @@ export function createConsentController(props: HelixConsentWidgetProps): Consent
       if (!endpoint) return;
 
       try {
-        // agentDid travels with the request for audit correlation only — the
-        // route must not let it change the catalog it returns (register D4).
+        // The route narrows the service's scopes to those this agent holds.
         const response = await fetch(withAgentDid(endpoint, props.agentDid), {
           headers: { accept: 'application/json' },
           credentials: 'same-origin',
@@ -168,11 +178,17 @@ export function createConsentController(props: HelixConsentWidgetProps): Consent
       setState({ durability: value });
     },
 
+    setAllowDelegation(value): void {
+      if (!delegationChoiceOffered) return;
+      setState({ allowDelegation: value });
+    },
+
     async accept(): Promise<void> {
       if (!state.canAccept) return;
       const selection: ConsentSelection = {
         scopes: [...state.selectedScopes],
         durability: state.durability,
+        ...(delegationChoiceOffered ? { allowDelegation: state.allowDelegation } : {}),
       };
       await props.onAccept(selection);
     },

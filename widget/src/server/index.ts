@@ -9,8 +9,11 @@
 // because it talks to the SP's internal MCP server.
 export {
   ACCEPT_TERMS_SCOPE,
+  AgentScopesLookupError,
+  ConsentNoGrantableScopesError,
   humanizeScope,
   resolveConsentScopes,
+  type AgentScopesSource,
   type ResolveConsentScopesOptions,
 } from './resolve-scopes.js';
 export type { CuratedScopeEntry, ScopeOption } from '../types.js';

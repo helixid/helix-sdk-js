@@ -11,7 +11,7 @@ import type { VerifyVPOptions, VerifyVPResult } from '../core/verification-types
 import { HttpAdapter } from '../http/HttpAdapter.js';
 
 /**
- * Full response from `POST /v1/vp/verify` — see docs/proposal-sdk-api-only.md.
+ * Full response from `POST /v1/vp/verify` — see the SDK-API-only design.
  * Superset of core's `VerifyVPResult` (same verification fields — parity is
  * enforced server-side, see helix-api's IVPService) plus the fields only the
  * API call itself can produce (targetService, verifiedAt, an optional
@@ -185,6 +185,23 @@ export interface IssueServiceDelegationGrantInput {
    * and consenting again to exactly the same scopes refreshes that grant.
    */
   revokeExisting?: boolean;
+  /**
+   * Whether the consent also covers agents this agent delegates to. Omitted,
+   * the grant carries no flag and verifiers treat it as allowed.
+   */
+  allowDelegation?: boolean;
+}
+
+export interface GetAgentScopesInput {
+  /** The service whose consent screen is asking; must be one the caller may grant for. */
+  serviceDid: string;
+  agentDid: string;
+}
+
+/** The scopes the agent holds as itself: the most any consent to it may grant. */
+export interface AgentScopesResult {
+  agentDid: string;
+  scopes: string[];
 }
 
 export interface CreateStatusListOptions {
@@ -381,6 +398,18 @@ export class HelixClient {
     return result.grantVC;
   }
 
+  /**
+   * The scopes `agentDid` holds as itself, from its own active onboarding
+   * credentials (never those delegated to it). Grant issuance refuses any
+   * scope outside this set, so a consent screen should offer no more.
+   */
+  async getAgentScopes(input: GetAgentScopesInput): Promise<AgentScopesResult> {
+    this.assertAPIConfigured();
+    if (!this.http.get) throw new Error('GET not implemented by adapter');
+    const query = new URLSearchParams({ serviceDid: input.serviceDid, agentDid: input.agentDid });
+    return this.http.get<AgentScopesResult>(`/v1/service-delegation-grants/agent-scopes?${query.toString()}`);
+  }
+
   async getStatusList(listId: string): Promise<StatusListCredentialResponse> {
     if (!this.http.get) throw new Error('GET not implemented by adapter');
     return this.http.get(`/v1/status-list/${encodeURIComponent(listId)}`);
@@ -406,7 +435,7 @@ export class HelixClient {
 
   async verifyVP(vp: SignedVP, options: VerifyVPOptions = {}): Promise<VerifyVPApiResult> {
     // Verification, audit logging (VP_VERIFIED/VP_REJECTED), and session
-    // issuance all happen server-side (see docs/proposal-sdk-api-only.md) —
+    // issuance all happen server-side (see the SDK-API-only design) —
     // no local verifyVP() call, no separate SDK-side audit write. Note
     // `statusListResolver` isn't forwarded: it's a function (not
     // serializable) and only ever used as helix-api's own internal

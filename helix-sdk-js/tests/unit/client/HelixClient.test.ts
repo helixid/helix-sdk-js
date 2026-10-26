@@ -95,7 +95,7 @@ describe('HelixClient Branch Coverage', () => {
   });
 
   describe('checkVCStatus branches', () => {
-    // Status is decided server-side (see docs/proposal-sdk-api-only.md) — the
+    // Status is decided server-side (see the SDK-API-only design) — the
     // SDK's only job is the GET and passing the status straight through.
     it('returns whatever status the API reports', async () => {
         mockHttp.get.mockResolvedValue({ vcId: 'vc:1', status: 'expired' });
@@ -182,6 +182,23 @@ describe('HelixClient Branch Coverage', () => {
       });
       expect(vc).toEqual({ id: 'vc-grant' });
       expect(mockHttp.post).toHaveBeenCalledWith('/v1/service-delegation-grants', expect.objectContaining({ serviceDid: 'did:web:sp' }));
+    });
+
+    it('issueServiceDelegationGrant passes allowDelegation through', async () => {
+      mockHttp.post.mockResolvedValue({ grantVC: { id: 'vc-grant' } });
+      await enterprise.issueServiceDelegationGrant({
+        serviceDid: 'did:web:sp', agentDid: DID, userDid: 'did:key:z6Mkuser', scopes: ['read:orders'], allowDelegation: false,
+      });
+      expect(mockHttp.post).toHaveBeenCalledWith('/v1/service-delegation-grants', expect.objectContaining({ allowDelegation: false }));
+    });
+
+    it('getAgentScopes reads the agent scopes for a service through the adapter', async () => {
+      mockHttp.get.mockResolvedValue({ agentDid: DID, scopes: ['read:orders'] });
+      const result = await enterprise.getAgentScopes({ serviceDid: 'did:web:sp', agentDid: DID });
+      expect(result).toEqual({ agentDid: DID, scopes: ['read:orders'] });
+      expect(mockHttp.get).toHaveBeenCalledWith(
+        `/v1/service-delegation-grants/agent-scopes?serviceDid=${encodeURIComponent('did:web:sp')}&agentDid=${encodeURIComponent(DID)}`,
+      );
     });
 
     it('registerVC posts the signed credential', async () => {

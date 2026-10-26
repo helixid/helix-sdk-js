@@ -56,6 +56,13 @@ export interface HelixConsentWidgetProps {
   scopesEndpoint?: string; // widget fetches from this at mount
   // (client round-trip path) — see Part B
 
+  /**
+   * Show the "also allow agents this agent delegates to" choice. Off by
+   * default; when off, the selection carries no `allowDelegation` and the
+   * grant is left without the flag, which verifiers treat as allowed.
+   */
+  offerDelegationChoice?: boolean;
+
   durabilityOptions?: DurabilityOption[]; // defaults below if omitted
   defaultDurability?: 'standing' | 'session'; // defaults to 'standing'
 
@@ -66,6 +73,11 @@ export interface HelixConsentWidgetProps {
 export interface ConsentSelection {
   scopes: string[];
   durability: 'standing' | 'session';
+  /**
+   * Present only when the delegation choice was offered: pass it to grant
+   * issuance as `allowDelegation`.
+   */
+  allowDelegation?: boolean;
 }
 
 export const DEFAULT_DURABILITY_OPTIONS: DurabilityOption[] = [
