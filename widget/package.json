@@ -1,6 +1,6 @@
 {
   "name": "@helixid/widget",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "HelixID consent widget \u2014 SP-side scope resolution and a headless consent-selection controller for issuing DelegationGrantCredentials.",
   "type": "module",
   "license": "Apache-2.0",
