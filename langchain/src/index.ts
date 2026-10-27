@@ -1,10 +1,9 @@
 export {
-  HelixIDMiddleware,
   HelixIDToolWrapper,
+  currentHelixVPHeaders,
   encodeBase64UrlJson,
-  type HelixIDMiddlewareOptions,
+  type HelixIDToolWrapperOptions,
   type LangChainMiddlewareOptions,
-  type RunnableConfigLike,
   type StructuredToolLike,
 } from './middleware.js';
 

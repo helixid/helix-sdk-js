@@ -4,10 +4,12 @@ import { mapApiError } from '../errors/index.js';
 export class HttpAdapter {
   private readonly baseUrl: string;
   private readonly adminApiKey: string | undefined;
+  private readonly apiKey: string | undefined;
 
-  constructor(baseUrl: string, options: { adminApiKey?: string } = {}) {
+  constructor(baseUrl: string, options: { adminApiKey?: string; apiKey?: string } = {}) {
     this.baseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
     this.adminApiKey = options.adminApiKey;
+    this.apiKey = options.apiKey;
   }
 
   async get<T>(path: string): Promise<T> {
@@ -26,13 +28,25 @@ export class HttpAdapter {
     return this.adminApiKey !== undefined && this.adminApiKey.length > 0;
   }
 
+  hasApiKey(): boolean {
+    return this.apiKey !== undefined && this.apiKey.length > 0;
+  }
+
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const url = path.startsWith('http') ? path : `${this.baseUrl}${path}`;
+    // One credential per client: an enterprise account API key is sent as
+    // the bearer token on every call (enterprise has no admin key at all),
+    // otherwise core's shared admin key goes in its own header.
+    const auth = this.apiKey
+      ? { authorization: `Bearer ${this.apiKey}` }
+      : this.adminApiKey
+        ? { 'x-admin-api-key': this.adminApiKey }
+        : {};
     const init: RequestInit = {
       method,
       headers: {
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-        ...(this.adminApiKey ? { 'x-admin-api-key': this.adminApiKey } : {}),
+        ...auth,
       },
     };
     if (body !== undefined) {

@@ -10,7 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-// See docs/proposal-retire-core-package.md. helix-core's Config type
+// See the retire-core-package design. helix-core's Config type
 // covers the entire application (accounts, rate limits, hosted-instance
 // settings, etc.) -- did-hedera only ever reads three Hedera-specific
 // fields, so a narrow local shape is duplicated here instead of the whole

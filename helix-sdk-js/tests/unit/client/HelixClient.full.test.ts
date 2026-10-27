@@ -70,7 +70,7 @@ describe('HelixClient Full Unit Tests', () => {
   });
 
   it('checks VC status - expired', async () => {
-    // Status is decided server-side (see docs/proposal-sdk-api-only.md) — the
+    // Status is decided server-side (see the SDK-API-only design) — the
     // client just relays whatever GET /v1/vcs/:id/status reports.
     const vc = { id: 'vc:expired-1', validUntil: new Date(Date.now() - 1000).toISOString() } as any;
     mockHttp.get.mockResolvedValue({ vcId: vc.id, status: 'expired' });
@@ -125,7 +125,7 @@ describe('HelixClient Full Unit Tests', () => {
 
   it('forwards VP verification to the API and returns its result as-is', async () => {
     // Verification and VP_VERIFIED/VP_REJECTED audit logging both happen
-    // server-side now (see docs/proposal-sdk-api-only.md) — the client makes
+    // server-side now (see the SDK-API-only design) — the client makes
     // exactly one POST and does not also write its own audit entry.
     const wallet = generateKeyPair();
     const did = `did:key:${publicKeyToMultibase(wallet.publicKey)}`;

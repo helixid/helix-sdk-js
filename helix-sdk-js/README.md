@@ -5,21 +5,20 @@ primitives, and DID/VC/VP construction and verification.
 
 ## Architecture
 
-Follows the **SDK-API-only** design (see `docs/proposal-sdk-api-only.md`
-and `docs/proposal-retire-core-package.md` in the `helixid/helixid` repo):
+Follows the **SDK-API-only** design:
 every SDK, in every language, depends only on the HelixID API — never on a
 shared "core" package — except for private-key operations that must stay
 local: keygen, sign, canonical-hash, and `VPBuilder.sign()`, which issuers
-and Service Providers still use to sign with their own keys. Verification,
-delegation-VC construction, DID resolution, and status checks are all API
-calls made through `HelixClient`.
+use to sign with their own keys. Verification, delegation-VC construction,
+DID resolution, and status checks are all API calls made through
+`HelixClient`.
 
-**Agents hold no keys.** Agent self-custody has been retired: the server
-generates an agent's keypair during onboarding and holds the private key,
-so onboarding, presenting, and delegating are all API calls
-(`HelixClient.onboardAgent()`, `signVP()`, `delegateAuthority()`).
-`AgentWallet` remains for other actors' key storage (e.g. an issuer's or
-Service Provider's own key material), not for agent onboarding.
+**Agents and Service Providers hold no keys.** The server generates the
+keypair when an agent is onboarded or a service is enrolled and holds the
+private key, so onboarding, presenting, delegating and issuing consent
+grants are all API calls (`HelixClient.onboardAgent()`, `signVP()`,
+`delegateAuthority()`, `createService()`, `issueServiceDelegationGrant()`).
+`AgentWallet` remains for an issuer's own key material only.
 
 ## Modules
 
@@ -32,7 +31,6 @@ Service Provider's own key material), not for agent onboarding.
 | `session/` | `SessionManager` — session-token issuance/verification |
 | `http/` | `HttpAdapter` — internal HTTP client |
 | `audit/` | SDK-side audit log implementation |
-| `grant.ts` | SP-side `issueGrant()` / `revokeGrant()` — signs and revokes `DelegationGrantCredential`s with the SP's own key |
 | `scope.ts` | `checkScope()` / `requireScope()` — local checks against a verification result's `effectiveScopes` |
 | `verify.ts` | `verifyVP()` — thin wrapper over `HelixClient.verifyVP()`; there is no local verification fallback by design |
 | `vp-builder.ts` | `VPBuilder` — local VP construction and signing (the explicit private-key carveout above) |

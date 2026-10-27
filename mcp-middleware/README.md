@@ -1,25 +1,23 @@
 # @helixid/mcp-middleware
 
-Thin MCP adapter for Helix ID. It verifies `_helixVP` on inbound tool calls and attaches a locally signed VP to outbound tool calls. No API URL or `HelixClient` required at runtime.
+Thin MCP adapter for Helix ID. It verifies the VP on inbound tool calls and attaches a server-signed VP to outbound tool calls. The VP never travels in tool arguments: it is carried as base64url-encoded JSON in the MCP request's `params._meta["x-helix-vp"]` (any transport, including stdio) or, over HTTP, in the `X-Helix-VP` header.
 
 ```ts
+import { HelixClient } from '@helixid/sdk-js';
 import { helixidMCPMiddleware, attachHelixVP } from '@helixid/mcp-middleware';
 
-const requireHelix = helixidMCPMiddleware({
-  requiredScopes: ['read:orders'],
-});
+const client = new HelixClient({ apiKey: process.env.HELIX_API_KEY! });
 
-const outboundCall = await attachHelixVP(
+// Client side: sign a VP and put it in _meta (input is left untouched).
+const call = await attachHelixVP(
   { name: 'orders.lookup', input: { orderId: 'ORD-1001' } },
-  {
-    walletPassphrase: process.env.AGENT_WALLET_PASSPHRASE!,
-    walletFilePath: './agent-wallet.json',
-    targetService: 'orders',
-    userDid: 'did:web:user.example.com',
-  },
+  { client, agentDid: process.env.AGENT_DID!, targetService: 'orders', userDid: 'did:web:user.example.com' },
 );
+await mcpClient.callTool({ name: call.name!, arguments: call.input, _meta: call._meta });
 
-await requireHelix(outboundCall);
+// Server side: pass the request's params._meta (and, over HTTP, the request headers).
+const requireHelix = helixidMCPMiddleware({ client, requiredScopes: ['read:orders'] });
+await requireHelix({ name, input: args, _meta: request.params._meta, headers: req.headers });
 ```
 
-VP signing and verification use standalone `@helixid/sdk-js` functions (`VPBuilder`, `verifyVP`, `requireScope`). Replay protection remains the verifier's responsibility (see `examples/replay-protection/`).
+`helixidMCPMiddleware` reads the VP from `_meta["x-helix-vp"]` or the `X-Helix-VP` header, never from `input`, and throws `VPMissingError` when neither is present. Signing (`client.signVP()`) and verification (`verifyVP`, `requireScope`) come from `@helixid/sdk-js`. Replay protection remains the verifier's responsibility (see `examples/replay-protection/`).

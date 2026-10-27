@@ -10,8 +10,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-// Consumer-side contract test — see docs/proposal-sdk-api-only.md and
-// docs/proposal-retire-core-package.md. Mirrors helix-core's own
+// Consumer-side contract test — see the SDK-API-only design and
+// the retire-core-package design. Mirrors helix-core's own
 // tests/unit/golden-vectors.test.ts: same fixture files, this package's own
 // import of VPBuilder/signing primitives, asserting byte-for-byte equality.
 //

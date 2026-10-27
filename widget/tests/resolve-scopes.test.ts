@@ -4,176 +4,86 @@
 // You may obtain a copy of the License at
 //    http://www.apache.org/licenses/LICENSE-2.0
 //
-// Part E test table, Part A rows, as amended by register D5:
-//   - row 4 (filtering against requestedScopes) deleted
-//   - rows 1 and 3 reworded off the "requested scope" framing
-//   - new row: full catalog returned regardless of agentDid
+// resolveConsentScopes: the consent screen offers the service's scopes that
+// the agent holds as itself, plus accept-terms; it fails closed when the
+// agent's scopes cannot be read or the two sets share nothing.
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   ACCEPT_TERMS_SCOPE,
+  AgentScopesLookupError,
+  ConsentNoGrantableScopesError,
   humanizeScope,
   resolveConsentScopes,
   type CuratedScopeEntry,
 } from '../src/server/resolve-scopes.js';
 
-const MCP_URL = 'http://localhost:3100/api/mcp';
+const SERVICE_DID = 'did:web:air.example';
+const AGENT_DID = 'did:key:zAgent';
 
-const AIRLINE_CATALOG: CuratedScopeEntry[] = [
+const AIRLINE_SCOPES: CuratedScopeEntry[] = [
   { scope: 'book:flights', label: 'Book flights', description: 'Buy tickets on your behalf' },
-  { scope: 'modify:booking', label: 'Modify bookings' },
+  { scope: 'modify:booking', label: 'Modify bookings', required: true },
+  { scope: 'cancel:booking', label: '' },
 ];
 
-function mockToolsList(tools: unknown[]): ReturnType<typeof vi.spyOn> {
-  return vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: async () => ({ jsonrpc: '2.0', id: 1, result: { tools } }),
-  } as Response);
+function clientHolding(scopes: string[]) {
+  return { getAgentScopes: vi.fn(async () => ({ agentDid: AGENT_DID, scopes })) };
 }
 
-function byScope(options: Array<{ scope: string }>, scope: string) {
-  return options.find((option) => option.scope === scope);
+function resolve(client: ReturnType<typeof clientHolding>, serviceScopes = AIRLINE_SCOPES) {
+  return resolveConsentScopes({ serviceDid: SERVICE_DID, agentDid: AGENT_DID, serviceScopes, client });
 }
 
-afterEach(() => {
-  vi.restoreAllMocks();
-});
+describe('resolveConsentScopes', () => {
+  it('offers the service scopes the agent holds, in the service order, plus accept-terms', async () => {
+    const client = clientHolding(['modify:booking', 'book:flights', 'book:hotel']);
 
-describe('resolveConsentScopes (Part A)', () => {
-  it('row 1: curated-only, no mcpServerUrl — curated labels for every curated scope, plus accept-terms', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const options = await resolve(client);
 
-    const options = await resolveConsentScopes({ curatedFallback: AIRLINE_CATALOG });
-
-    expect(options.map((option) => option.scope)).toEqual([
-      'book:flights',
-      'modify:booking',
-      ACCEPT_TERMS_SCOPE,
-    ]);
-    expect(byScope(options, 'book:flights')).toMatchObject({
+    expect(options.map((option) => option.scope)).toEqual(['book:flights', 'modify:booking', ACCEPT_TERMS_SCOPE]);
+    expect(options[0]).toEqual({
+      scope: 'book:flights',
       label: 'Book flights',
       description: 'Buy tickets on your behalf',
     });
-    expect(byScope(options, 'modify:booking')?.label).toBe('Modify bookings');
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(options[1]).toMatchObject({ required: true });
+    expect(client.getAgentScopes).toHaveBeenCalledWith({ serviceDid: SERVICE_DID, agentDid: AGENT_DID });
   });
 
-  it('row 2: both sources describe the same scope — MCP wins', async () => {
-    mockToolsList([
-      {
-        name: 'book_flight',
-        description: 'MCP-sourced description',
-        metadata: { requiredScope: 'book:flights', label: 'MCP-sourced label' },
-      },
+  it('never offers an agent scope the service does not list (book:hotel above)', async () => {
+    const options = await resolve(clientHolding(['book:flights', 'book:hotel']));
+    expect(options.map((option) => option.scope)).not.toContain('book:hotel');
+  });
+
+  it('falls back to humanizeScope() for a scope with an empty label', async () => {
+    const options = await resolve(clientHolding(['cancel:booking']));
+    expect(options[0]).toMatchObject({ scope: 'cancel:booking', label: 'cancel booking' });
+  });
+
+  it('always appends accept-terms required and pre-checked, even if the service lists it', async () => {
+    const options = await resolve(clientHolding(['book:flights', ACCEPT_TERMS_SCOPE]), [
+      ...AIRLINE_SCOPES,
+      { scope: ACCEPT_TERMS_SCOPE, label: 'Terms' },
     ]);
-
-    const options = await resolveConsentScopes({
-      mcpServerUrl: MCP_URL,
-      curatedFallback: AIRLINE_CATALOG,
-    });
-
-    expect(byScope(options, 'book:flights')).toMatchObject({
-      label: 'MCP-sourced label',
-      description: 'MCP-sourced description',
-    });
-    // The curated-only scope is untouched by the overlay.
-    expect(byScope(options, 'modify:booking')?.label).toBe('Modify bookings');
-  });
-
-  it('row 3: resolved scope that neither source describes — falls back to humanizeScope()', async () => {
-    mockToolsList([
-      // Contributes a scope no curated entry covers, and carries no label.
-      { name: 'cancel_booking', metadata: { requiredScope: 'cancel:booking' } },
-    ]);
-
-    const options = await resolveConsentScopes({
-      mcpServerUrl: MCP_URL,
-      curatedFallback: AIRLINE_CATALOG,
-    });
-
-    expect(byScope(options, 'cancel:booking')?.label).toBe('cancel booking');
-    expect(options.every((option) => option.label.length > 0)).toBe(true);
-  });
-
-  it('row 5: accept-terms is always present, required, regardless of inputs', async () => {
-    const curatedOnly = await resolveConsentScopes({ curatedFallback: AIRLINE_CATALOG });
-    const emptyCatalog = await resolveConsentScopes({ curatedFallback: [] });
-    mockToolsList([{ name: 'book_flight', metadata: { requiredScope: 'book:flights' } }]);
-    const withMcp = await resolveConsentScopes({ mcpServerUrl: MCP_URL, curatedFallback: [] });
-
-    for (const options of [curatedOnly, emptyCatalog, withMcp]) {
-      expect(byScope(options, ACCEPT_TERMS_SCOPE)).toMatchObject({
-        required: true,
-        defaultChecked: true,
-      });
-    }
-    expect(emptyCatalog).toHaveLength(1);
-  });
-
-  it('new row (D5): the full catalog is returned — the resolver takes no agent identity at all', async () => {
-    mockToolsList([
-      { name: 'book_flight', metadata: { requiredScope: 'book:flights' } },
-      { name: 'cancel_booking', metadata: { requiredScope: 'cancel:booking' } },
-    ]);
-
-    const options = await resolveConsentScopes({
-      mcpServerUrl: MCP_URL,
-      curatedFallback: AIRLINE_CATALOG,
-    });
-
-    // curated ∪ MCP ∪ accept-terms — nothing is filtered out.
-    expect(options.map((option) => option.scope).sort()).toEqual(
-      ['accept-terms', 'book:flights', 'cancel:booking', 'modify:booking'].sort(),
-    );
-    // There is no agentDid (or requestedScopes) input that could narrow this.
-    expect(Object.keys({ mcpServerUrl: MCP_URL, curatedFallback: [] })).toEqual([
-      'mcpServerUrl',
-      'curatedFallback',
+    expect(options.filter((option) => option.scope === ACCEPT_TERMS_SCOPE)).toEqual([
+      { scope: ACCEPT_TERMS_SCOPE, label: 'Accept the terms and conditions', required: true, defaultChecked: true },
     ]);
   });
 
-  it('inserts every MCP tool carrying a requiredScope, and ignores tools without one', async () => {
-    mockToolsList([
-      // Per register D7 search tools declare no requiredScope — no consent entry.
-      { name: 'search_flights', description: 'Open, read-only' },
-      { name: 'book_flight', metadata: { requiredScope: 'book:flights' } },
-    ]);
-
-    const options = await resolveConsentScopes({ mcpServerUrl: MCP_URL, curatedFallback: [] });
-
-    expect(options.map((option) => option.scope)).toEqual(['book:flights', ACCEPT_TERMS_SCOPE]);
+  it('throws ConsentNoGrantableScopesError when the agent holds none of the service scopes', async () => {
+    const attempt = resolve(clientHolding(['book:hotel', ACCEPT_TERMS_SCOPE]));
+    await expect(attempt).rejects.toBeInstanceOf(ConsentNoGrantableScopesError);
+    await expect(attempt).rejects.toMatchObject({ code: 'CONSENT_NO_GRANTABLE_SCOPES' });
   });
 
-  it('falls back to the curated catalog when the MCP server is unreachable', async () => {
-    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
+  it('throws AgentScopesLookupError, never the full catalog, when the lookup fails', async () => {
+    const failure = new Error('agent not found');
+    const client = { getAgentScopes: vi.fn(async () => Promise.reject(failure)) };
 
-    const options = await resolveConsentScopes({
-      mcpServerUrl: MCP_URL,
-      curatedFallback: AIRLINE_CATALOG,
-    });
-
-    expect(options.map((option) => option.scope)).toEqual([
-      'book:flights',
-      'modify:booking',
-      ACCEPT_TERMS_SCOPE,
-    ]);
-  });
-
-  it('falls back to the curated catalog when MCP responds non-200', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: false,
-      status: 503,
-      json: async () => ({}),
-    } as Response);
-
-    const options = await resolveConsentScopes({
-      mcpServerUrl: MCP_URL,
-      curatedFallback: AIRLINE_CATALOG,
-    });
-
-    expect(options.map((option) => option.scope)).toContain('book:flights');
-    expect(byScope(options, ACCEPT_TERMS_SCOPE)).toBeDefined();
+    const attempt = resolve(client as unknown as ReturnType<typeof clientHolding>);
+    await expect(attempt).rejects.toBeInstanceOf(AgentScopesLookupError);
+    await expect(attempt).rejects.toMatchObject({ code: 'AGENT_SCOPES_LOOKUP_FAILED', cause: failure });
   });
 });
 

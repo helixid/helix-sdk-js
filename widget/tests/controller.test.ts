@@ -149,8 +149,37 @@ describe('consent controller (Part C)', () => {
   });
 });
 
+describe('delegation choice', () => {
+  it('is not offered by default, and the selection then carries no allowDelegation', async () => {
+    const { props, onAccept } = makeProps();
+    const controller = createConsentController(props);
+    await controller.load();
+
+    expect(controller.getState()).toMatchObject({ delegationChoiceOffered: false, allowDelegation: false });
+    controller.setAllowDelegation(true);
+    expect(controller.getState().allowDelegation).toBe(false);
+
+    await controller.accept();
+    expect(onAccept.mock.calls[0]?.[0]).not.toHaveProperty('allowDelegation');
+  });
+
+  it('when offered, starts unchecked and sends the user choice either way', async () => {
+    const { props, onAccept } = makeProps({ offerDelegationChoice: true });
+    const controller = createConsentController(props);
+    await controller.load();
+
+    expect(controller.getState()).toMatchObject({ delegationChoiceOffered: true, allowDelegation: false });
+    await controller.accept();
+    expect(onAccept.mock.calls[0]?.[0]).toMatchObject({ allowDelegation: false });
+
+    controller.setAllowDelegation(true);
+    await controller.accept();
+    expect(onAccept.mock.calls[1]?.[0]).toMatchObject({ allowDelegation: true });
+  });
+});
+
 describe('scopesEndpoint fetch path (register D3)', () => {
-  it('resolves scopes from the endpoint and sends agentDid for audit correlation', async () => {
+  it('resolves scopes from the endpoint, sending agentDid so the route can narrow them to the agent', async () => {
     const fetchSpy = mockScopesResponse(SCOPE_OPTIONS);
     const { props } = makeProps({ scopesEndpoint: '/api/consent/scopes' });
     delete (props as Partial<HelixConsentWidgetProps>).scopeOptions;
@@ -176,29 +205,6 @@ describe('scopesEndpoint fetch path (register D3)', () => {
     expect(String(fetchSpy.mock.calls[0]?.[0])).toBe(
       '/api/consent/scopes?locale=en&agentDid=did%3Akey%3AzAgent',
     );
-  });
-
-  it('returns the same catalog regardless of agentDid (D4 — correlation only)', async () => {
-    const fetchSpy = mockScopesResponse(SCOPE_OPTIONS);
-
-    const first = makeProps({ scopesEndpoint: '/api/consent/scopes', agentDid: 'did:key:zAgentOne' });
-    delete (first.props as Partial<HelixConsentWidgetProps>).scopeOptions;
-    const second = makeProps({
-      scopesEndpoint: '/api/consent/scopes',
-      agentDid: 'did:key:zAgentTwo',
-    });
-    delete (second.props as Partial<HelixConsentWidgetProps>).scopeOptions;
-
-    const controllerOne = createConsentController(first.props);
-    const controllerTwo = createConsentController(second.props);
-    await controllerOne.load();
-    await controllerTwo.load();
-
-    // Both agent identities were transmitted...
-    expect(String(fetchSpy.mock.calls[0]?.[0])).toContain('zAgentOne');
-    expect(String(fetchSpy.mock.calls[1]?.[0])).toContain('zAgentTwo');
-    // ...and neither changed the catalog.
-    expect(controllerOne.getState().scopeOptions).toEqual(controllerTwo.getState().scopeOptions);
   });
 
   it('non-200 response — error state, Accept disabled, Decline still available', async () => {

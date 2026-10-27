@@ -318,7 +318,7 @@ export class InsufficientScopeError extends HelixError {
 }
 
 export class VPMissingError extends HelixError {
-  constructor(message = 'No _helixVP in tool call input') {
+  constructor(message = 'No Verifiable Presentation in the X-Helix-VP header or MCP _meta["x-helix-vp"]') {
     super('VP_MISSING', message, 401);
   }
 }
@@ -491,7 +491,7 @@ export class PreparedPayloadPurposeMismatchError extends HelixError {
   }
 }
 
-// -- Agent VC renewal (see docs/proposal-sdk-api-only.md, "renewal" scope) --
+// -- Agent VC renewal (see the SDK-API-only design, "renewal" scope) --
 // Renewal is issuance-repeated-on-a-timer, signed by the same identity that
 // signed the original VC (see PreparedPayloadService.prepareAgentRenewal()).
 // These enforce standard credential-renewal hygiene: no renewing a revoked
@@ -535,7 +535,7 @@ export class ServiceAlreadyExistsError extends HelixError {
 }
 
 // ── Hosted accounts & auth (Item #1) ────────────────────────────────────────
-// See docs/proposal-hosted-instance.md ("Decided: accounts, login, and
+// See the hosted-instance design ("Decided: accounts, login, and
 // DID/key custody"). Account-facing auth errors only — key custody
 // implementation errors stay as generic InternalError, since their detail
 // should never reach a client response.

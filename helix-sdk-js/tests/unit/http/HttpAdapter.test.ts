@@ -95,4 +95,28 @@ describe('HttpAdapter Branch Coverage', () => {
       message: 'Enrollment token was not found'
     });
   });
+
+  it('sends an account api key as the bearer token and no admin header', async () => {
+    vi.mocked(fetch).mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) } as any);
+    const a2 = new HttpAdapter(baseUrl, { apiKey: 'hak_test' });
+    expect(a2.hasApiKey()).toBe(true);
+
+    await a2.post('/v1/service-delegation-grants', { serviceDid: 'did:web:sp' });
+
+    expect(fetch).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      headers: { 'content-type': 'application/json', authorization: 'Bearer hak_test' },
+    }));
+  });
+
+  it('sends the admin key in its own header when no api key is given', async () => {
+    vi.mocked(fetch).mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) } as any);
+    const a2 = new HttpAdapter(baseUrl, { adminApiKey: 'admin' });
+    expect(a2.hasApiKey()).toBe(false);
+
+    await a2.get('/v1/vcs');
+
+    expect(fetch).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      headers: { 'x-admin-api-key': 'admin' },
+    }));
+  });
 });

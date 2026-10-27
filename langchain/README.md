@@ -1,27 +1,25 @@
 # @helixid/langchain
 
-Thin LangChain/LangGraph adapter for Helix ID. It injects a locally signed VP into tool input metadata as `_helixVP`.
+Thin LangChain/LangGraph adapter for Helix ID. `HelixIDToolWrapper` signs a fresh VP (server-side, via `HelixClient`) on every tool call and passes the tool input through unchanged; the VP never travels in tool arguments. Inside the wrapped tool, `currentHelixVPHeaders()` returns `{ 'X-Helix-VP': <base64url VP> }` to send on the tool's outbound request.
 
 ```ts
-import { HelixIDMiddleware, HelixIDToolWrapper, filterToolsByScope } from '@helixid/langchain';
+import { HelixClient } from '@helixid/sdk-js';
+import { HelixIDToolWrapper, currentHelixVPHeaders, filterToolsByScope } from '@helixid/langchain';
 
-const helix = HelixIDMiddleware({
-  walletPassphrase: process.env.AGENT_WALLET_PASSPHRASE!,
-  walletFilePath: './agent-wallet.json',
-  targetService: 'orders',
-  userDid: 'did:key:user', // Optional, defaults to 'did:key:anonymous'
-});
+const client = new HelixClient({ apiKey: process.env.HELIX_API_KEY! });
+
+// Inside the tool's _call:
+//   await fetch(url, { headers: { ...currentHelixVPHeaders() } });
 
 const wrappedTool = HelixIDToolWrapper(existingTool, {
-  walletPassphrase: process.env.AGENT_WALLET_PASSPHRASE!,
-  walletFilePath: './agent-wallet.json',
+  client,
+  agentDid: process.env.AGENT_DID!,
   targetService: 'orders',
-  userDid: 'did:key:user',
+  userDid: 'did:key:user', // Optional
 });
 ```
 
 ## Features
 
-- **Local Signing**: signs verifiable presentations locally using the wallet keypair. No API client / network calls.
-- **Closure Cache**: loaded agent wallet is cached in the middleware closure to avoid expensive file decrypts on subsequent tool calls.
-- **Scope-based Tool Filtering**: filters a list of tools using `filterToolsByScope(tools, walletFilePath, walletPassphrase)` to only include tools whose metadata scope tag (`tool.metadata?.requiredScope`) or name matches the active privilege scopes of the agent VC.
+- **Per-call signing**: each wrapped call gets a fresh VP from `client.signVP()`; `currentHelixVPHeaders()` is empty outside a wrapped call.
+- **Scope-based Tool Filtering**: `filterToolsByScope(tools, client, agentDid)` keeps only tools whose metadata scope tag (`tool.metadata?.requiredScope`) or name matches the scopes of the agent's active VC.
