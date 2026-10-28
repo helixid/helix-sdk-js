@@ -37,9 +37,10 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       # Deliberately NOT upgrading npm here -- keep Node 24.15.0's bundled
-      # npm (11.12.1). See helix-core/.github/workflows/release.yml for why:
-      # a newer npm breaks `pnpm publish --no-git-checks`, which forwards
-      # that pnpm-only flag through to npm's own config parser on some npm
+      # npm (11.12.1). It already satisfies trusted publishing's npm>=11.5.1
+      # requirement, and (see helix-core/.github/workflows/release.yml) a
+      # newer npm breaks `pnpm publish --no-git-checks`, which forwards that
+      # pnpm-only flag through to npm's own config parser on some npm
       # versions, which then rejects it as unknown (EUNKNOWNCONFIG).
       - name: Install dependencies
         run: corepack enable && pnpm install --frozen-lockfile
@@ -56,10 +57,21 @@ jobs:
       # first-ever release) is published immediately, even with no pending
       # changeset.
       #
-      # Uses a classic NPM_TOKEN rather than npm's OIDC Trusted Publisher --
-      # see helix-core/.github/workflows/release.yml for the specific
-      # @changesets/cli + pnpm bug (patched in
-      # patches/@changesets__cli@3.0.2.patch) that motivates this.
+      # Publishes through npm's Trusted Publisher (OIDC): `id-token: write`
+      # above plus a publisher configured on npmjs.com for EACH package in
+      # this workspace (GitHub Actions, helixid/helix-sdk-js, release.yml).
+      # No npm token is involved -- with NPM_TOKEN unset, changesets/action
+      # leaves auth to npm, which exchanges the Actions OIDC token and
+      # attaches a provenance attestation to every published version.
+      #
+      # A package added to the workspace needs its trusted publisher set up
+      # on npmjs.com before its first CI release, or npm has nothing to
+      # authenticate with and the publish fails with E404 (that is what
+      # happened to widget, mcp-middleware and mcp-server on 27 Oct 2026).
+      #
+      # The @changesets/cli + pnpm pre-check bug that is patched in
+      # patches/@changesets__cli@3.0.2.patch is unrelated to auth; see
+      # helix-core/.github/workflows/release.yml for the details.
       - name: Create Release PR or publish
         uses: changesets/action@v1
         with:
@@ -67,4 +79,3 @@ jobs:
           publish: pnpm run release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
