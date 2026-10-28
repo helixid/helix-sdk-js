@@ -1,5 +1,13 @@
 # @helixid/mcp-middleware
 
+## 0.3.1
+
+### Patch Changes
+
+- 5c2fcda: Publish from CI via npm trusted publishing (OIDC) with provenance. No code
+  changes: the previous versions of these three packages were published by hand
+  because they had no trusted publisher configured on npm.
+
 ## 0.3.0
 
 ### Minor Changes
