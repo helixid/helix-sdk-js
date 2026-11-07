@@ -41,9 +41,9 @@ export interface HelixAuditSinkOptions {
  * An `AuditSink` that posts to `POST /v1/audit-log/events`. It is built on
  * plain `fetch`, not `HelixClient`, so no new public SDK method is needed.
  *
- * The events route has no field for an OAuth subject yet, so for OAuth callers
- * the subject is also written into `resultSummary`; `oauthSubject` is sent
- * as-is for when the API starts storing it.
+ * OAuth callers are identified by `oauthSubject`, which the API shows only to
+ * accounts with full access to the row (the service side). It is deliberately
+ * not copied into any field other viewers can see, such as `resultSummary`.
  */
 export function createHelixAuditSink(options: HelixAuditSinkOptions): AuditSink {
   const base = options.baseUrl.replace(/\/+$/, '');
@@ -67,9 +67,7 @@ export function createHelixAuditSink(options: HelixAuditSinkOptions): AuditSink 
         effectiveScopes: e.effectiveScopes,
         result: e.result,
         ...(e.reason ? { reason: e.reason } : {}),
-        ...(e.oauthSubject
-          ? { oauthSubject: e.oauthSubject, resultSummary: `oauth subject: ${e.oauthSubject}` }
-          : {}),
+        ...(e.oauthSubject ? { oauthSubject: e.oauthSubject } : {}),
         source: 'mcp-middleware',
       }),
       signal: AbortSignal.timeout(options.timeoutMs ?? 5_000),

@@ -347,6 +347,8 @@ describe('audit', () => {
       event: 'AUTHZ_DENIED', serviceDid: 'did:web:svc', toolName: 't', requiredScope: 'read',
       result: 'denied', oauthSubject: 'user-9', source: 'mcp-middleware',
     });
+    // The subject goes only in oauthSubject, never in a field every viewer sees.
+    expect(JSON.parse(init.body as string)).not.toHaveProperty('resultSummary');
   });
 
   it('createHelixAuditSink refuses an event with no agentDid and no serviceDid', async () => {
