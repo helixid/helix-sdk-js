@@ -4,5 +4,6 @@ packages:
   - 'did-hedera'
   - 'langchain'
   - 'mcp-middleware'
+  - 'mcp-middleware/examples/*'
   - 'mcp-server'
   - 'widget'

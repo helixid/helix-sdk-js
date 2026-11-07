@@ -24,6 +24,9 @@ await requireHelix({ name, input: args, _meta: request.params._meta, headers: re
 
 ## HTTP auth, per-tool scopes and audit (Phase 1)
 
+A runnable sample, an order-management MCP server with a 5-minute quickstart, is in
+[`examples/order-management`](./examples/order-management) (repository only; not part of the npm package).
+
 Credentials, in the order they are looked up: `Authorization: HelixVP <base64url_vp>`, the legacy `X-Helix-VP` header, and (stdio / any transport) `_meta["x-helix-vp"]`; or `Authorization: Bearer <token>` for OAuth 2.1 clients. Different VPs in different places, two `Authorization` headers, or a VP together with a bearer token are rejected with `CREDENTIAL_CONFLICT` rather than picking one. The same VP repeated is fine.
 
 ```ts

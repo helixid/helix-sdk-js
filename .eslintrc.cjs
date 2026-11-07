@@ -41,6 +41,11 @@ module.exports = {
       parserOptions: { project: ['./mcp-middleware/tsconfig.eslint.json'] },
     },
     {
+      // Sample servers: own package and tsconfig. Must come after mcp-middleware/** to win.
+      files: ['mcp-middleware/examples/order-management/**/*.ts'],
+      parserOptions: { project: ['./mcp-middleware/examples/order-management/tsconfig.eslint.json'] },
+    },
+    {
       files: ['mcp-server/**/*.ts'],
       parserOptions: { project: ['./mcp-server/tsconfig.eslint.json'] },
     },
