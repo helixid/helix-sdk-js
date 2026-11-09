@@ -146,7 +146,7 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions) {
     const missing = required.find((scope) => !caller.scopes.includes(scope));
     if (missing !== undefined) {
       await audit(caller, toolName, { scope: missing, reason: 'insufficient scope' });
-      throw new ToolScopeError(missing);
+      throw new ToolScopeError(missing, required);
     }
 
     await audit(caller, toolName, undefined);

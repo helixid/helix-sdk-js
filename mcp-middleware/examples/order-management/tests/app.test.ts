@@ -173,6 +173,33 @@ describe('order-management sample server', () => {
     expect(res.status).toBe(400);
   });
 
+  it('answers 503 with Retry-After, not 401, when the authorization server cannot be reached', async () => {
+    const down = createOrderServer({
+      resource: 'http://localhost/mcp',
+      store: createOrderStore(),
+      auth: {
+        oauth: { issuer: 'http://127.0.0.1:9', audience: 'http://localhost/mcp', jwksUri: 'http://127.0.0.1:9/jwks', fetch: async () => { throw new Error('ECONNREFUSED'); } },
+        onAuditError: () => {},
+      },
+      onServerError: () => {},
+    });
+    await new Promise<void>((resolve) => down.listen(0, '127.0.0.1', resolve));
+    try {
+      const port = (down.address() as AddressInfo).port;
+      const jwt = `${Buffer.from(JSON.stringify({ alg: 'ES256', kid: 'k' })).toString('base64url')}.${Buffer.from(JSON.stringify({ iss: 'http://127.0.0.1:9', aud: 'http://localhost/mcp', sub: 'u', exp: 9999999999 })).toString('base64url')}.c2ln`;
+      const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: `Bearer ${jwt}` },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'lookup_order', arguments: { orderId: 'ORD-1001' } } }),
+      });
+      expect(res.status).toBe(503);
+      expect(res.headers.get('retry-after')).toBe('5');
+      expect(await res.json()).toMatchObject({ error: 'temporarily_unavailable' });
+    } finally {
+      await new Promise<void>((resolve) => down.close(() => resolve()));
+    }
+  });
+
   it('rejects a malformed body, wrong methods and unknown paths', async () => {
     const bad = await fetch(`${base}/mcp`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{' });
     expect(bad.status).toBe(400);

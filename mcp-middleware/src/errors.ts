@@ -38,11 +38,15 @@ export class MCPAuthError extends Error {
  * it in the message; the code stays INSUFFICIENT_SCOPE for existing handlers.
  */
 export class ToolScopeError extends InsufficientScopeError {
+  /** The first scope the caller lacked (what the audit row records). */
   public readonly requiredScope: string;
+  /** Everything the tool requires: what the RFC 6750 `scope` challenge lists, so one retry can fix it. */
+  public readonly requiredScopes: readonly string[];
 
-  constructor(requiredScope: string) {
+  constructor(requiredScope: string, requiredScopes: readonly string[] = [requiredScope]) {
     super(requiredScope);
     this.requiredScope = requiredScope;
+    this.requiredScopes = requiredScopes;
   }
 }
 

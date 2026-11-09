@@ -70,7 +70,7 @@ describe('introspection validator (RFC 7662)', () => {
       ['wrong issuer', { active: true, ...active({ iss: 'https://evil.example.com' }) }],
       ['expired', { active: true, ...active({ exp: now() - 3600 }) }],
       ['not yet valid', { active: true, ...active({ nbf: now() + 3600 }) }],
-      ['no subject', { active: true, ...active({ sub: undefined }) }],
+      ['no subject and no client_id', { active: true, ...active({ sub: undefined, client_id: undefined }) }],
     ];
     for (const [label, body] of cases) {
       const v = createIntrospectionValidator({ ...base, fetch: vi.fn(async () => json(body)) as unknown as typeof fetch });
@@ -111,7 +111,7 @@ describe('introspection validator (RFC 7662)', () => {
     const f = introspectionFetch({ short: active({ exp: now() + 1 }) });
     const v = createIntrospectionValidator({ ...base, clockToleranceSeconds: 0, introspection: { ...base.introspection, cacheTtlMs: 60_000 }, fetch: f });
     await v('short');
-    vi.useFakeTimers({ now: Date.now() + 1_500, toFake: ['Date'] });
+    vi.useFakeTimers({ now: Date.now() + 2_500, toFake: ['Date'] });
     try {
       // Past exp: the cached answer is dropped and the issuer asked again (which now says expired).
       await expect(v('short')).rejects.toMatchObject({ code: 'OAUTH_TOKEN_INVALID', message: 'Token expired' });
@@ -134,6 +134,45 @@ describe('introspection validator (RFC 7662)', () => {
       expect(err, label).toBeInstanceOf(AuthorizationServerUnavailableError);
       expect(toHttpErrorResponse(err, { resourceMetadataUrl: 'https://mcp.example.com/.well-known/oauth-protected-resource/mcp' }), label).toBeUndefined();
     }
+  });
+
+  it('a client-credentials token with client_id but no sub is identified by its client_id', async () => {
+    const v = createIntrospectionValidator({ ...base, fetch: vi.fn(async () => json({ active: true, ...active({ sub: undefined, client_id: 'svc-7' }) })) as unknown as typeof fetch });
+    await expect(v('t')).resolves.toMatchObject({ sub: 'svc-7', clientId: 'svc-7' });
+  });
+
+  it('refuses an active token the issuer labels as something other than an access token', async () => {
+    const v = createIntrospectionValidator({ ...base, fetch: vi.fn(async () => json({ active: true, ...active(), token_type: 'Refresh' })) as unknown as typeof fetch });
+    await expect(v('t')).rejects.toMatchObject({ code: 'OAUTH_TOKEN_INVALID', message: 'Not an access token (token_type)' });
+    const ok = createIntrospectionValidator({ ...base, fetch: vi.fn(async () => json({ active: true, ...active(), token_type: 'Bearer' })) as unknown as typeof fetch });
+    await expect(ok('t')).resolves.toMatchObject({ sub: 'opaque-user' });
+  });
+
+  it('form-encodes client credentials before Basic-encoding them (RFC 6749 §2.3.1)', async () => {
+    const f = introspectionFetch({ t: active() });
+    const v = createIntrospectionValidator({ ...base, introspection: { ...base.introspection, clientId: 'my client', clientSecret: 'p@ss+w!rd' }, fetch: f });
+    await v('t');
+    const [, init] = (f as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)['authorization']).toBe(`Basic ${Buffer.from('my+client:p%40ss%2Bw%21rd').toString('base64')}`);
+  });
+
+  it('sweeps expired cache entries once the cache is large', async () => {
+    const shortLived = Object.fromEntries(Array.from({ length: 1_000 }, (_, i) => [`t${i}`, active({ exp: now() + 1 })]));
+    const f = introspectionFetch({ ...shortLived, fresh: active({ exp: now() + 300 }) });
+    const v = createIntrospectionValidator({ ...base, clockToleranceSeconds: 0, introspection: { ...base.introspection, cacheTtlMs: 60_000 }, fetch: f });
+    for (let i = 0; i < 1_000; i += 1) await v(`t${i}`);
+    vi.useFakeTimers({ now: Date.now() + 2_500, toFake: ['Date'] });
+    try {
+      // The 1001st insert finds the cache at the sweep size and drops the 1000 expired entries before storing.
+      await expect(v('fresh')).resolves.toMatchObject({ sub: 'opaque-user' });
+      // An old token is asked about again (its entry is gone) and is now expired.
+      await expect(v('t0')).rejects.toMatchObject({ code: 'OAUTH_TOKEN_INVALID', message: 'Token expired' });
+      // The fresh one is served from cache.
+      await v('fresh');
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(f).toHaveBeenCalledTimes(1_002);
   });
 
   it('requires https for the introspection endpoint except on loopback', () => {
@@ -212,6 +251,13 @@ describe('multi-issuer validator', () => {
     await expect(mk(says({ active: false }), says({ active: true, ...active({ iss: 'https://two.example.com' }) }))('t')).resolves.toMatchObject({ sub: 'opaque-user' });
     // Both say no: the caller's token is bad.
     await expect(mk(says({ active: false }), says({ active: false }))('t')).rejects.toMatchObject({ code: 'OAUTH_TOKEN_INVALID' });
+    // The first recognises the token as its own but for another audience: refused there, never shown to the second.
+    const second = says({ active: true, ...active({ iss: 'https://two.example.com' }) });
+    await expect(mk(says({ active: true, ...active({ iss: 'https://one.example.com', aud: 'https://elsewhere' }) }), second)('t')).rejects.toMatchObject({
+      code: 'OAUTH_TOKEN_INVALID',
+      message: 'Token audience does not match this server',
+    });
+    expect(second).not.toHaveBeenCalled();
     // One is down and the other says no: the token might still be good at the one that is down.
     await expect(mk(down, says({ active: false }))('t')).rejects.toBeInstanceOf(AuthorizationServerUnavailableError);
   });

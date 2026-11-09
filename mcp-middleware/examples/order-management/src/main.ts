@@ -60,13 +60,30 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 const asString = (value: unknown): string | undefined => (typeof value === 'string' && value.length > 0 ? value : undefined);
 
+/** Refuses keys this sample does not pass through, so a misspelt or unsupported option fails loudly instead of silently changing behaviour. */
+function onlyKeys(raw: Record<string, unknown>, allowed: readonly string[], where: string): void {
+  const unknown = Object.keys(raw).filter((k) => !allowed.includes(k));
+  if (unknown.length > 0) fail(`${where}: unknown key(s) ${unknown.join(', ')}; allowed: ${allowed.join(', ')}`);
+}
+
 function introspectionOf(raw: Record<string, unknown> | undefined, where: string): OAuthIntrospectionOptions | undefined {
   if (!raw) return undefined;
+  onlyKeys(raw, ['endpoint', 'clientId', 'clientSecret', 'cacheTtlMs', 'allowMissingAudience'], `${where}.introspection`);
   const endpoint = asString(raw['endpoint']);
   const clientId = asString(raw['clientId']);
   const clientSecret = asString(raw['clientSecret']);
   if (!endpoint || !clientId || !clientSecret) fail(`${where}: introspection needs endpoint, clientId and clientSecret`);
-  return { endpoint, clientId, clientSecret };
+  const cacheTtlMs = raw['cacheTtlMs'];
+  const allowMissingAudience = raw['allowMissingAudience'];
+  if (cacheTtlMs !== undefined && (typeof cacheTtlMs !== 'number' || cacheTtlMs < 0)) fail(`${where}: cacheTtlMs must be a non-negative number`);
+  if (allowMissingAudience !== undefined && typeof allowMissingAudience !== 'boolean') fail(`${where}: allowMissingAudience must be a boolean`);
+  return {
+    endpoint,
+    clientId,
+    clientSecret,
+    ...(typeof cacheTtlMs === 'number' ? { cacheTtlMs } : {}),
+    ...(typeof allowMissingAudience === 'boolean' ? { allowMissingAudience } : {}),
+  };
 }
 
 /** The trusted authorization servers, from OAUTH_ISSUERS (several) and/or OAUTH_ISSUER (one). The audience is always this server. */
@@ -84,24 +101,33 @@ function oauthIssuersFromEnv(): OAuthIssuerOptions[] {
     parsed.forEach((item, i) => {
       const where = `OAUTH_ISSUERS[${i}]`;
       const entry = asRecord(item) ?? fail(`${where}: expected an object`);
+      onlyKeys(entry, ['issuer', 'jwksUri', 'introspection', 'requireAccessTokenType'], where);
       const issuer = asString(entry['issuer']) ?? fail(`${where}: issuer is required`);
       const jwksUri = asString(entry['jwksUri']);
       const introspection = introspectionOf(asRecord(entry['introspection']), where);
       if (!jwksUri && !introspection) fail(`${where}: needs jwksUri, introspection, or both`);
+      const requireAccessTokenType = entry['requireAccessTokenType'];
+      if (requireAccessTokenType !== undefined && typeof requireAccessTokenType !== 'boolean') fail(`${where}: requireAccessTokenType must be a boolean`);
       issuers.push({
         issuer,
         audience: resource,
         ...(jwksUri ? { jwksUri } : {}),
         ...(introspection ? { introspection } : {}),
+        ...(typeof requireAccessTokenType === 'boolean' ? { requireAccessTokenType } : {}),
       });
     });
   }
 
+  const clientVars = Boolean(env['OAUTH_CLIENT_ID'] || env['OAUTH_CLIENT_SECRET']);
   if (env['OAUTH_ISSUER']) {
     const jwksUri = env['OAUTH_JWKS_URI'];
     const introspectionUrl = env['OAUTH_INTROSPECTION_URL'];
     if (!jwksUri && !introspectionUrl) {
       fail('OAUTH_ISSUER needs OAUTH_JWKS_URI (JWT access tokens) or OAUTH_INTROSPECTION_URL + OAUTH_CLIENT_ID + OAUTH_CLIENT_SECRET (opaque tokens)');
+    }
+    if (clientVars && !introspectionUrl) {
+      // Otherwise the server would quietly start JWKS-only while the operator believes introspection is on.
+      fail('OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET are only used with OAUTH_INTROSPECTION_URL');
     }
     const introspection = introspectionUrl
       ? introspectionOf({ endpoint: introspectionUrl, clientId: env['OAUTH_CLIENT_ID'], clientSecret: env['OAUTH_CLIENT_SECRET'] }, 'OAUTH_INTROSPECTION_URL')
@@ -112,8 +138,8 @@ function oauthIssuersFromEnv(): OAuthIssuerOptions[] {
       ...(jwksUri ? { jwksUri } : {}),
       ...(introspection ? { introspection } : {}),
     });
-  } else if (env['OAUTH_JWKS_URI'] || env['OAUTH_INTROSPECTION_URL']) {
-    fail('OAUTH_JWKS_URI / OAUTH_INTROSPECTION_URL need OAUTH_ISSUER');
+  } else if (env['OAUTH_JWKS_URI'] || env['OAUTH_INTROSPECTION_URL'] || clientVars) {
+    fail('OAUTH_JWKS_URI / OAUTH_INTROSPECTION_URL / OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET need OAUTH_ISSUER');
   }
 
   return issuers;

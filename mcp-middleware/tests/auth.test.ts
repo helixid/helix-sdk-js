@@ -272,14 +272,18 @@ describe('RFC 9728 metadata and HTTP errors', () => {
     const mw = helixidMCPMiddleware({
       client,
       validateOAuthToken: async () => ({ sub: 'u', scopes: ['read'] }),
-      toolScopes: { t: ['admin'] },
+      toolScopes: { t: ['read', 'admin', 'export'] },
     });
     const err = await mw({ name: 't', headers: { authorization: 'Bearer x' } }).catch((e: unknown) => e);
     const res = toHttpErrorResponse(err, opts);
     expect(res?.status).toBe(403);
+    // The first missing scope is the message (and the audit row); the challenge lists everything the tool requires.
     expect(res?.headers['WWW-Authenticate']).toContain(
-      'error="insufficient_scope", error_description="Required scope: admin", scope="admin"',
+      'error="insufficient_scope", error_description="Required scope: admin", scope="read admin export"',
     );
+    // Header values are confined to the RFC 6750 charset.
+    const odd = toHttpErrorResponse(Object.assign(new Error('bad \u00e9\u0007 "quote" \\slash'), { code: 'VP_VERIFICATION_FAILED' }), opts);
+    expect(odd?.headers['WWW-Authenticate']).toContain('error_description="bad     quote   slash"');
     // An error that does not name the scope gets no scope attribute rather than a guess.
     expect(toHttpErrorResponse({ code: 'INSUFFICIENT_SCOPE', message: 'x' }, opts)?.headers['WWW-Authenticate']).not.toContain(
       'scope=',

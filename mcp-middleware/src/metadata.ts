@@ -54,7 +54,8 @@ export interface HttpErrorOptions {
   resourceMetadataUrl: string;
 }
 
-const quote = (value: string): string => `"${value.replace(/["\\\r\n]/g, ' ')}"`;
+// RFC 6750 §3: error_description and scope are limited to %x20-21 / %x23-5B / %x5D-7E.
+const quote = (value: string): string => `"${value.replace(/[^\x20-\x21\x23-\x5B\x5D-\x7E]/g, ' ')}"`;
 
 function challenge(scheme: 'Bearer' | 'HelixVP', params: Array<[string, string]>): string {
   return `${scheme} ${params.map(([k, v]) => `${k}=${quote(v)}`).join(', ')}`;
@@ -85,13 +86,18 @@ export function toHttpErrorResponse(error: unknown, options: HttpErrorOptions): 
   const mapped = typeof code === 'string' && Object.hasOwn(MAPPED, code) ? MAPPED[code] : undefined;
   if (!mapped) return undefined;
   const message = error instanceof Error ? error.message : 'Unauthorized';
-  const requiredScope = (error as { requiredScope?: unknown } | null)?.requiredScope;
+  const e = error as { requiredScope?: unknown; requiredScopes?: unknown } | null;
+  const required = Array.isArray(e?.requiredScopes)
+    ? e.requiredScopes.filter((x): x is string => typeof x === 'string')
+    : typeof e?.requiredScope === 'string'
+      ? [e.requiredScope]
+      : [];
   const params: Array<[string, string]> = [
     ...(mapped.error ? ([['error', mapped.error], ['error_description', message]] as Array<[string, string]>) : []),
-    // RFC 6750 §3: the scope the credential lacked, so a client can ask its
-    // authorization server for it and retry. Only when the error names one.
-    ...(mapped.error === 'insufficient_scope' && typeof requiredScope === 'string'
-      ? ([['scope', requiredScope]] as Array<[string, string]>)
+    // RFC 6750 §3: the scopes the resource requires, so a client can ask its
+    // authorization server for them and retry once. Only when the error names them.
+    ...(mapped.error === 'insufficient_scope' && required.length > 0
+      ? ([['scope', required.join(' ')]] as Array<[string, string]>)
       : []),
     ['resource_metadata', options.resourceMetadataUrl],
   ];

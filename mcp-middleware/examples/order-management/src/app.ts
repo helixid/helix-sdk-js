@@ -6,6 +6,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import {
+  AuthorizationServerUnavailableError,
   buildProtectedResourceMetadata,
   helixidMCPMiddleware,
   protectedResourceMetadataUrl,
@@ -96,7 +97,14 @@ export function createOrderServer(options: OrderServerOptions): Server {
 
   const serverError = (res: ServerResponse, error: unknown): void => {
     options.onServerError?.(error);
-    if (!res.headersSent) sendJson(res, 500, { error: 'server_error' });
+    if (res.headersSent) return;
+    // The caller's token was not shown to be bad; its authorization server
+    // could not be asked. Say so, and invite a retry.
+    if (error instanceof AuthorizationServerUnavailableError) {
+      sendJson(res, 503, { error: 'temporarily_unavailable', error_description: 'The authorization server could not be reached' }, { 'retry-after': '5' });
+      return;
+    }
+    sendJson(res, 500, { error: 'server_error' });
   };
 
   const handleMcp = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {

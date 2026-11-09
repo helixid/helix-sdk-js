@@ -122,6 +122,9 @@ function assertHttpsOrLoopback(uri: string, what: string): void {
 
 const nowSeconds = (): number => Math.floor(Date.now() / 1000);
 
+/** Expired introspection cache entries are swept when the cache reaches this many entries, so one-token-per-call workloads cannot grow it without bound. */
+const CACHE_SWEEP_AT = 1_000;
+
 function parseScopes(claims: Record<string, unknown>): string[] {
   const scope = claims['scope'] ?? claims['scp'];
   return typeof scope === 'string'
@@ -136,10 +139,26 @@ function audienceMatches(aud: unknown, audiences: string[]): boolean {
   return tokenAud.some((a) => typeof a === 'string' && audiences.includes(a));
 }
 
+/**
+ * Thrown when an issuer confirmed the token is genuine and active but its
+ * claims do not fit this server (wrong audience, expired, ...). Distinct from
+ * "not active" so the multi-issuer dispatcher stops there: the token is real
+ * and belongs to that issuer, so no other issuer should be shown it.
+ */
+class ActiveTokenRejectedError extends MCPAuthError {}
+
 /** The common claim checks, after the token is known to be genuine (signature verified, or introspected as active). */
 function checkStandardClaims(
   claims: Record<string, unknown>,
-  options: { issuer: string; audiences: string[]; tolerance: number; requireExp: boolean; requireAud: boolean },
+  options: {
+    issuer: string;
+    audiences: string[];
+    tolerance: number;
+    requireExp: boolean;
+    requireAud: boolean;
+    /** RFC 7662 makes `sub` optional: a client-credentials token may carry only `client_id`. */
+    subFromClientId?: boolean;
+  },
 ): AuthResult {
   const now = nowSeconds();
   const exp = claims['exp'];
@@ -158,9 +177,15 @@ function checkStandardClaims(
   } else if (!audienceMatches(aud, options.audiences)) {
     throw invalid('Token audience does not match this server');
   }
-  const sub = claims['sub'];
-  if (typeof sub !== 'string' || sub.length === 0) throw invalid('Token has no subject');
   const clientId = claims['client_id'] ?? claims['azp'];
+  const rawSub = claims['sub'];
+  const sub =
+    typeof rawSub === 'string' && rawSub.length > 0
+      ? rawSub
+      : options.subFromClientId && typeof clientId === 'string' && clientId.length > 0
+        ? clientId
+        : undefined;
+  if (sub === undefined) throw invalid('Token has no subject');
   return {
     sub,
     scopes: parseScopes(claims),
@@ -306,8 +331,10 @@ export function createIntrospectionValidator(
   const ttl = options.introspection.cacheTtlMs ?? 60_000;
   const requireAud = !options.introspection.allowMissingAudience;
   const doFetch = options.fetch ?? fetch;
-  // RFC 6749 §2.3.1: form-encode the id and secret before Basic-encoding them.
-  const basic = Buffer.from(`${encodeURIComponent(clientId)}:${encodeURIComponent(clientSecret)}`).toString('base64');
+  // RFC 6749 §2.3.1: apply application/x-www-form-urlencoded to the id and
+  // secret before Basic-encoding them (space -> '+', '!*'()' encoded; not quite encodeURIComponent).
+  const formEncode = (value: string): string => new URLSearchParams({ v: value }).toString().slice(2);
+  const basic = Buffer.from(`${formEncode(clientId)}:${formEncode(clientSecret)}`).toString('base64');
 
   const cache = new Map<string, { result: AuthResult; expiresAt: number }>();
   const keyOf = (token: string): string => createHash('sha256').update(token).digest('base64url');
@@ -350,10 +377,34 @@ export function createIntrospectionValidator(
     const claims = body as Record<string, unknown>;
     if (claims['active'] !== true) throw invalid('Token is not active');
 
-    const result = checkStandardClaims(claims, { issuer: options.issuer, audiences, tolerance, requireExp: false, requireAud });
+    // From here on the issuer has vouched for the token: a failure means it
+    // is a real token that does not fit this server, never "unknown token".
+    let result: AuthResult;
+    try {
+      // RFC 7662 lets an issuer report a refresh token as active; only access tokens may be bearers here.
+      const tokenType = claims['token_type'];
+      if (typeof tokenType === 'string' && !['bearer', 'access_token'].includes(tokenType.toLowerCase())) {
+        throw invalid('Not an access token (token_type)');
+      }
+      result = checkStandardClaims(claims, {
+        issuer: options.issuer,
+        audiences,
+        tolerance,
+        requireExp: false,
+        requireAud,
+        subFromClientId: true,
+      });
+    } catch (err) {
+      if (err instanceof MCPAuthError) throw new ActiveTokenRejectedError(err.code, err.message);
+      throw err;
+    }
     if (ttl > 0) {
       const exp = claims['exp'];
       const untilExp = typeof exp === 'number' ? exp * 1000 : Number.POSITIVE_INFINITY;
+      if (cache.size >= CACHE_SWEEP_AT) {
+        const now = Date.now();
+        for (const [k, v] of cache) if (v.expiresAt <= now) cache.delete(k);
+      }
       cache.set(key, { result, expiresAt: Math.min(Date.now() + ttl, untilExp) });
     }
     return result;
@@ -416,6 +467,9 @@ export function createOAuthValidator(options: OAuthOptions): (token: string) => 
       try {
         return await introspect(token);
       } catch (err) {
+        // An issuer that recognised the token as its own has answered for it:
+        // do not show the token to anyone else.
+        if (err instanceof ActiveTokenRejectedError) throw err;
         if (err instanceof MCPAuthError) lastInvalid = err;
         else if (err instanceof AuthorizationServerUnavailableError) lastUnavailable = err;
         else throw err;
