@@ -7,7 +7,7 @@ export {
   protectedResourceMetadataUrl,
   toHttpErrorResponse,
 } from './metadata.js';
-export { MCPAuthError } from './errors.js';
+export { MCPAuthError, ToolScopeError } from './errors.js';
 export type { MCPMiddlewareOptions, AttachHelixVPOptions, MCPToolCall } from './types.js';
 export type { AuthResult, OAuthJwtOptions } from './oauth.js';
 export type { AuditSink, ToolAuditEvent, HelixAuditSinkOptions } from './audit.js';

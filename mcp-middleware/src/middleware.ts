@@ -1,8 +1,8 @@
-import { InsufficientScopeError, VPMissingError, VPVerificationFailedError, decodeHelixVP } from '@helixid/sdk-js';
+import { VPMissingError, VPVerificationFailedError, decodeHelixVP } from '@helixid/sdk-js';
 import { verifyVP } from '@helixid/sdk-js';
 import type { ToolAuditEvent } from './audit.js';
 import { extractCredential } from './credentials.js';
-import { MCPAuthError } from './errors.js';
+import { MCPAuthError, ToolScopeError } from './errors.js';
 import { createJwtValidator } from './oauth.js';
 import type { MCPToolCall, MCPMiddlewareOptions } from './types.js';
 
@@ -110,7 +110,7 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions) {
     const missing = required.find((scope) => !caller.scopes.includes(scope));
     if (missing !== undefined) {
       await audit(caller, toolName, { scope: missing, reason: 'insufficient scope' });
-      throw new InsufficientScopeError(missing);
+      throw new ToolScopeError(missing);
     }
 
     await audit(caller, toolName, undefined);

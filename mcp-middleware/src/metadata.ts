@@ -85,8 +85,14 @@ export function toHttpErrorResponse(error: unknown, options: HttpErrorOptions): 
   const mapped = typeof code === 'string' && Object.hasOwn(MAPPED, code) ? MAPPED[code] : undefined;
   if (!mapped) return undefined;
   const message = error instanceof Error ? error.message : 'Unauthorized';
+  const requiredScope = (error as { requiredScope?: unknown } | null)?.requiredScope;
   const params: Array<[string, string]> = [
     ...(mapped.error ? ([['error', mapped.error], ['error_description', message]] as Array<[string, string]>) : []),
+    // RFC 6750 §3: the scope the credential lacked, so a client can ask its
+    // authorization server for it and retry. Only when the error names one.
+    ...(mapped.error === 'insufficient_scope' && typeof requiredScope === 'string'
+      ? ([['scope', requiredScope]] as Array<[string, string]>)
+      : []),
     ['resource_metadata', options.resourceMetadataUrl],
   ];
   return {

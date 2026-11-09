@@ -1,6 +1,8 @@
 // Copyright 2026 DgVerse LLP
 // Licensed under the Apache License, Version 2.0
 
+import { InsufficientScopeError } from '@helixid/sdk-js';
+
 export type MCPAuthErrorCode =
   | 'CREDENTIAL_CONFLICT'
   | 'OAUTH_TOKEN_INVALID'
@@ -27,5 +29,19 @@ export class MCPAuthError extends Error {
     this.name = 'MCPAuthError';
     this.code = code;
     this.httpStatus = STATUS[code];
+  }
+}
+
+/**
+ * INSUFFICIENT_SCOPE with the missing scope as a field, so the 403 challenge
+ * can carry it as the RFC 6750 `scope` attribute. The sdk-js error only has
+ * it in the message; the code stays INSUFFICIENT_SCOPE for existing handlers.
+ */
+export class ToolScopeError extends InsufficientScopeError {
+  public readonly requiredScope: string;
+
+  constructor(requiredScope: string) {
+    super(requiredScope);
+    this.requiredScope = requiredScope;
   }
 }

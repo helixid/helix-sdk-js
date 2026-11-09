@@ -268,6 +268,27 @@ describe('RFC 9728 metadata and HTTP errors', () => {
     expect(toHttpErrorResponse({ code: 'VP_VERIFICATION_FAILED', message: 'x' }, opts)?.status).toBe(401);
   });
 
+  it('names the missing scope in the 403 challenge', async () => {
+    const mw = helixidMCPMiddleware({
+      client,
+      validateOAuthToken: async () => ({ sub: 'u', scopes: ['read'] }),
+      toolScopes: { t: ['admin'] },
+    });
+    const err = await mw({ name: 't', headers: { authorization: 'Bearer x' } }).catch((e: unknown) => e);
+    const res = toHttpErrorResponse(err, opts);
+    expect(res?.status).toBe(403);
+    expect(res?.headers['WWW-Authenticate']).toContain(
+      'error="insufficient_scope", error_description="Required scope: admin", scope="admin"',
+    );
+    // An error that does not name the scope gets no scope attribute rather than a guess.
+    expect(toHttpErrorResponse({ code: 'INSUFFICIENT_SCOPE', message: 'x' }, opts)?.headers['WWW-Authenticate']).not.toContain(
+      'scope=',
+    );
+    expect(toHttpErrorResponse({ code: 'TOOL_NOT_PERMITTED', message: 'x' }, opts)?.headers['WWW-Authenticate']).not.toContain(
+      'scope=',
+    );
+  });
+
   it('does not turn server-side faults into caller auth errors', () => {
     expect(toHttpErrorResponse({ code: 'ADMIN_AUTH_REQUIRED', message: 'x' }, opts)).toBeUndefined();
     expect(toHttpErrorResponse(new Error('boom'), opts)).toBeUndefined();

@@ -116,6 +116,7 @@ describe('order-management sample server', () => {
     const refund = await callTool('refund_order', { orderId: 'ORD-1001', reason: 'damaged' }, bearer('reader'));
     expect(refund.status).toBe(403);
     expect(refund.headers.get('www-authenticate')).toContain('error="insufficient_scope"');
+    expect(refund.headers.get('www-authenticate')).toContain('scope="orders:admin"');
 
     expect(audit.map((e) => [e.event, e.toolName, e.oauthSubject, e.requiredScope])).toEqual([
       ['AUTHZ_GRANTED', 'lookup_order', 'user-reader', undefined],
