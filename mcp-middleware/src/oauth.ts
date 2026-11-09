@@ -138,7 +138,7 @@ export function createJwtValidator(options: OAuthJwtOptions): (token: string) =>
     try {
       if (Date.now() - fetchedAt > ttl) await refresh();
       let candidates = select(kid, alg, spec);
-      if (candidates.length === 0 && Date.now() - fetchedAt > cooldown) {
+      if (candidates.length === 0 && Date.now() - fetchedAt >= cooldown) {
         await refresh(); // unknown kid: the issuer may have rotated keys
         candidates = select(kid, alg, spec);
       }
