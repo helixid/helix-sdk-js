@@ -1,7 +1,7 @@
 import type { SignedVP } from '@helixid/sdk-js';
 import type { HeadersLike, HelixClient } from '@helixid/sdk-js';
 import type { AuditSink } from './audit.js';
-import type { AuthResult, OAuthJwtOptions } from './oauth.js';
+import type { AuthResult, OAuthOptions } from './oauth.js';
 
 export interface MCPToolCall {
   name?: string;
@@ -35,10 +35,12 @@ export interface MCPMiddlewareOptions {
    */
   expectedTargetService?: string;
   /**
-   * Accept `Authorization: Bearer` JWT access tokens, validated against the
-   * authorization server's JWKS. Mutually exclusive with `validateOAuthToken`.
+   * Accept `Authorization: Bearer` access tokens from one trusted authorization
+   * server, or a list of them. Each issuer is validated by its JWKS (JWTs), by
+   * RFC 7662 introspection (opaque tokens), or both; a JWT is routed to its
+   * issuer by `iss`. Mutually exclusive with `validateOAuthToken`.
    */
-  oauth?: OAuthJwtOptions;
+  oauth?: OAuthOptions;
   /**
    * Custom bearer-token validation (opaque tokens, introspection, ...). Resolve
    * with the caller, or throw to reject. Mutually exclusive with `oauth`.

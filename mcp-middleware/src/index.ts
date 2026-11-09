@@ -1,15 +1,15 @@
 export { helixidMCPMiddleware } from './middleware.js';
 export { attachHelixVP } from './attach.js';
-export { createJwtValidator } from './oauth.js';
+export { createJwtValidator, createIntrospectionValidator, createOAuthValidator } from './oauth.js';
 export { createHelixAuditSink } from './audit.js';
 export {
   buildProtectedResourceMetadata,
   protectedResourceMetadataUrl,
   toHttpErrorResponse,
 } from './metadata.js';
-export { MCPAuthError, ToolScopeError } from './errors.js';
+export { MCPAuthError, ToolScopeError, AuthorizationServerUnavailableError } from './errors.js';
 export type { MCPMiddlewareOptions, AttachHelixVPOptions, MCPToolCall } from './types.js';
-export type { AuthResult, OAuthJwtOptions } from './oauth.js';
+export type { AuthResult, OAuthJwtOptions, OAuthIssuerOptions, OAuthIntrospectionOptions, OAuthOptions } from './oauth.js';
 export type { AuditSink, ToolAuditEvent, HelixAuditSinkOptions } from './audit.js';
 export type {
   ProtectedResourceMetadata,

@@ -77,8 +77,9 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined =>
  * the RFC 9728 metadata (which is how OAuth clients discover the
  * authorization server), and a scope failure gets a 403. Only `tools/call` is
  * gated: `initialize` and `tools/list` stay open, so HelixID clients that send
- * their VP in `params._meta` (not a header) keep working, and a single-use VP
- * is verified once per call, not once per request.
+ * their VP in `params._meta` (not a header) keep working, and a VP is
+ * verified once per tool call, not once per request. (A VP is not single-use
+ * in Phase 1; see the middleware README.)
  */
 export function createOrderServer(options: OrderServerOptions): Server {
   const store = options.store ?? createOrderStore();

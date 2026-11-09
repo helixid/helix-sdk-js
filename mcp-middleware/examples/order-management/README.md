@@ -78,7 +78,29 @@ OAUTH_ISSUER=https://as.example.com OAUTH_JWKS_URI=https://as.example.com/.well-
 pnpm --filter @helixid/example-mcp-order-management start
 ```
 
-For opaque tokens or introspection, replace `oauth` with a `validateOAuthToken` callback (see `src/main.ts`).
+For an authorization server that issues opaque tokens, give the sample its introspection endpoint and this server's client
+credentials instead of a JWKS URI (RFC 7662):
+
+```bash
+OAUTH_ISSUER=https://as.example.com OAUTH_INTROSPECTION_URL=https://as.example.com/oauth2/introspect \
+OAUTH_CLIENT_ID=orders-mcp OAUTH_CLIENT_SECRET=... \
+pnpm --filter @helixid/example-mcp-order-management start
+```
+
+Agents from different providers (one on Auth0, another on Okta) can share the server: list every trusted issuer in
+`OAUTH_ISSUERS`, each with `jwksUri`, `introspection`, or both. Tokens are routed to their issuer by `iss`; an issuer not in
+the list is refused.
+
+```bash
+OAUTH_ISSUERS='[
+  {"issuer":"https://tenant.auth0.com/","jwksUri":"https://tenant.auth0.com/.well-known/jwks.json"},
+  {"issuer":"https://dev-1.okta.com/oauth2/default",
+   "introspection":{"endpoint":"https://dev-1.okta.com/oauth2/default/v1/introspect","clientId":"orders-mcp","clientSecret":"..."}}
+]' pnpm --filter @helixid/example-mcp-order-management start
+```
+
+For credentials no standard describes (your own API keys presented as bearers), use a `validateOAuthToken` callback
+(see `DEMO_MODE` in `src/main.ts`).
 
 ## How it is wired (`src/app.ts`)
 
@@ -102,5 +124,7 @@ is verified once per tool call. The tools themselves (`src/orders.ts`) contain n
 | `HELIX_API_URL` | none | HelixID API for VP verification and audit |
 | `HELIX_API_KEY` | none | Account API key; enables the audit sink |
 | `SERVICE_DID` | none | This server's DID |
-| `OAUTH_ISSUER`, `OAUTH_JWKS_URI` | none | Authorization server for bearer JWTs |
+| `OAUTH_ISSUER`, `OAUTH_JWKS_URI` | none | One authorization server; its JWT access tokens are verified against this JWKS |
+| `OAUTH_ISSUER`, `OAUTH_INTROSPECTION_URL`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` | none | One authorization server; tokens are checked by RFC 7662 introspection (opaque tokens) |
+| `OAUTH_ISSUERS` | none | JSON array of `{ issuer, jwksUri?, introspection? }`: several trusted authorization servers |
 | `DEMO_MODE` | off | `1` accepts `demo-reader` / `demo-admin`; loopback only |

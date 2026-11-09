@@ -45,3 +45,15 @@ export class ToolScopeError extends InsufficientScopeError {
     this.requiredScope = requiredScope;
   }
 }
+
+/**
+ * The authorization server could not be reached or gave an unusable answer
+ * (JWKS or introspection). A fault on the server side, not a bad credential:
+ * `toHttpErrorResponse` leaves it unmapped so the host answers 5xx, never 401.
+ */
+export class AuthorizationServerUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AuthorizationServerUnavailableError';
+  }
+}

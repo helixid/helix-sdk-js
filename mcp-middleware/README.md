@@ -20,7 +20,7 @@ const requireHelix = helixidMCPMiddleware({ client, requiredScopes: ['read:order
 await requireHelix({ name, input: args, _meta: request.params._meta, headers: req.headers });
 ```
 
-`helixidMCPMiddleware` reads the VP from `_meta["x-helix-vp"]` or the `X-Helix-VP` header, never from `input`, and throws `VPMissingError` when neither is present. Signing (`client.signVP()`) and verification (`verifyVP`, `requireScope`) come from `@helixid/sdk-js`. Replay protection remains the verifier's responsibility (see `examples/replay-protection/`).
+`helixidMCPMiddleware` reads the VP from `_meta["x-helix-vp"]` or the `X-Helix-VP` header, never from `input`, and throws `VPMissingError` when neither is present. Signing (`client.signVP()`) and verification (`verifyVP`, `requireScope`) come from `@helixid/sdk-js`. A VP is not single-use: the same presentation is accepted again until it expires (`VP_TTL_SECONDS` on the API, 300 s by default). Target-service binding, the short TTL, revocation and the audit trail (same `vpId`) bound a replay; single-use enforcement belongs in the verifier and is a Phase 2 item.
 
 ## HTTP auth, per-tool scopes and audit (Phase 1)
 
@@ -40,8 +40,16 @@ const requireHelix = helixidMCPMiddleware({
   client,                                   // needed to verify HelixID VPs
   expectedTargetService: 'did:web:mcp.example.com',
   toolScopes: { execute_query: ['read'], update_record: ['write'] }, // unlisted tools are denied
+  // One authorization server, JWT access tokens checked against its JWKS ...
   oauth: { issuer: 'https://as.example.com', audience: resource, jwksUri: 'https://as.example.com/jwks' },
-  // or: validateOAuthToken: async (token) => ({ sub, scopes })  (opaque tokens, introspection)
+  // ... or several, each validated by its JWKS, by RFC 7662 introspection (opaque tokens), or both:
+  // oauth: [
+  //   { issuer: 'https://tenant.auth0.com/', audience: resource, jwksUri: 'https://tenant.auth0.com/.well-known/jwks.json' },
+  //   { issuer: 'https://dev-1.okta.com/oauth2/default', audience: resource,
+  //     introspection: { endpoint: 'https://dev-1.okta.com/oauth2/default/v1/introspect', clientId: '...', clientSecret: '...' } },
+  // ],
+  // or a callback for credentials no standard describes (your own API keys as bearers):
+  // validateOAuthToken: async (token) => ({ sub, scopes }),
   auditSink: createHelixAuditSink({ baseUrl: process.env.HELIX_API_URL!, apiKey: process.env.HELIX_API_KEY! }),
   onAuditError: (e) => console.error(e),
 });
@@ -56,5 +64,7 @@ catch (err) {
   // send res.status, res.headers['WWW-Authenticate'], res.body
 }
 ```
+
+OAuth: a JWT is routed to its issuer by the (unverified) `iss` claim and verified there, so an issuer not in the list is refused with no network call; a token that is not a JWT is opaque and is introspected at each issuer configured for introspection until one reports it active. `requireAccessTokenType: true` on an issuer refuses JWTs whose header `typ` is not `at+jwt` (RFC 9068). An authorization server that cannot be reached throws `AuthorizationServerUnavailableError`, which `toHttpErrorResponse` leaves unmapped: answer 5xx, never 401, because the caller's token was not shown to be bad. A 403 for a missing scope names it in the challenge (`scope="orders:admin"`, RFC 6750) so a client can request that scope and retry.
 
 Audit: every decision about an identified caller (VP agent or OAuth subject) is passed to `auditSink` and awaited before the tool runs. Unidentified callers are not logged, and a failing sink never blocks a call. OAuth callers have no agent DID, so set `serviceDid` (or `expectedTargetService`).

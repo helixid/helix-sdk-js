@@ -126,6 +126,27 @@ describe('helixidMCPMiddleware', () => {
     });
   });
 
+  it('maps a credential error thrown by the API (revoked, expired, wrong target) to VP_VERIFICATION_FAILED', async () => {
+    const middleware = helixidMCPMiddleware({ client });
+    for (const code of ['VC_REVOKED', 'VP_EXPIRED', 'VP_SIGNATURE_INVALID', 'DELEGATION_CHAIN_INVALID', 'DID_NOT_FOUND']) {
+      verifyVP.mockRejectedValueOnce(Object.assign(new Error(`api said ${code}`), { code, httpStatus: 400 }));
+      await expect(middleware({ name: 't', _meta: meta({ id: 'vp:helix:x' }) }), code).rejects.toMatchObject({
+        code: 'VP_VERIFICATION_FAILED',
+        message: `api said ${code}`,
+      });
+    }
+  });
+
+  it('passes an API failure that is not about the credential (our key refused, API down) through unmapped', async () => {
+    const middleware = helixidMCPMiddleware({ client });
+    for (const code of ['ACCESS_TOKEN_INVALID', 'ADMIN_AUTH_REQUIRED', 'INTERNAL_ERROR']) {
+      verifyVP.mockRejectedValueOnce(Object.assign(new Error(`api said ${code}`), { code, httpStatus: code === 'INTERNAL_ERROR' ? 500 : 401 }));
+      await expect(middleware({ name: 't', _meta: meta({ id: 'vp:helix:x' }) }), code).rejects.toMatchObject({ code });
+    }
+    verifyVP.mockRejectedValueOnce(new TypeError('fetch failed'));
+    await expect(middleware({ name: 't', _meta: meta({ id: 'vp:helix:x' }) })).rejects.toBeInstanceOf(TypeError);
+  });
+
   it('throws INSUFFICIENT_SCOPE when scope is missing', async () => {
     verifyVP.mockResolvedValueOnce({
       valid: true,

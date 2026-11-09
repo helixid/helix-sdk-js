@@ -2,8 +2,8 @@ import { VPMissingError, VPVerificationFailedError, decodeHelixVP } from '@helix
 import { verifyVP } from '@helixid/sdk-js';
 import type { ToolAuditEvent } from './audit.js';
 import { extractCredential } from './credentials.js';
-import { MCPAuthError, ToolScopeError } from './errors.js';
-import { createJwtValidator } from './oauth.js';
+import { AuthorizationServerUnavailableError, MCPAuthError, ToolScopeError } from './errors.js';
+import { createOAuthValidator } from './oauth.js';
 import type { MCPToolCall, MCPMiddlewareOptions } from './types.js';
 
 interface Caller {
@@ -14,11 +14,36 @@ interface Caller {
   oauthSubject?: string;
 }
 
+/**
+ * The HelixID API reports a bad credential the way the local verifier does:
+ * as a typed error (VC_REVOKED, VP_EXPIRED, VP_SIGNATURE_INVALID, a target
+ * service mismatch, ...), not as `valid: false`. Those are the caller's fault
+ * and become a 401. Anything else from the API (our own API key refused, the
+ * API down) is a server fault and is passed through unmapped.
+ */
+const CREDENTIAL_FAULT_PREFIXES = ['VP_', 'VC_', 'DELEGATION_', 'CONSENT_GRANT_'];
+const CREDENTIAL_FAULT_CODES = new Set([
+  'DID_NOT_FOUND',
+  'INVALID_DID_FORMAT',
+  'UNSUPPORTED_DID_METHOD',
+  'SELF_SIGNED_VC_NOT_ALLOWED',
+  'MAX_DELEGATION_DEPTH_EXCEEDED',
+  'SCOPE_ESCALATION_DENIED',
+  'CREDENTIAL_NOT_FOR_THIS_AGENT',
+  'SERVICE_NOT_FOUND',
+  'VALIDATION_ERROR',
+]);
+function isCredentialFault(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code !== 'string') return false;
+  return CREDENTIAL_FAULT_PREFIXES.some((prefix) => code.startsWith(prefix)) || CREDENTIAL_FAULT_CODES.has(code);
+}
+
 export function helixidMCPMiddleware(options: MCPMiddlewareOptions) {
   if (options.oauth && options.validateOAuthToken) {
     throw new Error('Provide either `oauth` or `validateOAuthToken`, not both');
   }
-  const validateOAuth = options.validateOAuthToken ?? (options.oauth ? createJwtValidator(options.oauth) : undefined);
+  const validateOAuth = options.validateOAuthToken ?? (options.oauth ? createOAuthValidator(options.oauth) : undefined);
   const serviceDid = options.serviceDid ?? options.expectedTargetService;
 
   const audit = async (caller: Caller, toolName: string | undefined, denied: { scope?: string; reason: string } | undefined): Promise<void> => {
@@ -61,12 +86,20 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions) {
         throw new Error('helixidMCPMiddleware: `client` is required to verify HelixID VPs');
       }
       const vp = decodeHelixVP(credential.encoded);
-      const result = await verifyVP(vp, options.client, {
-        allowSelfSigned: options.allowSelfSigned ?? false,
-        ...(options.expectedTargetService !== undefined
-          ? { expectedTargetService: options.expectedTargetService }
-          : {}),
-      });
+      let result;
+      try {
+        result = await verifyVP(vp, options.client, {
+          allowSelfSigned: options.allowSelfSigned ?? false,
+          ...(options.expectedTargetService !== undefined
+            ? { expectedTargetService: options.expectedTargetService }
+            : {}),
+        });
+      } catch (err) {
+        if (isCredentialFault(err)) {
+          throw new VPVerificationFailedError(err instanceof Error ? err.message : String(err));
+        }
+        throw err;
+      }
       if (!result.valid) {
         throw new VPVerificationFailedError(result.error);
       }
@@ -84,7 +117,10 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions) {
       try {
         auth = await validateOAuth(credential.token);
       } catch (err) {
-        if (err instanceof MCPAuthError) throw err;
+        // Our own verdicts pass through; the authorization server being down is a
+        // server fault, not a bad token. Anything else came from a custom callback
+        // and means "rejected".
+        if (err instanceof MCPAuthError || err instanceof AuthorizationServerUnavailableError) throw err;
         throw new MCPAuthError('OAUTH_TOKEN_INVALID', 'The access token was rejected');
       }
       if (!auth || typeof auth.sub !== 'string' || auth.sub.length === 0) {
