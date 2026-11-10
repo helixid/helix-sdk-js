@@ -243,27 +243,37 @@ describe('multi-issuer validator', () => {
     expect(fB).toHaveBeenCalledTimes(1);
   });
 
-  it('tries each introspection issuer in order for an opaque token and reports an outage over a refusal', async () => {
-    const down = vi.fn(async () => { throw new Error('down'); }) as unknown as typeof fetch;
-    const says = (body: unknown) => vi.fn(async () => json(body)) as unknown as typeof fetch;
-    const mk = (f1: typeof fetch, f2: typeof fetch) =>
-      createOAuthValidator([
-        { issuer: 'https://one.example.com', audience: AUD, introspection: { endpoint: 'https://one.example.com/i', clientId: 'a', clientSecret: 'b' }, fetch: f1 },
-        { issuer: 'https://two.example.com', audience: AUD, introspection: { endpoint: 'https://two.example.com/i', clientId: 'a', clientSecret: 'b' }, fetch: f2 },
-      ]);
-    // First says no, second vouches: accepted.
-    await expect(mk(says({ active: false }), says({ active: true, ...active({ iss: 'https://two.example.com' }) }))('t')).resolves.toMatchObject({ sub: 'opaque-user' });
-    // Both say no: the caller's token is bad.
-    await expect(mk(says({ active: false }), says({ active: false }))('t')).rejects.toMatchObject({ code: 'OAUTH_TOKEN_INVALID' });
-    // The first recognises the token as its own but for another audience: refused there, never shown to the second.
-    const second = says({ active: true, ...active({ iss: 'https://two.example.com' }) });
-    await expect(mk(says({ active: true, ...active({ iss: 'https://one.example.com', aud: 'https://elsewhere' }) }), second)('t')).rejects.toMatchObject({
-      code: 'OAUTH_TOKEN_INVALID',
-      message: 'Token audience does not match this server',
-    });
-    expect(second).not.toHaveBeenCalled();
-    // One is down and the other says no: the token might still be good at the one that is down.
-    await expect(mk(down, says({ active: false }))('t')).rejects.toBeInstanceOf(AuthorizationServerUnavailableError);
+  it('allows only one introspection issuer: an opaque token names no issuer and would have to be shown to each', () => {
+    const one = { issuer: 'https://one.example.com', audience: AUD, introspection: { endpoint: 'https://one.example.com/i', clientId: 'a', clientSecret: 'b' } };
+    const two = { issuer: 'https://two.example.com', audience: AUD, introspection: { endpoint: 'https://two.example.com/i', clientId: 'a', clientSecret: 'b' } };
+    expect(() => createOAuthValidator([one, two])).toThrow(/only one issuer may use introspection/);
+    // Any number of JWKS issuers beside it is fine.
+    expect(() => createOAuthValidator([one, { issuer: ISS_A, audience: AUD, jwksUri: `${ISS_A}/jwks` }, { issuer: 'https://c.example.com', audience: AUD, jwksUri: 'https://c.example.com/jwks' }])).not.toThrow();
+  });
+
+  it('introspectJwts: a JWT that passes its keys is also asked about, so revocation is seen before expiry', async () => {
+    const jwt = token(kA, claims());
+    const knownAtIssuer: Record<string, Record<string, unknown>> = { [jwt]: active({ iss: ISS_A, sub: 'user-1' }) };
+    const f = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).endsWith('/jwks')) return json({ keys: [kA.jwk] });
+      const found = knownAtIssuer[new URLSearchParams(String(init?.body)).get('token') ?? ''];
+      return json(found ? { active: true, ...found } : { active: false });
+    }) as unknown as typeof fetch;
+    const entry = { issuer: ISS_A, audience: AUD, jwksUri: `${ISS_A}/jwks`, introspection: { endpoint: `${ISS_A}/introspect`, clientId: 'rs', clientSecret: 's', cacheTtlMs: 0 }, fetch: f };
+
+    const checked = createOAuthValidator({ ...entry, introspectJwts: true });
+    await expect(checked(jwt)).resolves.toMatchObject({ sub: 'user-1', scopes: ['read', 'write'] });
+    delete knownAtIssuer[jwt]; // revoked at the issuer; the signature is still good
+    await expect(checked(jwt)).rejects.toMatchObject({ code: 'OAUTH_TOKEN_INVALID', message: 'Token is not active' });
+    // A forged JWT never reaches the issuer.
+    const calls = (f as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+    await expect(checked(token(makeKey('a1'), claims()))).rejects.toMatchObject({ code: 'OAUTH_TOKEN_INVALID' });
+    expect((f as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(calls);
+
+    // Without the flag the same revoked JWT is still accepted until it expires.
+    await expect(createOAuthValidator(entry)(jwt)).resolves.toMatchObject({ sub: 'user-1' });
+    // The flag needs both modes.
+    expect(() => createOAuthValidator({ issuer: ISS_A, audience: AUD, jwksUri: `${ISS_A}/jwks`, introspectJwts: true })).toThrow(/needs both/);
   });
 
   it('refuses a duplicate issuer, an issuer with no way to validate, and an empty list at construction', () => {

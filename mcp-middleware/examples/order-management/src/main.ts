@@ -108,6 +108,11 @@ function introspectionOf(
 /** One OAUTH_ISSUERS entry: a provider preset (`provider` + what that provider needs) or a custom issuer. */
 function issuerFromEntry(entry: Record<string, unknown>, where: string): OAuthIssuerOptions {
   const need = (key: string): string => asString(entry[key]) ?? fail(`${where}: ${key} is required`);
+  const flag = (key: string): boolean => {
+    const value = entry[key];
+    if (value !== undefined && typeof value !== 'boolean') fail(`${where}: ${key} must be a boolean`);
+    return value === true;
+  };
   // Tokens must name this server. Entra is the exception: its v2.0 tokens carry the API's client ID in aud.
   const audience = asString(entry['audience']) ?? resource;
   const provider = entry['provider'];
@@ -121,7 +126,7 @@ function issuerFromEntry(entry: Record<string, unknown>, where: string): OAuthIs
         onlyKeys(entry, ['provider', 'domain', 'audience'], where);
         return auth0({ domain: need('domain'), audience });
       case 'okta': {
-        onlyKeys(entry, ['provider', 'domain', 'authorizationServerId', 'audience', 'introspection'], where);
+        onlyKeys(entry, ['provider', 'domain', 'authorizationServerId', 'audience', 'introspection', 'introspectJwts'], where);
         const introspection = introspectionOf(asRecord(entry['introspection']), where, 'derived');
         const serverId = asString(entry['authorizationServerId']);
         return okta({
@@ -129,15 +134,22 @@ function issuerFromEntry(entry: Record<string, unknown>, where: string): OAuthIs
           audience,
           ...(serverId ? { authorizationServerId: serverId } : {}),
           ...(introspection ? { introspection } : {}),
+          ...(flag('introspectJwts') ? { introspectJwts: true } : {}),
         });
       }
       case 'keycloak': {
-        onlyKeys(entry, ['provider', 'baseUrl', 'realm', 'audience', 'introspection'], where);
+        onlyKeys(entry, ['provider', 'baseUrl', 'realm', 'audience', 'introspection', 'introspectJwts'], where);
         const introspection = introspectionOf(asRecord(entry['introspection']), where, 'derived');
-        return keycloak({ baseUrl: need('baseUrl'), realm: need('realm'), audience, ...(introspection ? { introspection } : {}) });
+        return keycloak({
+          baseUrl: need('baseUrl'),
+          realm: need('realm'),
+          audience,
+          ...(introspection ? { introspection } : {}),
+          ...(flag('introspectJwts') ? { introspectJwts: true } : {}),
+        });
       }
       case undefined: {
-        onlyKeys(entry, ['issuer', 'jwksUri', 'introspection', 'requireAccessTokenType', 'audience'], where);
+        onlyKeys(entry, ['issuer', 'jwksUri', 'introspection', 'introspectJwts', 'requireAccessTokenType', 'audience'], where);
         const jwksUri = asString(entry['jwksUri']);
         const introspection = introspectionOf(asRecord(entry['introspection']), where, 'optional');
         const requireAccessTokenType = entry['requireAccessTokenType'];
@@ -148,6 +160,7 @@ function issuerFromEntry(entry: Record<string, unknown>, where: string): OAuthIs
           ...(jwksUri ? { jwksUri } : {}),
           ...(introspection ? { introspection } : {}),
           ...(typeof requireAccessTokenType === 'boolean' ? { requireAccessTokenType } : {}),
+          ...(flag('introspectJwts') ? { introspectJwts: true } : {}),
         };
       }
       default:

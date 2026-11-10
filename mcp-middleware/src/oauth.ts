@@ -61,6 +61,13 @@ export interface OAuthIssuerOptions {
   jwksUri?: string;
   introspection?: OAuthIntrospectionOptions;
   /**
+   * With both `jwksUri` and `introspection`: after a JWT's signature and claims
+   * check out, also introspect it, so a token revoked at the authorization
+   * server is refused before it expires. Costs one (cached) round trip per
+   * token. Off by default: a JWT is then verified by its keys alone.
+   */
+  introspectJwts?: boolean;
+  /**
    * Claims that carry the granted scopes; all listed are merged. Default
    * `['scope', 'scp']`. Microsoft Entra puts app permissions in `roles`.
    */
@@ -507,6 +514,9 @@ async function discoverMetadata(issuer: string, doFetch: typeof fetch): Promise<
 function issuerValidators(entry: OAuthIssuerOptions): { jwt?: Validator; introspect?: Validator } {
   const introspection = entry.introspection;
   const wantsJwt = entry.jwksUri !== undefined || introspection === undefined;
+  if (entry.introspectJwts && !(entry.jwksUri && introspection)) {
+    throw new Error(`oauth: issuer ${entry.issuer} sets introspectJwts, which needs both jwksUri and introspection`);
+  }
   const needsDiscovery = (wantsJwt && !entry.jwksUri) || (introspection !== undefined && !introspection.endpoint);
   if (needsDiscovery) assertHttpsOrLoopback(entry.issuer, 'issuer (for metadata discovery)');
 
@@ -519,17 +529,22 @@ function issuerValidators(entry: OAuthIssuerOptions): { jwt?: Validator; introsp
       return value;
     };
     try {
-      return {
-        ...(wantsJwt ? { jwt: createJwtValidator({ ...entry, jwksUri: entry.jwksUri ?? fromMetadata('jwks_uri') }) } : {}),
-        ...(introspection
-          ? {
-              introspect: createIntrospectionValidator({
-                ...entry,
-                introspection: { ...introspection, endpoint: introspection.endpoint ?? fromMetadata('introspection_endpoint') },
-              }),
+      const byKeys = wantsJwt ? createJwtValidator({ ...entry, jwksUri: entry.jwksUri ?? fromMetadata('jwks_uri') }) : undefined;
+      const introspect = introspection
+        ? createIntrospectionValidator({
+            ...entry,
+            introspection: { ...introspection, endpoint: introspection.endpoint ?? fromMetadata('introspection_endpoint') },
+          })
+        : undefined;
+      const jwt =
+        byKeys && introspect && entry.introspectJwts
+          ? async (token: string): Promise<AuthResult> => {
+              const result = await byKeys(token); // cheap and offline first
+              await introspect(token); // then: is it still active at the issuer?
+              return result;
             }
-          : {}),
-      };
+          : byKeys;
+      return { ...(jwt ? { jwt } : {}), ...(introspect ? { introspect } : {}) };
     } catch (err) {
       // Without discovery a bad URL is the operator's typo: fail at construction.
       if (!needsDiscovery || err instanceof AuthorizationServerUnavailableError) throw err;
@@ -562,8 +577,11 @@ function issuerValidators(entry: OAuthIssuerOptions): { jwt?: Validator; introsp
  * A JWT is routed by its (as yet unverified) `iss` claim to that issuer's
  * validator, which re-checks `iss` on the verified claims; an issuer not in
  * the list is refused without any network call. A token that is not a JWT
- * is opaque and is introspected at each issuer configured for introspection,
- * in order, until one reports it active.
+ * is opaque and carries no issuer, so it goes to the one issuer configured
+ * for introspection. Only one issuer may be: introspection needs this
+ * server's own client credentials, which fits the authorization server the
+ * operator runs, and with two a token would have to be shown to both.
+ * Tokens from other organisations' tenants are verified as JWTs.
  *
  * An entry may leave its URLs out: `{ issuer, audience }` verifies JWTs with
  * the `jwks_uri` from the issuer's metadata, and `introspection` without an
@@ -578,7 +596,14 @@ export function createOAuthValidator(options: OAuthOptions): (token: string) => 
     if (byIssuer.has(entry.issuer)) throw new Error(`oauth: issuer ${entry.issuer} is listed twice`);
     byIssuer.set(entry.issuer, issuerValidators(entry));
   }
-  const introspectors = [...byIssuer.values()].flatMap((v) => (v.introspect ? [v.introspect] : []));
+  const introspecting = issuers.filter((entry) => entry.introspection);
+  if (introspecting.length > 1) {
+    throw new Error(
+      `oauth: only one issuer may use introspection (found ${introspecting.map((e) => e.issuer).join(', ')}); ` +
+        'an opaque token names no issuer, so it would have to be sent to each of them',
+    );
+  }
+  const introspectOpaque = introspecting[0] ? byIssuer.get(introspecting[0].issuer)?.introspect : undefined;
 
   return async (token: string): Promise<AuthResult> => {
     const jwt = peekJwt(token);
@@ -591,23 +616,7 @@ export function createOAuthValidator(options: OAuthOptions): (token: string) => 
       return (validators.introspect as Validator)(token);
     }
 
-    if (introspectors.length === 0) throw invalid('Not a JWT');
-    let lastInvalid: MCPAuthError | undefined;
-    let lastUnavailable: AuthorizationServerUnavailableError | undefined;
-    for (const introspect of introspectors) {
-      try {
-        return await introspect(token);
-      } catch (err) {
-        // An issuer that recognised the token as its own has answered for it:
-        // do not show the token to anyone else.
-        if (err instanceof ActiveTokenRejectedError) throw err;
-        if (err instanceof MCPAuthError) lastInvalid = err;
-        else if (err instanceof AuthorizationServerUnavailableError) lastUnavailable = err;
-        else throw err;
-      }
-    }
-    // Nobody vouched for it. If an issuer was unreachable the token may still be
-    // good there, so report the outage rather than blaming the caller.
-    throw lastUnavailable ?? (lastInvalid as MCPAuthError);
+    if (!introspectOpaque) throw invalid('Not a JWT');
+    return introspectOpaque(token);
   };
 }

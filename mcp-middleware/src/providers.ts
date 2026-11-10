@@ -77,6 +77,8 @@ export function okta(options: {
   authorizationServerId?: string;
   audience: string | string[];
   introspection?: ProviderIntrospection;
+  /** Also introspect JWTs, to see revocation before expiry. Needs `introspection`. */
+  introspectJwts?: boolean;
 }): OAuthIssuerOptions {
   const host = hostOf(required(options.domain, 'okta: domain'));
   const serverId = encodeURIComponent(options.authorizationServerId?.trim() || 'default');
@@ -85,7 +87,7 @@ export function okta(options: {
     issuer,
     audience: options.audience,
     jwksUri: `${issuer}/v1/keys`,
-    ...(options.introspection ? { introspection: { ...options.introspection, endpoint: `${issuer}/v1/introspect` } } : {}),
+    ...(options.introspection ? { introspection: { ...options.introspection, endpoint: `${issuer}/v1/introspect` } } : {}),    ...(options.introspectJwts ? { introspectJwts: true } : {}),
   };
 }
 
@@ -100,6 +102,8 @@ export function keycloak(options: {
   realm: string;
   audience: string | string[];
   introspection?: ProviderIntrospection;
+  /** Also introspect JWTs, to see revocation before expiry. Needs `introspection`. */
+  introspectJwts?: boolean;
 }): OAuthIssuerOptions {
   const base = required(options.baseUrl, 'keycloak: baseUrl').replace(/\/+$/, '');
   const issuer = `${base}/realms/${encodeURIComponent(required(options.realm, 'keycloak: realm'))}`;
@@ -109,6 +113,6 @@ export function keycloak(options: {
     jwksUri: `${issuer}/protocol/openid-connect/certs`,
     ...(options.introspection
       ? { introspection: { ...options.introspection, endpoint: `${issuer}/protocol/openid-connect/token/introspect` } }
-      : {}),
+      : {}),    ...(options.introspectJwts ? { introspectJwts: true } : {}),
   };
 }
