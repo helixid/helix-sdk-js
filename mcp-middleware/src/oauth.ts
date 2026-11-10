@@ -120,9 +120,22 @@ type Jwk = NodeJwk & { kid?: string; use?: string; alg?: string };
 
 const invalid = (reason: string): MCPAuthError => new MCPAuthError('OAUTH_TOKEN_INVALID', reason);
 
+/**
+ * A JWS segment: unpadded, canonical base64url and nothing else. Buffer's own
+ * decoder skips characters outside the alphabet, tolerates padding and ignores
+ * unused trailing bits, so many strings would decode to the same bytes; here
+ * exactly one does.
+ */
+function b64url(segment: string): Buffer {
+  if (!/^[A-Za-z0-9_-]*$/.test(segment)) throw new Error('not base64url');
+  const decoded = Buffer.from(segment, 'base64url');
+  if (decoded.toString('base64url') !== segment) throw new Error('not canonical base64url');
+  return decoded;
+}
+
 function decodeSegment(segment: string): Record<string, unknown> {
   try {
-    const parsed: unknown = JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'));
+    const parsed: unknown = JSON.parse(b64url(segment).toString('utf8'));
     if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
       return parsed as Record<string, unknown>;
     }
@@ -311,7 +324,7 @@ export function createJwtValidator(options: OAuthJwtOptions): (token: string) =>
     try {
       key = createPublicKey({ key: jwk, format: 'jwk' });
       const data = Buffer.from(`${h}.${p}`);
-      const sig = Buffer.from(s, 'base64url');
+      const sig = b64url(s);
       ok = cryptoVerify(
         spec.hash,
         data,

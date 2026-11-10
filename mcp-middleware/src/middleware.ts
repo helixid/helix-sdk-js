@@ -98,6 +98,14 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions) {
         if (isCredentialFault(err)) {
           throw new VPVerificationFailedError(err instanceof Error ? err.message : String(err));
         }
+        if ((err as { code?: unknown } | null)?.code === 'INSUFFICIENT_SCOPE') {
+          // About this server's own access to the API (its key lacks a scope), not
+          // the caller: keep it from being answered as the caller's 403.
+          throw new Error(
+            `The HelixID API refused the verification request: ${err instanceof Error ? err.message : String(err)}`,
+            { cause: err },
+          );
+        }
         throw err;
       }
       if (!result.valid) {

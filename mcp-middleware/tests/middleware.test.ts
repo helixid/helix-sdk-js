@@ -143,6 +143,11 @@ describe('helixidMCPMiddleware', () => {
       verifyVP.mockRejectedValueOnce(Object.assign(new Error(`api said ${code}`), { code, httpStatus: code === 'INTERNAL_ERROR' ? 500 : 401 }));
       await expect(middleware({ name: 't', _meta: meta({ id: 'vp:helix:x' }) }), code).rejects.toMatchObject({ code });
     }
+    // A scope error from the API is about this server's own key: never the caller's 403.
+    verifyVP.mockRejectedValueOnce(Object.assign(new Error('your API key lacks vp:verify'), { code: 'INSUFFICIENT_SCOPE', httpStatus: 403 }));
+    const refused = await middleware({ name: 't', _meta: meta({ id: 'vp:helix:x' }) }).catch((e: unknown) => e);
+    expect((refused as { code?: string }).code).toBeUndefined();
+    expect((refused as Error).message).toContain('refused the verification request');
     verifyVP.mockRejectedValueOnce(new TypeError('fetch failed'));
     await expect(middleware({ name: 't', _meta: meta({ id: 'vp:helix:x' }) })).rejects.toBeInstanceOf(TypeError);
   });

@@ -304,6 +304,23 @@ describe('access-token type and authorization-server outages', () => {
     await expect(lax(token(k, claims(), { typ: 'JWT' }))).resolves.toMatchObject({ sub: 'user-1' });
   });
 
+  it('accepts exactly one spelling of a signature: no padding, stray characters or spare trailing bits', async () => {
+    const v = createJwtValidator({ issuer: ISS_A, audience: AUD, jwksUri: `${ISS_A}/jwks`, fetch: jwksFetch([k.jwk]) });
+    const good = token(k, claims());
+    const [h, p, s] = good.split('.') as [string, string, string];
+    await expect(v(good)).resolves.toMatchObject({ sub: 'user-1' });
+    for (const bad of [`${s}==`, `${s}!!`, `${s.slice(0, 10)} ${s.slice(10)}`, `${s}\n`]) {
+      await expect(v(`${h}.${p}.${bad}`), JSON.stringify(bad)).rejects.toMatchObject({ code: 'OAUTH_TOKEN_INVALID' });
+    }
+    // 64 signature bytes leave unused bits in the last character.
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const accepted: string[] = [];
+    for (const c of alphabet) {
+      if (await v(`${h}.${p}.${s.slice(0, -1)}${c}`).then(() => true, () => false)) accepted.push(c);
+    }
+    expect(accepted).toEqual([s.slice(-1)]);
+  });
+
   it('a JWKS that cannot be fetched is an unavailable authorization server, passed through the middleware as a server fault', async () => {
     const mw = helixidMCPMiddleware({
       oauth: [{ issuer: ISS_A, audience: AUD, jwksUri: `${ISS_A}/jwks`, fetch: vi.fn(async () => json({}, 503)) as unknown as typeof fetch }],
