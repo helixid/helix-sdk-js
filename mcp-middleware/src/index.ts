@@ -2,6 +2,8 @@ export { helixidMCPMiddleware } from './middleware.js';
 export { attachHelixVP } from './attach.js';
 export { createJwtValidator, createIntrospectionValidator, createOAuthValidator } from './oauth.js';
 export { createHelixAuditSink } from './audit.js';
+export { auth0, entra, keycloak, okta } from './providers.js';
+export type { ProviderIntrospection } from './providers.js';
 export {
   buildProtectedResourceMetadata,
   protectedResourceMetadataUrl,

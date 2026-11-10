@@ -7,6 +7,10 @@ import {
   createOAuthValidator,
   helixidMCPMiddleware,
   toHttpErrorResponse,
+  auth0,
+  entra,
+  keycloak,
+  okta,
 } from '../src/index.js';
 
 const ISS_A = 'https://a.example.com';
@@ -265,7 +269,6 @@ describe('multi-issuer validator', () => {
   it('refuses a duplicate issuer, an issuer with no way to validate, and an empty list at construction', () => {
     const a = { issuer: ISS_A, audience: AUD, jwksUri: `${ISS_A}/jwks` };
     expect(() => createOAuthValidator([a, a])).toThrow(/listed twice/);
-    expect(() => createOAuthValidator([{ issuer: ISS_A, audience: AUD }])).toThrow(/jwksUri, introspection, or both/);
     expect(() => createOAuthValidator([])).toThrow(/at least one issuer/);
   });
 
@@ -304,5 +307,147 @@ describe('access-token type and authorization-server outages', () => {
   it('a custom validateOAuthToken that throws anything else still means "token rejected" (401)', async () => {
     const mw = helixidMCPMiddleware({ validateOAuthToken: async () => { throw new Error('nope'); }, toolScopes: { t: [] } });
     await expect(mw({ name: 't', headers: { authorization: 'Bearer x' } })).rejects.toMatchObject({ code: 'OAUTH_TOKEN_INVALID' });
+  });
+});
+
+describe('issuer metadata discovery', () => {
+  const k = makeKey('d1');
+  /** Serves OIDC discovery, JWKS and introspection for one issuer; counts requests per URL. */
+  const server = (issuer: string, metadata: Record<string, unknown> | null, opaque: Record<string, Record<string, unknown>> = {}) => {
+    const hits: string[] = [];
+    const f = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      hits.push(u);
+      if (u === `${issuer}/.well-known/openid-configuration`) return metadata ? json(metadata) : json({}, 404);
+      if (u.includes('/.well-known/')) return json({}, 404);
+      if (u === `${issuer}/keys`) return json({ keys: [k.jwk] });
+      if (u === `${issuer}/introspect`) {
+        const found = opaque[new URLSearchParams(String(init?.body)).get('token') ?? ''];
+        return json(found ? { active: true, ...found } : { active: false });
+      }
+      return json({}, 404);
+    }) as unknown as typeof fetch;
+    return { f, hits };
+  };
+  const meta = (issuer: string) => ({ issuer, jwks_uri: `${issuer}/keys`, introspection_endpoint: `${issuer}/introspect` });
+
+  it('an entry with only issuer and audience verifies JWTs with the jwks_uri from its metadata, fetched once', async () => {
+    const { f, hits } = server(ISS_B, meta(ISS_B));
+    const v = createOAuthValidator({ issuer: ISS_B, audience: AUD, fetch: f });
+    expect(hits).toEqual([]); // nothing until a token arrives
+    await expect(v(token(k, claims({ iss: ISS_B })))).resolves.toMatchObject({ sub: 'user-1' });
+    await expect(v(token(k, claims({ iss: ISS_B })))).resolves.toMatchObject({ sub: 'user-1' });
+    expect(hits).toEqual([`${ISS_B}/.well-known/openid-configuration`, `${ISS_B}/keys`]);
+  });
+
+  it('introspection without an endpoint uses the metadata introspection_endpoint', async () => {
+    const { f, hits } = server(ISS_B, meta(ISS_B), { opq: active() });
+    const v = createOAuthValidator({ issuer: ISS_B, audience: AUD, introspection: { clientId: 'rs', clientSecret: 's' }, fetch: f });
+    await expect(v('opq')).resolves.toMatchObject({ sub: 'opaque-user' });
+    expect(hits).toEqual([`${ISS_B}/.well-known/openid-configuration`, `${ISS_B}/introspect`]);
+  });
+
+  it('falls back to the RFC 8414 location when there is no OpenID configuration', async () => {
+    const hits: string[] = [];
+    const f = vi.fn(async (url: string | URL | Request) => {
+      const u = String(url);
+      hits.push(u);
+      if (u === 'https://b.example.com/.well-known/oauth-authorization-server/oauth2/default') return json(meta(ISS_B));
+      if (u === `${ISS_B}/keys`) return json({ keys: [k.jwk] });
+      return json({}, 404);
+    }) as unknown as typeof fetch;
+    const v = createOAuthValidator({ issuer: ISS_B, audience: AUD, fetch: f });
+    await expect(v(token(k, claims({ iss: ISS_B })))).resolves.toMatchObject({ sub: 'user-1' });
+    expect(hits[0]).toBe(`${ISS_B}/.well-known/openid-configuration`);
+  });
+
+  it('refuses metadata that names another issuer, and metadata without the URL it needs', async () => {
+    const wrong = createOAuthValidator({ issuer: ISS_B, audience: AUD, fetch: server(ISS_B, meta('https://evil.example.com')).f });
+    await expect(wrong(token(k, claims({ iss: ISS_B })))).rejects.toBeInstanceOf(AuthorizationServerUnavailableError);
+    const noKeys = createOAuthValidator({ issuer: ISS_B, audience: AUD, fetch: server(ISS_B, { issuer: ISS_B }).f });
+    await expect(noKeys(token(k, claims({ iss: ISS_B })))).rejects.toThrow(/no jwks_uri/);
+    const plainHttp = createOAuthValidator({ issuer: ISS_B, audience: AUD, fetch: server(ISS_B, { issuer: ISS_B, jwks_uri: 'http://b.example.com/keys' }).f });
+    await expect(plainHttp(token(k, claims({ iss: ISS_B })))).rejects.toBeInstanceOf(AuthorizationServerUnavailableError);
+  });
+
+  it('an unreachable metadata document is an outage, retried on the next token', async () => {
+    let up = false;
+    const good = server(ISS_B, meta(ISS_B));
+    const f = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      if (!up) throw new Error('ECONNREFUSED');
+      return good.f(url, init);
+    }) as unknown as typeof fetch;
+    const v = createOAuthValidator({ issuer: ISS_B, audience: AUD, fetch: f });
+    await expect(v(token(k, claims({ iss: ISS_B })))).rejects.toBeInstanceOf(AuthorizationServerUnavailableError);
+    up = true;
+    await expect(v(token(k, claims({ iss: ISS_B })))).resolves.toMatchObject({ sub: 'user-1' });
+  });
+
+  it('discovery needs an https issuer (loopback excepted), checked at construction', () => {
+    expect(() => createOAuthValidator({ issuer: 'http://as.example.com', audience: AUD })).toThrow(/https/);
+    expect(() => createOAuthValidator({ issuer: 'http://127.0.0.1:9000', audience: AUD })).not.toThrow();
+  });
+});
+
+describe('provider presets', () => {
+  const TENANT = '11111111-2222-3333-4444-555555555555';
+
+  it('entra: v2.0 issuer and keys for one tenant, scopes from scp and roles, never a multi-tenant alias', async () => {
+    const e = entra({ tenantId: TENANT.toUpperCase(), audience: 'api-client-id' });
+    expect(e).toEqual({
+      issuer: `https://login.microsoftonline.com/${TENANT}/v2.0`,
+      audience: 'api-client-id',
+      jwksUri: `https://login.microsoftonline.com/${TENANT}/discovery/v2.0/keys`,
+      scopeClaims: ['scp', 'roles'],
+    });
+    for (const alias of ['common', 'organizations', 'consumers', '']) {
+      expect(() => entra({ tenantId: alias, audience: 'x' }), alias).toThrow();
+    }
+    const k = makeKey('e1');
+    const v = createOAuthValidator({ ...e, fetch: jwksFetch([k.jwk]) });
+    const user = token(k, claims({ iss: e.issuer, aud: 'api-client-id', scope: undefined, scp: 'orders:read' }));
+    await expect(v(user)).resolves.toMatchObject({ scopes: ['orders:read'] });
+    const app = token(k, claims({ iss: e.issuer, aud: 'api-client-id', scope: undefined, roles: ['orders:admin'] }));
+    await expect(v(app)).resolves.toMatchObject({ scopes: ['orders:admin'] });
+  });
+
+  it('auth0: issuer with the trailing slash, whatever form the domain is given in', () => {
+    const want = { issuer: 'https://acme.us.auth0.com/', audience: AUD, jwksUri: 'https://acme.us.auth0.com/.well-known/jwks.json' };
+    expect(auth0({ domain: 'acme.us.auth0.com', audience: AUD })).toEqual(want);
+    expect(auth0({ domain: 'https://acme.us.auth0.com/', audience: AUD })).toEqual(want);
+    expect(() => auth0({ domain: ' ', audience: AUD })).toThrow();
+  });
+
+  it('okta: the custom authorization server (default unless named), introspection endpoint derived', () => {
+    expect(okta({ domain: 'dev-1.okta.com', audience: AUD })).toEqual({
+      issuer: 'https://dev-1.okta.com/oauth2/default',
+      audience: AUD,
+      jwksUri: 'https://dev-1.okta.com/oauth2/default/v1/keys',
+    });
+    expect(okta({ domain: 'dev-1.okta.com', authorizationServerId: 'aus123', audience: AUD, introspection: { clientId: 'c', clientSecret: 's' } })).toEqual({
+      issuer: 'https://dev-1.okta.com/oauth2/aus123',
+      audience: AUD,
+      jwksUri: 'https://dev-1.okta.com/oauth2/aus123/v1/keys',
+      introspection: { clientId: 'c', clientSecret: 's', endpoint: 'https://dev-1.okta.com/oauth2/aus123/v1/introspect' },
+    });
+  });
+
+  it('keycloak: realm issuer, certs and introspection', () => {
+    expect(keycloak({ baseUrl: 'https://id.example.com/', realm: 'shop', audience: AUD, introspection: { clientId: 'c', clientSecret: 's' } })).toEqual({
+      issuer: 'https://id.example.com/realms/shop',
+      audience: AUD,
+      jwksUri: 'https://id.example.com/realms/shop/protocol/openid-connect/certs',
+      introspection: { clientId: 'c', clientSecret: 's', endpoint: 'https://id.example.com/realms/shop/protocol/openid-connect/token/introspect' },
+    });
+  });
+
+  it('presets from different providers share one validator', async () => {
+    const k = makeKey('p1');
+    const a = auth0({ domain: 'acme.us.auth0.com', audience: AUD });
+    const o = okta({ domain: 'dev-1.okta.com', audience: AUD });
+    const v = createOAuthValidator([{ ...a, fetch: jwksFetch([k.jwk]) }, { ...o, fetch: jwksFetch([k.jwk]) }]);
+    await expect(v(token(k, claims({ iss: a.issuer })))).resolves.toMatchObject({ sub: 'user-1' });
+    await expect(v(token(k, claims({ iss: o.issuer })))).resolves.toMatchObject({ sub: 'user-1' });
+    await expect(v(token(k, claims({ iss: 'https://acme.us.auth0.com' })))).rejects.toMatchObject({ message: 'Unknown token issuer' });
   });
 });

@@ -10,6 +10,10 @@ import {
   type MCPMiddlewareOptions,
   type OAuthIntrospectionOptions,
   type OAuthIssuerOptions,
+  auth0,
+  entra,
+  keycloak,
+  okta,
 } from '@helixid/mcp-middleware';
 import { createOrderServer } from './app.js';
 
@@ -20,12 +24,17 @@ import { createOrderServer } from './app.js';
  *   HELIX_API_URL         HelixID API to verify VPs and write audit events. Required whenever
  *   HELIX_API_KEY         HELIX_API_KEY is set: there is deliberately no default URL.
  *   SERVICE_DID           this server's DID: VPs for other services are rejected
- *   OAUTH_ISSUER          OAuth door, one authorization server: its issuer, plus either
- *   OAUTH_JWKS_URI          its jwks_uri (JWT access tokens; aud must be MCP_RESOURCE), or
- *   OAUTH_INTROSPECTION_URL, OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET
- *                           its RFC 7662 introspection endpoint and this server's client credentials (opaque tokens)
- *   OAUTH_ISSUERS         several authorization servers: a JSON array of
- *                         { issuer, jwksUri?, introspection?: { endpoint, clientId, clientSecret } }
+ *   OAUTH_ISSUER          OAuth door, one authorization server. The issuer alone is enough: its keys are
+ *                         read from its metadata (aud must be MCP_RESOURCE). Optional:
+ *   OAUTH_JWKS_URI          its jwks_uri, to skip discovery
+ *   OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET
+ *                           this server's client credentials: tokens are introspected (RFC 7662, opaque tokens)
+ *   OAUTH_INTROSPECTION_URL its introspection endpoint, to skip discovery
+ *   OAUTH_ISSUERS         several authorization servers: a JSON array of provider presets
+ *                         { provider: "entra", tenantId, audience } | { provider: "auth0", domain }
+ *                         | { provider: "okta", domain, authorizationServerId?, introspection? }
+ *                         | { provider: "keycloak", baseUrl, realm, introspection? }
+ *                         or custom { issuer, jwksUri?, introspection?: { clientId, clientSecret, endpoint? } }
  *   DEMO_MODE=1           local demo only: accept the fixed bearer tokens below instead of an
  *                         authorization server. Refused unless HOST is loopback.
  */
@@ -66,27 +75,90 @@ function onlyKeys(raw: Record<string, unknown>, allowed: readonly string[], wher
   if (unknown.length > 0) fail(`${where}: unknown key(s) ${unknown.join(', ')}; allowed: ${allowed.join(', ')}`);
 }
 
-function introspectionOf(raw: Record<string, unknown> | undefined, where: string): OAuthIntrospectionOptions | undefined {
+/**
+ * Introspection settings. `endpoint` may be left out of a custom entry (it is
+ * then read from the issuer's metadata) and is not accepted on a provider
+ * preset (the preset knows it).
+ */
+function introspectionOf(
+  raw: Record<string, unknown> | undefined,
+  where: string,
+  endpoint: 'optional' | 'derived',
+): OAuthIntrospectionOptions | undefined {
   if (!raw) return undefined;
-  onlyKeys(raw, ['endpoint', 'clientId', 'clientSecret', 'cacheTtlMs', 'allowMissingAudience'], `${where}.introspection`);
-  const endpoint = asString(raw['endpoint']);
+  const keys = ['clientId', 'clientSecret', 'cacheTtlMs', 'allowMissingAudience', ...(endpoint === 'optional' ? ['endpoint'] : [])];
+  onlyKeys(raw, keys, `${where}.introspection`);
   const clientId = asString(raw['clientId']);
   const clientSecret = asString(raw['clientSecret']);
-  if (!endpoint || !clientId || !clientSecret) fail(`${where}: introspection needs endpoint, clientId and clientSecret`);
+  if (!clientId || !clientSecret) fail(`${where}: introspection needs clientId and clientSecret`);
+  const url = asString(raw['endpoint']);
   const cacheTtlMs = raw['cacheTtlMs'];
   const allowMissingAudience = raw['allowMissingAudience'];
   if (cacheTtlMs !== undefined && (typeof cacheTtlMs !== 'number' || cacheTtlMs < 0)) fail(`${where}: cacheTtlMs must be a non-negative number`);
   if (allowMissingAudience !== undefined && typeof allowMissingAudience !== 'boolean') fail(`${where}: allowMissingAudience must be a boolean`);
   return {
-    endpoint,
     clientId,
     clientSecret,
+    ...(url ? { endpoint: url } : {}),
     ...(typeof cacheTtlMs === 'number' ? { cacheTtlMs } : {}),
     ...(typeof allowMissingAudience === 'boolean' ? { allowMissingAudience } : {}),
   };
 }
 
-/** The trusted authorization servers, from OAUTH_ISSUERS (several) and/or OAUTH_ISSUER (one). The audience is always this server. */
+/** One OAUTH_ISSUERS entry: a provider preset (`provider` + what that provider needs) or a custom issuer. */
+function issuerFromEntry(entry: Record<string, unknown>, where: string): OAuthIssuerOptions {
+  const need = (key: string): string => asString(entry[key]) ?? fail(`${where}: ${key} is required`);
+  // Tokens must name this server. Entra is the exception: its v2.0 tokens carry the API's client ID in aud.
+  const audience = asString(entry['audience']) ?? resource;
+  const provider = entry['provider'];
+  try {
+    switch (provider) {
+      case 'entra':
+        onlyKeys(entry, ['provider', 'tenantId', 'audience'], where);
+        if (!asString(entry['audience'])) fail(`${where}: entra needs audience (the API's application ID; Entra puts that in aud, not the URL)`);
+        return entra({ tenantId: need('tenantId'), audience });
+      case 'auth0':
+        onlyKeys(entry, ['provider', 'domain', 'audience'], where);
+        return auth0({ domain: need('domain'), audience });
+      case 'okta': {
+        onlyKeys(entry, ['provider', 'domain', 'authorizationServerId', 'audience', 'introspection'], where);
+        const introspection = introspectionOf(asRecord(entry['introspection']), where, 'derived');
+        const serverId = asString(entry['authorizationServerId']);
+        return okta({
+          domain: need('domain'),
+          audience,
+          ...(serverId ? { authorizationServerId: serverId } : {}),
+          ...(introspection ? { introspection } : {}),
+        });
+      }
+      case 'keycloak': {
+        onlyKeys(entry, ['provider', 'baseUrl', 'realm', 'audience', 'introspection'], where);
+        const introspection = introspectionOf(asRecord(entry['introspection']), where, 'derived');
+        return keycloak({ baseUrl: need('baseUrl'), realm: need('realm'), audience, ...(introspection ? { introspection } : {}) });
+      }
+      case undefined: {
+        onlyKeys(entry, ['issuer', 'jwksUri', 'introspection', 'requireAccessTokenType', 'audience'], where);
+        const jwksUri = asString(entry['jwksUri']);
+        const introspection = introspectionOf(asRecord(entry['introspection']), where, 'optional');
+        const requireAccessTokenType = entry['requireAccessTokenType'];
+        if (requireAccessTokenType !== undefined && typeof requireAccessTokenType !== 'boolean') fail(`${where}: requireAccessTokenType must be a boolean`);
+        return {
+          issuer: need('issuer'),
+          audience,
+          ...(jwksUri ? { jwksUri } : {}),
+          ...(introspection ? { introspection } : {}),
+          ...(typeof requireAccessTokenType === 'boolean' ? { requireAccessTokenType } : {}),
+        };
+      }
+      default:
+        return fail(`${where}: unknown provider ${JSON.stringify(provider)}; use entra, auth0, okta, keycloak, or leave it out and give issuer`);
+    }
+  } catch (error) {
+    return fail(`${where}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** The trusted authorization servers, from OAUTH_ISSUERS (several) and/or OAUTH_ISSUER (one). */
 function oauthIssuersFromEnv(): OAuthIssuerOptions[] {
   const issuers: OAuthIssuerOptions[] = [];
 
@@ -100,45 +172,28 @@ function oauthIssuersFromEnv(): OAuthIssuerOptions[] {
     if (!Array.isArray(parsed)) fail('OAUTH_ISSUERS must be a JSON array');
     parsed.forEach((item, i) => {
       const where = `OAUTH_ISSUERS[${i}]`;
-      const entry = asRecord(item) ?? fail(`${where}: expected an object`);
-      onlyKeys(entry, ['issuer', 'jwksUri', 'introspection', 'requireAccessTokenType'], where);
-      const issuer = asString(entry['issuer']) ?? fail(`${where}: issuer is required`);
-      const jwksUri = asString(entry['jwksUri']);
-      const introspection = introspectionOf(asRecord(entry['introspection']), where);
-      if (!jwksUri && !introspection) fail(`${where}: needs jwksUri, introspection, or both`);
-      const requireAccessTokenType = entry['requireAccessTokenType'];
-      if (requireAccessTokenType !== undefined && typeof requireAccessTokenType !== 'boolean') fail(`${where}: requireAccessTokenType must be a boolean`);
-      issuers.push({
-        issuer,
-        audience: resource,
-        ...(jwksUri ? { jwksUri } : {}),
-        ...(introspection ? { introspection } : {}),
-        ...(typeof requireAccessTokenType === 'boolean' ? { requireAccessTokenType } : {}),
-      });
+      issuers.push(issuerFromEntry(asRecord(item) ?? fail(`${where}: expected an object`), where));
     });
   }
 
-  const clientVars = Boolean(env['OAUTH_CLIENT_ID'] || env['OAUTH_CLIENT_SECRET']);
+  const clientId = env['OAUTH_CLIENT_ID'];
+  const clientSecret = env['OAUTH_CLIENT_SECRET'];
+  const jwksUri = env['OAUTH_JWKS_URI'];
+  const introspectionUrl = env['OAUTH_INTROSPECTION_URL'];
   if (env['OAUTH_ISSUER']) {
-    const jwksUri = env['OAUTH_JWKS_URI'];
-    const introspectionUrl = env['OAUTH_INTROSPECTION_URL'];
-    if (!jwksUri && !introspectionUrl) {
-      fail('OAUTH_ISSUER needs OAUTH_JWKS_URI (JWT access tokens) or OAUTH_INTROSPECTION_URL + OAUTH_CLIENT_ID + OAUTH_CLIENT_SECRET (opaque tokens)');
-    }
-    if (clientVars && !introspectionUrl) {
-      // Otherwise the server would quietly start JWKS-only while the operator believes introspection is on.
-      fail('OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET are only used with OAUTH_INTROSPECTION_URL');
-    }
-    const introspection = introspectionUrl
-      ? introspectionOf({ endpoint: introspectionUrl, clientId: env['OAUTH_CLIENT_ID'], clientSecret: env['OAUTH_CLIENT_SECRET'] }, 'OAUTH_INTROSPECTION_URL')
-      : undefined;
+    if (Boolean(clientId) !== Boolean(clientSecret)) fail('OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET go together');
+    if (introspectionUrl && !clientId) fail('OAUTH_INTROSPECTION_URL needs OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET');
+    // Only the issuer: its keys come from its metadata. With client credentials:
+    // tokens are introspected, at OAUTH_INTROSPECTION_URL or the metadata's endpoint.
     issuers.push({
       issuer: env['OAUTH_ISSUER'],
       audience: resource,
       ...(jwksUri ? { jwksUri } : {}),
-      ...(introspection ? { introspection } : {}),
+      ...(clientId && clientSecret
+        ? { introspection: { clientId, clientSecret, ...(introspectionUrl ? { endpoint: introspectionUrl } : {}) } }
+        : {}),
     });
-  } else if (env['OAUTH_JWKS_URI'] || env['OAUTH_INTROSPECTION_URL'] || clientVars) {
+  } else if (jwksUri || introspectionUrl || clientId || clientSecret) {
     fail('OAUTH_JWKS_URI / OAUTH_INTROSPECTION_URL / OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET need OAUTH_ISSUER');
   }
 
@@ -180,7 +235,11 @@ const server = createOrderServer({
   onServerError: (error) => console.error('server error:', error),
 });
 server.listen(port, host, () => {
-  const modes = issuers.map((i) => `${i.issuer} (${[i.jwksUri && 'jwks', i.introspection && 'introspection'].filter(Boolean).join('+')})`);
+  const modes = issuers.map((i) => {
+    const how = [(i.jwksUri || !i.introspection) && 'jwks', i.introspection && 'introspection'].filter(Boolean).join('+');
+    const discovered = (!i.jwksUri && !i.introspection) || (i.introspection && !i.introspection.endpoint);
+    return `${i.issuer} (${how}${discovered ? ', endpoints from its metadata' : ''})`;
+  });
   console.log(`order-management MCP server on ${resource}`);
   console.log(`  HelixID VPs: ${auth.client ? `verified via ${apiUrl}` : 'off (set HELIX_API_URL)'}`);
   console.log(`  OAuth:       ${demo ? 'DEMO tokens demo-reader, demo-admin' : modes.length ? modes.join(', ') : 'off'}`);

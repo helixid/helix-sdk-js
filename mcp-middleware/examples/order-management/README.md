@@ -70,34 +70,37 @@ pnpm --filter @helixid/example-mcp-order-management start
 
 ## With a real authorization server
 
-Drop `DEMO_MODE` and set the authorization server instead. Access tokens must be JWTs whose `aud` is this server's
-`MCP_RESOURCE` (default `http://localhost:3700/mcp`):
+Drop `DEMO_MODE` and name the authorization server. Its issuer URL is enough: the keys are read from its metadata.
+Access tokens must be JWTs whose `aud` is this server's `MCP_RESOURCE` (default `http://localhost:3700/mcp`):
 
 ```bash
-OAUTH_ISSUER=https://as.example.com OAUTH_JWKS_URI=https://as.example.com/.well-known/jwks.json \
+OAUTH_ISSUER=https://as.example.com pnpm --filter @helixid/example-mcp-order-management start
+```
+
+For an authorization server that issues opaque tokens, add this server's client credentials there; tokens are then
+checked by introspection (RFC 7662):
+
+```bash
+OAUTH_ISSUER=https://as.example.com OAUTH_CLIENT_ID=orders-mcp OAUTH_CLIENT_SECRET=... \
 pnpm --filter @helixid/example-mcp-order-management start
 ```
 
-For an authorization server that issues opaque tokens, give the sample its introspection endpoint and this server's client
-credentials instead of a JWKS URI (RFC 7662):
-
-```bash
-OAUTH_ISSUER=https://as.example.com OAUTH_INTROSPECTION_URL=https://as.example.com/oauth2/introspect \
-OAUTH_CLIENT_ID=orders-mcp OAUTH_CLIENT_SECRET=... \
-pnpm --filter @helixid/example-mcp-order-management start
-```
-
-Agents from different providers (one on Auth0, another on Okta) can share the server: list every trusted issuer in
-`OAUTH_ISSUERS`, each with `jwksUri`, `introspection`, or both. Tokens are routed to their issuer by `iss`; an issuer not in
-the list is refused.
+Agents from different providers can share the server: list every trusted tenant in `OAUTH_ISSUERS`. Common providers
+have presets that need only what names your tenant; anything else is `{ "issuer": ... }`. Tokens are routed to their
+issuer by `iss`; an issuer not in the list is refused.
 
 ```bash
 OAUTH_ISSUERS='[
-  {"issuer":"https://tenant.auth0.com/","jwksUri":"https://tenant.auth0.com/.well-known/jwks.json"},
-  {"issuer":"https://dev-1.okta.com/oauth2/default",
-   "introspection":{"endpoint":"https://dev-1.okta.com/oauth2/default/v1/introspect","clientId":"orders-mcp","clientSecret":"..."}}
+  {"provider":"entra","tenantId":"<directory id>","audience":"<API application id>"},
+  {"provider":"auth0","domain":"tenant.us.auth0.com"},
+  {"provider":"okta","domain":"dev-1.okta.com","introspection":{"clientId":"orders-mcp","clientSecret":"..."}},
+  {"provider":"keycloak","baseUrl":"https://id.example.com","realm":"shop"},
+  {"issuer":"https://as.example.com"}
 ]' pnpm --filter @helixid/example-mcp-order-management start
 ```
+
+There is no built-in "trust Auth0" or "trust Okta": every customer of those providers has their own tenant, and the one
+you trust has to be yours.
 
 For credentials no standard describes (your own API keys presented as bearers), use a `validateOAuthToken` callback
 (see `DEMO_MODE` in `src/main.ts`).
@@ -124,7 +127,8 @@ is verified once per tool call. The tools themselves (`src/orders.ts`) contain n
 | `HELIX_API_URL` | none | HelixID API for VP verification and audit |
 | `HELIX_API_KEY` | none | Account API key; enables the audit sink |
 | `SERVICE_DID` | none | This server's DID |
-| `OAUTH_ISSUER`, `OAUTH_JWKS_URI` | none | One authorization server; its JWT access tokens are verified against this JWKS |
-| `OAUTH_ISSUER`, `OAUTH_INTROSPECTION_URL`, `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` | none | One authorization server; tokens are checked by RFC 7662 introspection (opaque tokens) |
-| `OAUTH_ISSUERS` | none | JSON array of `{ issuer, jwksUri?, introspection? }`: several trusted authorization servers |
+| `OAUTH_ISSUER` | none | One authorization server; its keys are read from its metadata |
+| `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` | none | With `OAUTH_ISSUER`: check tokens by RFC 7662 introspection (opaque tokens) |
+| `OAUTH_JWKS_URI`, `OAUTH_INTROSPECTION_URL` | from metadata | Give the endpoints explicitly and skip discovery |
+| `OAUTH_ISSUERS` | none | JSON array of trusted tenants: provider presets (`entra`, `auth0`, `okta`, `keycloak`) or `{ issuer, ... }` |
 | `DEMO_MODE` | off | `1` accepts `demo-reader` / `demo-admin`; loopback only |

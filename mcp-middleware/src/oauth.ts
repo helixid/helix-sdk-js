@@ -23,8 +23,12 @@ export interface AuthResult {
 
 /** RFC 7662 token introspection: how to ask the issuer whether an opaque (or JWT) token is active. */
 export interface OAuthIntrospectionOptions {
-  /** The authorization server's `introspection_endpoint`. https only (http allowed for loopback). */
-  endpoint: string;
+  /**
+   * The authorization server's `introspection_endpoint`. https only (http allowed
+   * for loopback). Omit it to have `createOAuthValidator` read it from the
+   * issuer's metadata document (RFC 8414 / OpenID Connect discovery).
+   */
+  endpoint?: string;
   /** This resource server's client credentials at the authorization server (HTTP Basic, RFC 6749 §2.3.1). */
   clientId: string;
   clientSecret: string;
@@ -49,9 +53,18 @@ export interface OAuthIssuerOptions {
   issuer: string;
   /** Expected `aud`: this MCP server's resource identifier (RFC 8707 / RFC 9728). */
   audience: string | string[];
-  /** The authorization server's `jwks_uri`. https only (http allowed for loopback). */
+  /**
+   * The authorization server's `jwks_uri`. https only (http allowed for loopback).
+   * With neither `jwksUri` nor `introspection`, `createOAuthValidator` reads it
+   * from the issuer's metadata document, so `{ issuer, audience }` is enough.
+   */
   jwksUri?: string;
   introspection?: OAuthIntrospectionOptions;
+  /**
+   * Claims that carry the granted scopes; all listed are merged. Default
+   * `['scope', 'scp']`. Microsoft Entra puts app permissions in `roles`.
+   */
+  scopeClaims?: string[];
   /** Allowed JWS algorithms. Default: RS/PS/ES 256-512 and EdDSA. `none` and HS* are never accepted. */
   algorithms?: string[];
   /** Allowed clock skew for exp/nbf. Default 30. */
@@ -125,13 +138,16 @@ const nowSeconds = (): number => Math.floor(Date.now() / 1000);
 /** Expired introspection cache entries are swept when the cache reaches this many entries, so one-token-per-call workloads cannot grow it without bound. */
 const CACHE_SWEEP_AT = 1_000;
 
-function parseScopes(claims: Record<string, unknown>): string[] {
-  const scope = claims['scope'] ?? claims['scp'];
-  return typeof scope === 'string'
-    ? scope.split(' ').filter(Boolean)
-    : Array.isArray(scope)
-      ? scope.filter((x): x is string => typeof x === 'string')
-      : [];
+const DEFAULT_SCOPE_CLAIMS = ['scope', 'scp'];
+
+function parseScopes(claims: Record<string, unknown>, scopeClaims: string[] = DEFAULT_SCOPE_CLAIMS): string[] {
+  const scopes = new Set<string>();
+  for (const name of scopeClaims) {
+    const value = claims[name];
+    const items = typeof value === 'string' ? value.split(' ') : Array.isArray(value) ? value : [];
+    for (const item of items) if (typeof item === 'string' && item.length > 0) scopes.add(item);
+  }
+  return [...scopes];
 }
 
 function audienceMatches(aud: unknown, audiences: string[]): boolean {
@@ -158,6 +174,7 @@ function checkStandardClaims(
     requireAud: boolean;
     /** RFC 7662 makes `sub` optional: a client-credentials token may carry only `client_id`. */
     subFromClientId?: boolean;
+    scopeClaims?: string[] | undefined;
   },
 ): AuthResult {
   const now = nowSeconds();
@@ -188,7 +205,7 @@ function checkStandardClaims(
   if (sub === undefined) throw invalid('Token has no subject');
   return {
     sub,
-    scopes: parseScopes(claims),
+    scopes: parseScopes(claims, options.scopeClaims),
     ...(typeof clientId === 'string' ? { clientId } : {}),
     claims,
   };
@@ -307,7 +324,14 @@ export function createJwtValidator(options: OAuthJwtOptions): (token: string) =>
 
     const claims = decodeSegment(p);
     if (claims['iss'] === undefined) throw invalid('Unexpected token issuer');
-    return checkStandardClaims(claims, { issuer: options.issuer, audiences, tolerance, requireExp: true, requireAud: true });
+    return checkStandardClaims(claims, {
+      issuer: options.issuer,
+      audiences,
+      tolerance,
+      requireExp: true,
+      requireAud: true,
+      scopeClaims: options.scopeClaims,
+    });
   };
 }
 
@@ -325,6 +349,9 @@ export function createIntrospectionValidator(
   options: OAuthIssuerOptions & { introspection: OAuthIntrospectionOptions },
 ): (token: string) => Promise<AuthResult> {
   const { endpoint, clientId, clientSecret } = options.introspection;
+  if (!endpoint) {
+    throw new Error('introspection.endpoint is required here; createOAuthValidator can discover it from the issuer');
+  }
   assertHttpsOrLoopback(endpoint, 'introspection endpoint');
   const audiences = Array.isArray(options.audience) ? options.audience : [options.audience];
   const tolerance = options.clockToleranceSeconds ?? 30;
@@ -393,6 +420,7 @@ export function createIntrospectionValidator(
         requireExp: false,
         requireAud,
         subFromClientId: true,
+        scopeClaims: options.scopeClaims,
       });
     } catch (err) {
       if (err instanceof MCPAuthError) throw new ActiveTokenRejectedError(err.code, err.message);
@@ -424,6 +452,111 @@ function peekJwt(token: string): { header: Record<string, unknown>; payload: Rec
   }
 }
 
+type Validator = (token: string) => Promise<AuthResult>;
+
+/**
+ * Fetches the issuer's metadata: OpenID Connect discovery first (what Auth0,
+ * Okta, Entra and Keycloak all serve), then the two RFC 8414 forms. The
+ * document must name the same issuer (RFC 8414 §3.3), or a server could
+ * answer for an issuer it is not.
+ */
+async function discoverMetadata(issuer: string, doFetch: typeof fetch): Promise<Record<string, unknown>> {
+  const url = new URL(issuer);
+  const path = url.pathname.replace(/\/+$/, '');
+  const base = `${url.origin}${path}`;
+  const candidates = [
+    `${base}/.well-known/openid-configuration`,
+    `${url.origin}/.well-known/oauth-authorization-server${path}`,
+    ...(path ? [`${base}/.well-known/oauth-authorization-server`] : []),
+  ];
+  let last = 'no metadata document found';
+  for (const candidate of candidates) {
+    try {
+      const res = await doFetch(candidate, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(5_000) });
+      if (!res.ok) {
+        last = `${candidate}: HTTP ${res.status}`;
+        continue;
+      }
+      const body: unknown = await res.json();
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        last = `${candidate}: not a JSON object`;
+        continue;
+      }
+      const metadata = body as Record<string, unknown>;
+      if (metadata['issuer'] !== issuer) {
+        throw new AuthorizationServerUnavailableError(
+          `Metadata at ${candidate} is for issuer ${String(metadata['issuer'])}, not ${issuer}`,
+        );
+      }
+      return metadata;
+    } catch (err) {
+      if (err instanceof AuthorizationServerUnavailableError) throw err;
+      last = `${candidate}: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+  throw new AuthorizationServerUnavailableError(`Authorization server metadata for ${issuer} could not be retrieved (${last})`);
+}
+
+/**
+ * One issuer's validators. What the entry asks for decides the mode: `jwksUri`
+ * (or nothing at all) means JWTs are verified against its keys; `introspection`
+ * means tokens are introspected. A URL the entry leaves out is read from the
+ * issuer's metadata on first use and kept; a failed lookup is retried on the
+ * next token.
+ */
+function issuerValidators(entry: OAuthIssuerOptions): { jwt?: Validator; introspect?: Validator } {
+  const introspection = entry.introspection;
+  const wantsJwt = entry.jwksUri !== undefined || introspection === undefined;
+  const needsDiscovery = (wantsJwt && !entry.jwksUri) || (introspection !== undefined && !introspection.endpoint);
+  if (needsDiscovery) assertHttpsOrLoopback(entry.issuer, 'issuer (for metadata discovery)');
+
+  const build = (metadata: Record<string, unknown>): { jwt?: Validator; introspect?: Validator } => {
+    const fromMetadata = (name: string): string => {
+      const value = metadata[name];
+      if (typeof value !== 'string' || value.length === 0) {
+        throw new AuthorizationServerUnavailableError(`Metadata for ${entry.issuer} has no ${name}`);
+      }
+      return value;
+    };
+    try {
+      return {
+        ...(wantsJwt ? { jwt: createJwtValidator({ ...entry, jwksUri: entry.jwksUri ?? fromMetadata('jwks_uri') }) } : {}),
+        ...(introspection
+          ? {
+              introspect: createIntrospectionValidator({
+                ...entry,
+                introspection: { ...introspection, endpoint: introspection.endpoint ?? fromMetadata('introspection_endpoint') },
+              }),
+            }
+          : {}),
+      };
+    } catch (err) {
+      // Without discovery a bad URL is the operator's typo: fail at construction.
+      if (!needsDiscovery || err instanceof AuthorizationServerUnavailableError) throw err;
+      throw new AuthorizationServerUnavailableError(
+        `Metadata for ${entry.issuer} is unusable: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+
+  let built = needsDiscovery ? undefined : build({});
+  let inflight: Promise<{ jwt?: Validator; introspect?: Validator }> | undefined;
+  const ready = (): Promise<{ jwt?: Validator; introspect?: Validator }> => {
+    if (built) return Promise.resolve(built);
+    inflight ??= discoverMetadata(entry.issuer, entry.fetch ?? fetch)
+      .then((metadata) => (built = build(metadata)))
+      .finally(() => {
+        inflight = undefined;
+      });
+    return inflight;
+  };
+
+  return {
+    ...(wantsJwt ? { jwt: async (token: string) => ((await ready()).jwt as Validator)(token) } : {}),
+    ...(introspection ? { introspect: async (token: string) => ((await ready()).introspect as Validator)(token) } : {}),
+  };
+}
+
 /**
  * Validates bearer tokens from one or more trusted authorization servers.
  * A JWT is routed by its (as yet unverified) `iss` claim to that issuer's
@@ -431,21 +564,19 @@ function peekJwt(token: string): { header: Record<string, unknown>; payload: Rec
  * the list is refused without any network call. A token that is not a JWT
  * is opaque and is introspected at each issuer configured for introspection,
  * in order, until one reports it active.
+ *
+ * An entry may leave its URLs out: `{ issuer, audience }` verifies JWTs with
+ * the `jwks_uri` from the issuer's metadata, and `introspection` without an
+ * `endpoint` uses the metadata's `introspection_endpoint`.
  */
 export function createOAuthValidator(options: OAuthOptions): (token: string) => Promise<AuthResult> {
   const issuers = Array.isArray(options) ? options : [options];
   if (issuers.length === 0) throw new Error('oauth: at least one issuer is required');
 
-  const byIssuer = new Map<string, { jwt?: (t: string) => Promise<AuthResult>; introspect?: (t: string) => Promise<AuthResult> }>();
+  const byIssuer = new Map<string, { jwt?: Validator; introspect?: Validator }>();
   for (const entry of issuers) {
     if (byIssuer.has(entry.issuer)) throw new Error(`oauth: issuer ${entry.issuer} is listed twice`);
-    if (!entry.jwksUri && !entry.introspection) {
-      throw new Error(`oauth: issuer ${entry.issuer} needs jwksUri, introspection, or both`);
-    }
-    byIssuer.set(entry.issuer, {
-      ...(entry.jwksUri ? { jwt: createJwtValidator({ ...entry, jwksUri: entry.jwksUri }) } : {}),
-      ...(entry.introspection ? { introspect: createIntrospectionValidator({ ...entry, introspection: entry.introspection }) } : {}),
-    });
+    byIssuer.set(entry.issuer, issuerValidators(entry));
   }
   const introspectors = [...byIssuer.values()].flatMap((v) => (v.introspect ? [v.introspect] : []));
 
@@ -457,7 +588,7 @@ export function createOAuthValidator(options: OAuthOptions): (token: string) => 
       const validators = byIssuer.get(iss);
       if (!validators) throw invalid('Unknown token issuer');
       if (validators.jwt) return validators.jwt(token);
-      return (validators.introspect as (t: string) => Promise<AuthResult>)(token);
+      return (validators.introspect as Validator)(token);
     }
 
     if (introspectors.length === 0) throw invalid('Not a JWT');

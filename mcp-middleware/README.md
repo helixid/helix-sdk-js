@@ -40,13 +40,15 @@ const requireHelix = helixidMCPMiddleware({
   client,                                   // needed to verify HelixID VPs
   expectedTargetService: 'did:web:mcp.example.com',
   toolScopes: { execute_query: ['read'], update_record: ['write'] }, // unlisted tools are denied
-  // One authorization server, JWT access tokens checked against its JWKS ...
-  oauth: { issuer: 'https://as.example.com', audience: resource, jwksUri: 'https://as.example.com/jwks' },
-  // ... or several, each validated by its JWKS, by RFC 7662 introspection (opaque tokens), or both:
+  // One authorization server. Its issuer URL is enough: keys are read from its metadata.
+  oauth: { issuer: 'https://as.example.com', audience: resource },
+  // Several, with presets for common providers (import { entra, auth0, okta, keycloak }):
   // oauth: [
-  //   { issuer: 'https://tenant.auth0.com/', audience: resource, jwksUri: 'https://tenant.auth0.com/.well-known/jwks.json' },
-  //   { issuer: 'https://dev-1.okta.com/oauth2/default', audience: resource,
-  //     introspection: { endpoint: 'https://dev-1.okta.com/oauth2/default/v1/introspect', clientId: '...', clientSecret: '...' } },
+  //   entra({ tenantId: '<directory id>', audience: '<API application id>' }),
+  //   auth0({ domain: 'tenant.us.auth0.com', audience: resource }),
+  //   okta({ domain: 'dev-1.okta.com', audience: resource, introspection: { clientId: '...', clientSecret: '...' } }),
+  //   keycloak({ baseUrl: 'https://id.example.com', realm: 'shop', audience: resource }),
+  //   { issuer: 'https://as.example.com', audience: resource, introspection: { clientId: '...', clientSecret: '...' } },
   // ],
   // or a callback for credentials no standard describes (your own API keys as bearers):
   // validateOAuthToken: async (token) => ({ sub, scopes }),
@@ -64,6 +66,17 @@ catch (err) {
   // send res.status, res.headers['WWW-Authenticate'], res.body
 }
 ```
+
+There is no provider-wide default, and cannot be: Auth0, Okta, Entra and Keycloak give every customer their own authorization server, and trusting "Auth0" would accept tokens minted in anyone's tenant. A preset takes the one or two values that name *your* tenant and fills in the provider's exact issuer string and endpoints. Any other server needs only `{ issuer, audience }`: `jwks_uri` (and, with `introspection: { clientId, clientSecret }`, `introspection_endpoint`) come from `<issuer>/.well-known/openid-configuration` or the RFC 8414 document, fetched on first use and required to name the same issuer.
+
+| Preset | You give | Tokens | Notes |
+|---|---|---|---|
+| `entra` | `tenantId`, `audience` | JWT | v2.0 tokens (`requestedAccessTokenVersion: 2`); `aud` is the API's application ID; scopes from `scp` and `roles` |
+| `auth0` | `domain`, `audience` | JWT | clients must request the API audience, or Auth0 issues an opaque token only its own /userinfo accepts; no introspection endpoint |
+| `okta` | `domain`, `authorizationServerId?`, `audience`, `introspection?` | JWT, opaque | custom authorization server only; the org server's tokens are not meant for your resource servers |
+| `keycloak` | `baseUrl`, `realm`, `audience`, `introspection?` | JWT, opaque | add an audience mapper so `aud` names this server |
+
+Introspection needs this server's own client credentials at the authorization server, so it fits a tenant you run. Agents bringing tokens from their own organisation's tenant can only be verified by public keys, i.e. as JWTs.
 
 OAuth: a JWT is routed to its issuer by the (unverified) `iss` claim and verified there, so an issuer not in the list is refused with no network call; a token that is not a JWT is opaque and is introspected at each issuer configured for introspection until one reports it active. `requireAccessTokenType: true` on an issuer refuses JWTs whose header `typ` is not `at+jwt` (RFC 9068). An authorization server that cannot be reached throws `AuthorizationServerUnavailableError`, which `toHttpErrorResponse` leaves unmapped: answer 5xx, never 401, because the caller's token was not shown to be bad. A 403 for a missing scope names it in the challenge (`scope="orders:admin"`, RFC 6750) so a client can request that scope and retry.
 
