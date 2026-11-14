@@ -1,0 +1,27 @@
+{
+  "name": "@helixid/example-mcp-order-management",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Sample MCP server (orders: lookup_order, refund_order) protected by @helixid/mcp-middleware. The design-partner demo and quickstart target.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "start": "node dist/main.js",
+    "demo": "DEMO_MODE=1 node dist/main.js",
+    "test:unit": "vitest run tests --passWithNoTests",
+    "lint": "eslint src tests",
+    "typecheck": "tsc --noEmit -p tsconfig.eslint.json"
+  },
+  "dependencies": {
+    "@helixid/mcp-middleware": "workspace:^",
+    "@helixid/sdk-js": "workspace:^",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.8"
+  }
+}

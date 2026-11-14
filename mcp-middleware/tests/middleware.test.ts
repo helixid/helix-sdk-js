@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { encodeHelixVP, verifyVP as verifyVPExport, type SignedVP } from '@helixid/sdk-js';
+import { encodeHelixVP, verifyVP as verifyVPExport, type HelixClient, type SignedVP } from '@helixid/sdk-js';
 import { attachHelixVP } from '../src/attach.js';
 import { helixidMCPMiddleware } from '../src/middleware.js';
 
@@ -12,12 +12,13 @@ vi.mock('@helixid/sdk-js', async (importOriginal) => {
 });
 
 const verifyVP = vi.mocked(verifyVPExport);
+const client = {} as unknown as HelixClient;
 
 const meta = (vp: object) => ({ 'x-helix-vp': encodeHelixVP(vp as SignedVP) });
 
 describe('helixidMCPMiddleware', () => {
   it('throws VP_MISSING when there is no VP in _meta or headers', async () => {
-    const middleware = helixidMCPMiddleware({});
+    const middleware = helixidMCPMiddleware({ client });
 
     await expect(middleware({ name: 'orders.lookup', input: {} })).rejects.toMatchObject({
       code: 'VP_MISSING',
@@ -25,7 +26,7 @@ describe('helixidMCPMiddleware', () => {
   });
 
   it('ignores a VP placed in the tool arguments', async () => {
-    const middleware = helixidMCPMiddleware({});
+    const middleware = helixidMCPMiddleware({ client });
 
     await expect(
       middleware({ name: 'orders.lookup', input: { _helixVP: { id: 'vp:helix:test' } } }),
@@ -34,7 +35,7 @@ describe('helixidMCPMiddleware', () => {
   });
 
   it('rejects a _meta VP that is not base64url JSON', async () => {
-    const middleware = helixidMCPMiddleware({});
+    const middleware = helixidMCPMiddleware({ client });
 
     await expect(
       middleware({ name: 'orders.lookup', _meta: { 'x-helix-vp': 'not json' } }),
@@ -51,14 +52,14 @@ describe('helixidMCPMiddleware', () => {
       delegationChain: [],
     });
 
-    const middleware = helixidMCPMiddleware({ requiredScopes: ['read:orders'] });
+    const middleware = helixidMCPMiddleware({ client, requiredScopes: ['read:orders'] });
     const toolCall = {
       name: 'orders.lookup',
       headers: { 'x-helix-vp': meta({ id: 'vp:helix:test' })['x-helix-vp'] },
     };
 
     await expect(middleware(toolCall)).resolves.toBe(toolCall);
-    expect(verifyVP).toHaveBeenLastCalledWith({ id: 'vp:helix:test' }, undefined, expect.anything());
+    expect(verifyVP).toHaveBeenLastCalledWith({ id: 'vp:helix:test' }, client, expect.anything());
   });
 
   it('passes through a valid VP', async () => {
@@ -71,7 +72,7 @@ describe('helixidMCPMiddleware', () => {
       delegationChain: [],
     });
 
-    const middleware = helixidMCPMiddleware({ requiredScopes: ['read:orders'] });
+    const middleware = helixidMCPMiddleware({ client, requiredScopes: ['read:orders'] });
     const toolCall = {
       name: 'orders.lookup',
       input: { orderId: 'ORD-1' },
@@ -81,7 +82,7 @@ describe('helixidMCPMiddleware', () => {
     await expect(middleware(toolCall)).resolves.toBe(toolCall);
     expect(verifyVP).toHaveBeenCalledWith(
       { id: 'vp:helix:test' },
-      undefined,
+      client,
       expect.objectContaining({ allowSelfSigned: false }),
     );
   });
@@ -96,11 +97,11 @@ describe('helixidMCPMiddleware', () => {
       delegationChain: [],
     });
 
-    const middleware = helixidMCPMiddleware({ expectedTargetService: 'did:web:svc.example.invalid' });
+    const middleware = helixidMCPMiddleware({ client, expectedTargetService: 'did:web:svc.example.invalid' });
     await middleware({ name: 'orders.lookup', _meta: meta({ id: 'vp:helix:test' }) });
     expect(verifyVP).toHaveBeenLastCalledWith(
       { id: 'vp:helix:test' },
-      undefined,
+      client,
       expect.objectContaining({ expectedTargetService: 'did:web:svc.example.invalid' }),
     );
   });
@@ -116,13 +117,39 @@ describe('helixidMCPMiddleware', () => {
       error: 'bad signature',
     });
 
-    const middleware = helixidMCPMiddleware({});
+    const middleware = helixidMCPMiddleware({ client });
 
     await expect(
       middleware({ _meta: meta({ id: 'vp:helix:bad' }) }),
     ).rejects.toMatchObject({
       code: 'VP_VERIFICATION_FAILED',
     });
+  });
+
+  it('maps a credential error thrown by the API (revoked, expired, wrong target) to VP_VERIFICATION_FAILED', async () => {
+    const middleware = helixidMCPMiddleware({ client });
+    for (const code of ['VC_REVOKED', 'VP_EXPIRED', 'VP_SIGNATURE_INVALID', 'DELEGATION_CHAIN_INVALID', 'DID_NOT_FOUND']) {
+      verifyVP.mockRejectedValueOnce(Object.assign(new Error(`api said ${code}`), { code, httpStatus: 400 }));
+      await expect(middleware({ name: 't', _meta: meta({ id: 'vp:helix:x' }) }), code).rejects.toMatchObject({
+        code: 'VP_VERIFICATION_FAILED',
+        message: `api said ${code}`,
+      });
+    }
+  });
+
+  it('passes an API failure that is not about the credential (our key refused, API down) through unmapped', async () => {
+    const middleware = helixidMCPMiddleware({ client });
+    for (const code of ['ACCESS_TOKEN_INVALID', 'ADMIN_AUTH_REQUIRED', 'INTERNAL_ERROR']) {
+      verifyVP.mockRejectedValueOnce(Object.assign(new Error(`api said ${code}`), { code, httpStatus: code === 'INTERNAL_ERROR' ? 500 : 401 }));
+      await expect(middleware({ name: 't', _meta: meta({ id: 'vp:helix:x' }) }), code).rejects.toMatchObject({ code });
+    }
+    // A scope error from the API is about this server's own key: never the caller's 403.
+    verifyVP.mockRejectedValueOnce(Object.assign(new Error('your API key lacks vp:verify'), { code: 'INSUFFICIENT_SCOPE', httpStatus: 403 }));
+    const refused = await middleware({ name: 't', _meta: meta({ id: 'vp:helix:x' }) }).catch((e: unknown) => e);
+    expect((refused as { code?: string }).code).toBeUndefined();
+    expect((refused as Error).message).toContain('refused the verification request');
+    verifyVP.mockRejectedValueOnce(new TypeError('fetch failed'));
+    await expect(middleware({ name: 't', _meta: meta({ id: 'vp:helix:x' }) })).rejects.toBeInstanceOf(TypeError);
   });
 
   it('throws INSUFFICIENT_SCOPE when scope is missing', async () => {
@@ -135,7 +162,7 @@ describe('helixidMCPMiddleware', () => {
       delegationChain: [],
     });
 
-    const middleware = helixidMCPMiddleware({ requiredScopes: ['write:orders'] });
+    const middleware = helixidMCPMiddleware({ client, requiredScopes: ['write:orders'] });
 
     await expect(
       middleware({ _meta: meta({ id: 'vp:helix:test' }) }),
