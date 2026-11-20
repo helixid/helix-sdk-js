@@ -4,7 +4,15 @@
 // You may obtain a copy of the License at
 //    http://www.apache.org/licenses/LICENSE-2.0
 
-// Audit log implementation for helix-sdk-js.
-// Implements the audit log interface from helix-core.
-// SDK-side audit events complement API-side events for end-to-end audit trail.
-export {};
+// KYA-OS auditability (story A-1, AAP-1 Recorded): typed producer events,
+// the trail that emits them, references, digests and the evidence vault. A
+// port of helix-core's `src/core/audit/`, function for function; the fixture
+// `helix-core/fixtures/kya-os-helix/audit-events.json` is the contract.
+export * from './canonical.js';
+export * from './types.js';
+export * from './schema.js';
+export * from './digest.js';
+export * from './references.js';
+export * from './evidence.js';
+export * from './sink.js';
+export * from './trail.js';

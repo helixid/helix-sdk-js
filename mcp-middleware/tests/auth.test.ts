@@ -353,7 +353,7 @@ describe('audit', () => {
     expect(onAuditError).toHaveBeenCalledTimes(1);
   });
 
-  it('createHelixAuditSink posts to /v1/audit-log/events with the account key', async () => {
+  it('createHelixAuditSink posts typed events to /v1/audit-log/events with the account key', async () => {
     const f = vi.fn(async () => new Response('{}', { status: 201 }));
     const sink = createHelixAuditSink({
       baseUrl: 'http://localhost:3680/',
@@ -365,21 +365,28 @@ describe('audit', () => {
       event: 'AUTHZ_DENIED', result: 'denied', timestamp: '2026-01-01T00:00:00.000Z', authMethod: 'oauth',
       oauthSubject: 'user-9', toolName: 't', requiredScope: 'read', effectiveScopes: [],
     });
+    expect(f).toHaveBeenCalledTimes(1);
     const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('http://localhost:3680/v1/audit-log/events');
     expect((init.headers as Record<string, string>)['authorization']).toBe('Bearer hak_test');
-    expect(JSON.parse(init.body as string)).toMatchObject({
-      event: 'AUTHZ_DENIED', serviceDid: 'did:web:svc', toolName: 't', requiredScope: 'read',
-      result: 'denied', oauthSubject: 'user-9', source: 'mcp-middleware',
+    const body = JSON.parse(init.body as string);
+    expect(body).toMatchObject({
+      eventType: 'authorization.denied',
+      binding: 'urn:kya-os:audit-binding:mcp:2025-11-25',
+      outcome: 'denied',
+      reason: { code: 'insufficient_scope' },
+      resource: { kind: 'public_did', did: 'did:web:svc' },
+      source: { producer: { kind: 'pairwise_did', did: 'did:web:svc' }, sourceId: 'mcp-middleware:did:web:svc' },
+      actor: { kind: 'keyed_commitment', keyId: 'oauth-subject-v1' },
+      authorization: { source: 'policy', decision: 'denied', scopeId: 'read' },
+      details: { family: 'authorization', phase: 'denied' },
     });
-    // The subject goes only in oauthSubject, never in a field every viewer sees.
-    expect(JSON.parse(init.body as string)).not.toHaveProperty('resultSummary');
+    // The subject never enters an event; the tool name is withheld by default.
+    expect(init.body as string).not.toContain('user-9');
+    expect(body.action).toEqual({ category: 'authorization' });
   });
 
-  it('createHelixAuditSink refuses an event with no agentDid and no serviceDid', async () => {
-    const sink = createHelixAuditSink({ baseUrl: 'http://localhost:1', apiKey: 'k', fetch: vi.fn() as unknown as typeof fetch });
-    await expect(
-      sink({ event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: 't', authMethod: 'oauth', effectiveScopes: [] }),
-    ).rejects.toThrow(/serviceDid/);
+  it('createHelixAuditSink needs the server DID to name a producer', () => {
+    expect(() => createHelixAuditSink({ baseUrl: 'http://localhost:1', apiKey: 'k', fetch: vi.fn() as unknown as typeof fetch })).toThrow(/serviceDid/);
   });
 });
