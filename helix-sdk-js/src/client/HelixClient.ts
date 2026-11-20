@@ -1,5 +1,6 @@
 import { AuditEvents } from '../core/audit-events.js';
 import { generateKeyPair, type KeyPair } from '../core/keys.js';
+import { agentKeyRegistration, type AgentPublicKeyJwk } from '../core/agent-key.js';
 import { SDKOnlyModeNoAPIError } from '../errors/index.js';
 import { verifyJWT } from '../core/jwt.js';
 import type { HelixJWTPayload } from '../core/schemas/jwt.js';
@@ -602,6 +603,25 @@ export class HelixClient {
     } catch {
       // Audit writes are best-effort. The stored credential remains authoritative.
     }
+  }
+
+  /**
+   * Registers the public half of a key the agent generated itself (KYA-OS
+   * story L1-A, `generateAgentKey()`): `POST /v1/agents/{did}/keys` with
+   * the public JWK and the verification-method fragment, nothing else. The
+   * body is checked for private material before it is sent (self-custody
+   * invariant: no API request from the SDK ever carries a private key).
+   * Helix republishes the agent's did:web document with the key as
+   * `<did>#<kid>`, the `kid` every JWS the agent signs must carry.
+   */
+  async registerAgentKey(
+    agentDid: string,
+    publicKey: string | Uint8Array | AgentPublicKeyJwk,
+    options: { kid?: string } = {},
+  ): Promise<{ did: string; kid: string; didKey: string; didDocument: Record<string, unknown> }> {
+    this.assertAPIConfigured();
+    const body = agentKeyRegistration(publicKey, options.kid);
+    return this.http.post(`/v1/agents/${encodeURIComponent(agentDid)}/keys`, body);
   }
 
   private assertAPIConfigured(): void {
