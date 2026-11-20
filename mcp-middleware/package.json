@@ -37,7 +37,8 @@
     "test:non-live": "vitest run --passWithNoTests",
     "test:unit": "vitest run tests --passWithNoTests",
     "lint": "eslint src tests",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:coverage": "vitest run --coverage --passWithNoTests"
   },
   "dependencies": {
     "@helixid/sdk-js": "workspace:^"
@@ -52,6 +53,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@vitest/coverage-v8": "^4.1.8",
     "typescript": "^5.4.0",
     "vitest": "^4.1.8"
   }

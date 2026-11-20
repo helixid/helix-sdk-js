@@ -1,4 +1,5 @@
 export { helixidMCPMiddleware } from './middleware.js';
+export type { MCPMiddleware, AuthorizedCaller as MiddlewareCaller } from './middleware.js';
 export { attachHelixVP } from './attach.js';
 export { createJwtValidator, createIntrospectionValidator, createOAuthValidator } from './oauth.js';
 export { createHelixAuditSink } from './audit.js';
@@ -20,3 +21,6 @@ export type {
   HttpErrorResponse,
 } from './metadata.js';
 export type { MCPAuthErrorCode } from './errors.js';
+
+// KYA-OS session, replay store and server response proof (story L2-A).
+export * from './kyaos/index.js';

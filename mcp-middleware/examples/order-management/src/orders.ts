@@ -63,11 +63,20 @@ function text(value: unknown, isError = false): CallToolResult {
 }
 
 /**
+ * Wraps a tool handler: app.ts uses it to sign the KYA-OS response proof over
+ * each result (story L2-A). The tools stay unaware of it.
+ */
+export type ToolWrapper = <Args, Extra>(
+  name: string,
+  handler: (args: Args, extra: Extra) => Promise<CallToolResult>,
+) => (args: Args, extra: Extra) => Promise<CallToolResult>;
+
+/**
  * The tools themselves know nothing about identity: by the time a call reaches
  * them, the HTTP layer has already authenticated the caller and checked the
  * tool's scope (see app.ts).
  */
-export function registerOrderTools(server: McpServer, store: OrderStore): void {
+export function registerOrderTools(server: McpServer, store: OrderStore, wrap: ToolWrapper): void {
   server.registerTool(
     'lookup_order',
     {
@@ -76,10 +85,10 @@ export function registerOrderTools(server: McpServer, store: OrderStore): void {
       inputSchema: { orderId },
       annotations: { readOnlyHint: true },
     },
-    async ({ orderId: id }) => {
+    wrap('lookup_order', async ({ orderId: id }) => {
       const order = store.get(id);
       return order ? text(order) : text(`Order ${id} not found`, true);
-    },
+    }),
   );
 
   server.registerTool(
@@ -90,13 +99,13 @@ export function registerOrderTools(server: McpServer, store: OrderStore): void {
       inputSchema: { orderId, reason: z.string().min(1).max(200) },
       annotations: { destructiveHint: true, idempotentHint: false },
     },
-    async ({ orderId: id, reason }) => {
+    wrap('refund_order', async ({ orderId: id, reason }) => {
       const order = store.get(id);
       if (!order) return text(`Order ${id} not found`, true);
       if (order.status === 'refunded') return text(`Order ${id} was already refunded`, true);
       const refunded: Order = { ...order, status: 'refunded', refundedAt: new Date().toISOString(), refundReason: reason };
       store.set(id, refunded);
       return text(refunded);
-    },
+    }),
   );
 }
