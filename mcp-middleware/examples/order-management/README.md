@@ -132,3 +132,15 @@ is verified once per tool call. The tools themselves (`src/orders.ts`) contain n
 | `OAUTH_JWKS_URI`, `OAUTH_INTROSPECTION_URL` | from metadata | Give the endpoints explicitly and skip discovery |
 | `OAUTH_ISSUERS` | none | JSON array of trusted tenants: provider presets (`entra`, `auth0`, `okta`, `keycloak`) or `{ issuer, ... }` |
 | `DEMO_MODE` | off | `1` accepts `demo-reader` / `demo-admin`; loopback only |
+
+## KYA-OS session and response proof (story L2-A)
+
+Set `SERVICE_SIGNING_KEY` (the Ed25519 private key, hex, that `SERVICE_DID`'s document lists as `key-1`) and the server registers the `_kyaos_handshake` tool, opens sessions and signs a detached proof into `_meta["org.kya-os/response-proof"]` on every tool call outcome (a refusal carries its `denied` proof in the 400/401/403 body). Optional: `KYAOS_PUBLIC_ORIGIN` (default: the origin of `MCP_RESOURCE`), `KYAOS_CLOCK_SKEW_SECONDS` (30 to 600, default 120), `KYAOS_SESSIONS=0`, `KYAOS_SESSION_TTL_MINUTES` (default 30), and `KYAOS_REDIS_URL=redis://host:port` for a replay store shared by every instance (without it the store is in memory and covers this instance only; `src/redis-client.ts` is a minimal `SET NX PX` client, a production server would hand the store an ioredis client).
+
+```bash
+SERVICE_DID=did:web:orders.example SERVICE_SIGNING_KEY=<hex> DEMO_MODE=1 pnpm start
+# handshake
+curl -s localhost:3700/mcp -H 'content-type: application/json' -H 'accept: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"_kyaos_handshake","arguments":{"nonce":"k7Hy9mNpQrStUvWxYz01Aa","audience":"did:web:orders.example","timestamp":'$(date +%s)'}}}'
+# a call in that session: the result carries the proof
+curl -s localhost:3700/mcp -H 'authorization: Bearer demo-reader' -H 'content-type: application/json' -H 'accept: application/json' -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"lookup_order","arguments":{"orderId":"ORD-1001","_kyaos_session":"kyaos_<from the handshake>"}}}'
+```
