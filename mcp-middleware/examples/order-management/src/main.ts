@@ -5,8 +5,10 @@
 
 import { HelixClient } from '@helixid/sdk-js';
 import {
-  createHelixAuditSink,
+  createHelixAuditReporter,
+  createMcpAuditTrail,
   type AuthResult,
+  type McpAuditTrail,
   type MCPMiddlewareOptions,
   type OAuthIntrospectionOptions,
   type OAuthIssuerOptions,
@@ -22,7 +24,11 @@ import { createOrderServer } from './app.js';
  *   PORT, HOST            listen address (default 3700 on 127.0.0.1)
  *   MCP_RESOURCE          public URL of the MCP endpoint (default http://localhost:$PORT/mcp); the OAuth audience
  *   HELIX_API_URL         HelixID API to verify VPs and write audit events. Required whenever
- *   HELIX_API_KEY         HELIX_API_KEY is set: there is deliberately no default URL.
+ *   HELIX_API_KEY         HELIX_API_KEY is set: there is deliberately no default URL. The key turns on
+ *                         the audit trail (KYA-OS typed events to POST /v1/audit-log/events), which
+ *                         names this server as its producer, so it also needs SERVICE_DID.
+ *   AUDIT_INCLUDE_TOOL_NAMES=1
+ *                         record tool names in audit events (withheld by default: often sensitive)
  *   SERVICE_DID           this server's DID: VPs for other services are rejected
  *   OAUTH_ISSUER          OAuth door, one authorization server. The issuer alone is enough: its keys are
  *                         read from its metadata (aud must be MCP_RESOURCE). Optional:
@@ -222,10 +228,18 @@ const auth: Omit<MCPMiddlewareOptions, 'toolScopes' | 'requiredScopes'> = {
   ...(serviceDid ? { expectedTargetService: serviceDid, serviceDid } : {}),
   onAuditError: (error) => console.error('audit write failed:', error),
 };
+let audit: McpAuditTrail | undefined;
 if (apiUrl) {
   auth.client = new HelixClient(apiUrl, apiKey ? { apiKey } : {});
   if (apiKey) {
-    auth.auditSink = createHelixAuditSink({ baseUrl: apiUrl, apiKey, ...(serviceDid ? { serviceDid } : {}) });
+    if (!serviceDid) fail('HELIX_API_KEY turns on the audit trail, whose events name this server: set SERVICE_DID');
+    audit = createMcpAuditTrail({
+      reporter: createHelixAuditReporter({ baseUrl: apiUrl, apiKey }),
+      serviceDid,
+      includeToolNames: env['AUDIT_INCLUDE_TOOL_NAMES'] === '1',
+    });
+    // The guard's decisions and the call lifecycle share one trail (one source, one sequence).
+    auth.auditSink = audit.toolAuditSink();
   }
 }
 if (demo) {
@@ -245,6 +259,7 @@ const server = createOrderServer({
   resource,
   ...(issuers.length > 0 ? { authorizationServers: issuers.map((i) => i.issuer) } : {}),
   auth,
+  ...(audit ? { audit } : {}),
   onServerError: (error) => console.error('server error:', error),
 });
 server.listen(port, host, () => {
@@ -256,5 +271,11 @@ server.listen(port, host, () => {
   console.log(`order-management MCP server on ${resource}`);
   console.log(`  HelixID VPs: ${auth.client ? `verified via ${apiUrl}` : 'off (set HELIX_API_URL)'}`);
   console.log(`  OAuth:       ${demo ? 'DEMO tokens demo-reader, demo-admin' : modes.length ? modes.join(', ') : 'off'}`);
-  console.log(`  Audit:       ${auth.auditSink ? `${apiUrl}/v1/audit-log/events` : 'off (set HELIX_API_URL + HELIX_API_KEY)'}`);
+  console.log(
+    `  Audit:       ${
+      audit
+        ? `${apiUrl}/v1/audit-log/events (KYA-OS typed events; tool names ${audit.includeToolNames ? 'recorded' : 'withheld'})`
+        : 'off (set HELIX_API_URL + HELIX_API_KEY + SERVICE_DID)'
+    }`,
+  );
 });

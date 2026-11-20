@@ -9,6 +9,7 @@ import type { ServiceEndpoint } from '../core/did.js';
 import type { SignedVC } from '../core/schemas/vc.js';
 import type { DelegationGrantVC } from '../core/schemas/delegation-grant.js';
 import type { HelixClient } from '../client/HelixClient.js';
+import { AUDIT_BINDING_MCP, AuditTrail, pairwiseDid, publicDid } from '../audit/index.js';
 
 /** Same detection the grant schema's `superRefine` uses. */
 function isDelegationGrantVC(vc: SignedVC): vc is SignedVC<DelegationGrantVC> {
@@ -172,6 +173,8 @@ export interface AgentWalletOptions {
 
 export class AgentWallet {
   private readonly clientInstance: HelixClient | undefined;
+  /** The wallet's audit source, built on first use (one source sequence per wallet instance). */
+  private auditTrail: AuditTrail | undefined;
   private privateKeyHex: string | undefined;
   private publicKeyHex: string | undefined;
   private didValue: string | undefined;
@@ -386,8 +389,10 @@ export class AgentWallet {
   }
 
   /**
-   * Emits `CONSENT_GRANTED` when the credential just stored is an SP-issued
-   * delegation grant (spec §2a). Runs after the wallet write has already
+   * Records `consent.approved` (KYA-OS AAP-1) when the credential just stored
+   * is an SP-issued delegation grant (spec §2a): the agent is the actor, the
+   * user the responsible party, the issuing service the resource, and the
+   * grant id the consent reference. Runs after the wallet write has already
    * succeeded and swallows everything: a wallet with no client attached, an API
    * that is down, or a grant with unexpected fields must all leave the stored
    * credential untouched and the caller none the wiser.
@@ -396,15 +401,22 @@ export class AgentWallet {
     if (!this.clientInstance || !isDelegationGrantVC(vc)) return;
     try {
       const subject = vc.credentialSubject;
-      await this.clientInstance.recordConsentGrantedAudit({
-        vcId: vc.id,
-        agentDid: subject.id,
-        issuer: vc.issuer,
-        userDid: subject.userDid,
-        scopes: subject.scopes,
-        durability: subject.durability,
-        grantedAt: new Date().toISOString(),
-        source: 'sdk',
+      const agent = pairwiseDid(subject.id);
+      this.auditTrail ??= new AuditTrail({
+        sink: this.clientInstance.auditSink(),
+        sourceId: `helix-sdk-js:${subject.id}`,
+        producer: agent,
+        tenantRef: agent,
+        binding: AUDIT_BINDING_MCP,
+      });
+      await this.auditTrail.record({
+        eventType: 'consent.approved',
+        actor: agent,
+        ...(subject.userDid !== undefined ? { responsibleParty: publicDid(subject.userDid) } : {}),
+        ...(vc.issuer !== undefined ? { resource: publicDid(vc.issuer) } : {}),
+        action: { category: 'consent' },
+        outcome: 'succeeded',
+        details: { family: 'consent', phase: 'approved', consentRef: vc.id },
       });
     } catch {
       // Best-effort: the grant is already in the wallet.

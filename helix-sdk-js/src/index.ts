@@ -72,11 +72,11 @@ export { hashCanonicalPayload, base58btcEncode, base58btcDecode, toCanonicalJson
 // list credential itself has been fetched -- also needed for self-verification.
 export { getBit, buildStatusListCredential, createStatusList, type StatusListCredential } from './core/status-list-schema.js';
 
-// Activity-trail event-type catalog -- narrow duplicate of helix-api's own
-// (see the retire-core-package design); used by independent issuers
-// (e.g. e2e-consent-demo's Service Providers) that emit their own audit
-// trail rather than relying on helix-api's.
-export { AuditEvents, type AuditEvent, type AuditEventType } from './core/audit-events.js';
+// KYA-OS auditability (story A-1, AAP-1 Recorded): typed producer events,
+// the trail that emits them, references, digests and the evidence vault. The
+// legacy `AuditEvents` catalog is gone; producers record typed events through
+// an `AuditTrail` and `HelixClient.auditSink()`.
+export * from './audit/index.js';
 
 // See the file comment in local-did-cache.ts -- an intentional no-op now
 // that verification is always an API call, kept for test compatibility.
