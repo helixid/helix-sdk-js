@@ -33,7 +33,8 @@ grants are all API calls (`HelixClient.onboardAgent()`, `signVP()`,
 | `audit/` | SDK-side audit log implementation |
 | `scope.ts` | `checkScope()` / `requireScope()` — local checks against a verification result's `effectiveScopes` |
 | `verify.ts` | `verifyVP()` — thin wrapper over `HelixClient.verifyVP()`; there is no local verification fallback by design |
-| `vp-builder.ts` | `VPBuilder` — local VP construction and signing (the explicit private-key carveout above) |
+| `vp-builder.ts` | `VPBuilder` — local VP construction and signing (the explicit private-key carveout above); `signWith(signer)` signs through any Signer |
+| `core/custody/` | KYA-OS story F-3: `helixInit` (self-custody onboarding: the key is generated here, only the public JWK is sent), `activateAgent`, `changeToSelfCustody`, `EnvSigner` and `HelixCustodialSigner` (a custodial agent signs through the API; same `Signer` shape, so application code does not change), `HelixCustodyClient`. Custodial agents are labelled `custody: helix` and are not counted in KYA-OS conformance claims; their proofs still verify |
 
 `HelixClient` is the primary entry point for the API-backed flows
 (onboarding, signing, delegation, verification, DID/VC lifecycle), but the
