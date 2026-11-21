@@ -24,3 +24,17 @@ export type { MCPAuthErrorCode } from './errors.js';
 
 // KYA-OS session, replay store and server response proof (story L2-A).
 export * from './kyaos/index.js';
+
+// The /.well-known/mcp discovery document (story L1-D).
+export {
+  WELL_KNOWN_MCP_PATH,
+  DEFAULT_WELL_KNOWN_VERSION,
+  DEFAULT_SUPPORTED_DID_METHODS,
+  DEFAULT_PROOF_ALGORITHMS,
+  WellKnownMcpError,
+  buildWellKnownMcp,
+  createWellKnownMcp,
+  validateWellKnownMcp,
+  assertWellKnownMcp,
+} from './well-known.js';
+export type { WellKnownMcp, WellKnownMcpConfig, WellKnownMcpDocument, WellKnownMcpResponse, WellKnownMcpValidation, WellKnownCapabilities } from './well-known.js';

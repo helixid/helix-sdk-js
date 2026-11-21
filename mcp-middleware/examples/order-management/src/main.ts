@@ -8,11 +8,13 @@ import {
   RedisNonceStore,
   createHelixAuditSink,
   createKyaOs,
+  createWellKnownMcp,
   type AuthResult,
   type KyaOsRuntime,
   type MCPMiddlewareOptions,
   type OAuthIntrospectionOptions,
   type OAuthIssuerOptions,
+  type WellKnownMcp,
   auth0,
   entra,
   keycloak,
@@ -51,6 +53,12 @@ import { createRedisClient } from './redis-client.js';
  *   KYAOS_SESSION_TTL_MINUTES idle TTL (default 30; fractions allowed)
  *   KYAOS_REDIS_URL         redis://host:port: a replay store shared by every instance; without it
  *                           the store is in memory and covers this instance only
+ *   WELL_KNOWN_MCP        KYA-OS discovery (story L1-D): GET /.well-known/mcp is served whenever SERVICE_DID
+ *                         is a did:web or did:key (the document's serverDid), with endpoints at
+ *                         KYAOS_PUBLIC_ORIGIN (default: the origin of MCP_RESOURCE) and the KYA-OS values
+ *                         above. 0 turns the route off (404); 1 makes a SERVICE_DID the document cannot
+ *                         carry a startup error instead of a notice. Optional:
+ *   STATUS_LIST_CREDENTIAL  URL of this server's status list credential, advertised in the document
  */
 const DEMO_TOKENS: Record<string, AuthResult> = {
   'demo-reader': { sub: 'demo-reader', scopes: ['orders:read'] },
@@ -289,11 +297,37 @@ if (env['SERVICE_SIGNING_KEY']) {
   fail('KYAOS_* settings need SERVICE_SIGNING_KEY');
 }
 
+/** The discovery document (story L1-D): built once, validated against the schema, or the reason it is off. */
+let wellKnown: WellKnownMcp | undefined;
+let wellKnownOff: string | undefined;
+const wellKnownSetting = env['WELL_KNOWN_MCP'];
+if (wellKnownSetting === '0') {
+  wellKnown = createWellKnownMcp({ enabled: false });
+  wellKnownOff = 'off (WELL_KNOWN_MCP=0): 404';
+} else if (!serviceDid) {
+  wellKnownOff = 'off (set SERVICE_DID)';
+} else if (!/^did:(web|key):/.test(serviceDid) && wellKnownSetting !== '1') {
+  wellKnownOff = `off (SERVICE_DID ${serviceDid} is not a did:web or did:key, which the document's serverDid must be; WELL_KNOWN_MCP=1 makes this an error)`;
+} else {
+  try {
+    wellKnown = createWellKnownMcp({
+      publicOrigin: env['KYAOS_PUBLIC_ORIGIN'] || new URL(resource).origin,
+      serverDid: serviceDid,
+      toolsEndpoint: new URL(resource).pathname,
+      ...(kyaOs ? { kyaos: kyaOs.describe() } : {}),
+      ...(env['STATUS_LIST_CREDENTIAL'] ? { statusListCredential: env['STATUS_LIST_CREDENTIAL'] } : {}),
+    });
+  } catch (error) {
+    fail(`/.well-known/mcp: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 const server = createOrderServer({
   resource,
   ...(issuers.length > 0 ? { authorizationServers: issuers.map((i) => i.issuer) } : {}),
   auth,
   ...(kyaOs ? { kyaos: kyaOs } : {}),
+  ...(wellKnown ? { wellKnown } : {}),
   onServerError: (error) => console.error('server error:', error),
 });
 server.listen(port, host, () => {
@@ -311,6 +345,14 @@ server.listen(port, host, () => {
       kyaOs
         ? `proofs by ${kyaOs.serverDid}, sessions ${kyaOs.sessionsEnabled ? 'on' : 'off'}, skew ${kyaOs.clockSkewSeconds} s, replay store ${redisUrl ? `redis ${redisUrl}` : 'in memory (this instance only)'}`
         : 'off (set SERVICE_SIGNING_KEY)'
+    }`,
+  );
+  const document = wellKnown?.document;
+  console.log(
+    `  Discovery:   ${
+      document
+        ? `${new URL(document.endpoints.tools).origin}/.well-known/mcp, serverDid ${document.serverDid}, skew ${document.clockSkewSeconds} s, handshake ${document.endpoints.handshake ? 'advertised' : 'absent'} (route the path at that origin to this server: see mcp-middleware/docs/well-known.md)`
+        : wellKnownOff
     }`,
   );
 });
