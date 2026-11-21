@@ -132,6 +132,8 @@ is verified once per tool call. The tools themselves (`src/orders.ts`) contain n
 | `OAUTH_JWKS_URI`, `OAUTH_INTROSPECTION_URL` | from metadata | Give the endpoints explicitly and skip discovery |
 | `OAUTH_ISSUERS` | none | JSON array of trusted tenants: provider presets (`entra`, `auth0`, `okta`, `keycloak`) or `{ issuer, ... }` |
 | `DEMO_MODE` | off | `1` accepts `demo-reader` / `demo-admin`; loopback only |
+| `WELL_KNOWN_MCP` | on | KYA-OS discovery at `/.well-known/mcp`; `0` answers 404, `1` makes an unusable `SERVICE_DID` a startup error |
+| `STATUS_LIST_CREDENTIAL` | none | URL of this server's status list credential, advertised in the discovery document |
 
 ## KYA-OS session and response proof (story L2-A)
 
@@ -144,3 +146,13 @@ curl -s localhost:3700/mcp -H 'content-type: application/json' -H 'accept: appli
 # a call in that session: the result carries the proof
 curl -s localhost:3700/mcp -H 'authorization: Bearer demo-reader' -H 'content-type: application/json' -H 'accept: application/json' -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"lookup_order","arguments":{"orderId":"ORD-1001","_kyaos_session":"kyaos_<from the handshake>"}}}'
 ```
+
+## Discovery at `/.well-known/mcp` (story L1-D)
+
+Whenever `SERVICE_DID` is a `did:web` or `did:key`, the server answers `GET /.well-known/mcp` with the KYA-OS discovery document: the DID, `endpoints.tools` at `KYAOS_PUBLIC_ORIGIN` (default: the origin of `MCP_RESOURCE`), `endpoints.handshake` while the KYA-OS layer runs with sessions, `clockSkewSeconds` (the handshake's), `capabilities` (`proofs` true with `SERVICE_SIGNING_KEY`; the rest false, nothing else is on in this sample) and, with `STATUS_LIST_CREDENTIAL`, that URL. The document is validated against the schema at startup; `WELL_KNOWN_MCP=0` turns the route off (404). Behind a proxy, forward `/.well-known/mcp` at the origin root to this process and set `KYAOS_PUBLIC_ORIGIN` (see `mcp-middleware/docs/well-known.md`).
+
+```bash
+curl -s localhost:3700/.well-known/mcp | jq .
+```
+
+A `SERVICE_DID` of another method (a `did:hedera` from a Helix stack, say) cannot be the document's `serverDid`, so the route stays off and the startup line says why.
