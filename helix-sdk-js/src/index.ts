@@ -160,3 +160,10 @@ export {
   type TransportRequest,
   type DnsLookup,
 } from './core/entity-card.js';
+
+// KYA-OS story F-3: custody preference. `helix init` (self-custody onboarding),
+// HelixCustodialSigner (custodial agents sign through the API), the Signer the
+// agent runtime takes (VPBuilder.signWith), and the custody API client.
+export * as custody from './core/custody/index.js';
+export { EnvSigner, HelixCustodialSigner, HelixCustodyClient, helixInit, activateAgent, checkOwnHosting, changeToSelfCustody, rotationProof } from './core/custody/index.js';
+export type { Signer, HelixInitOptions, HelixInitResult, HelixCustodialSignerOptions, KeyCustodyMode, DidHostingMode, CustodyLabel } from './core/custody/index.js';
