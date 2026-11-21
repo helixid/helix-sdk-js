@@ -46,7 +46,7 @@ export function buildProtectedResourceMetadata(input: ProtectedResourceMetadataI
 export interface HttpErrorResponse {
   status: number;
   headers: { 'WWW-Authenticate': string };
-  body: { error: string; error_description: string; _meta?: Record<string, unknown> };
+  body: { error: string; error_description: string; _meta?: Record<string, unknown>; [member: string]: unknown };
 }
 
 export interface HttpErrorOptions {
@@ -76,6 +76,9 @@ const MAPPED: Record<string, { status: number; error: string }> = {
   TOOL_NOT_PERMITTED: { status: 403, error: 'insufficient_scope' },
   // KYA-OS session layer (story L2-A): a session id that is unknown, expired, malformed or another agent's.
   KYAOS_REJECTED: { status: 400, error: 'invalid_request' },
+  // KYA-OS story L3-E: the challenge (hosts without the signing runtime answer it here, unsigned) and a refused retry.
+  NEEDS_AUTHORIZATION: { status: 403, error: 'needs_authorization' },
+  RESUME_REFUSED: { status: 403, error: 'insufficient_scope' },
 };
 
 /**
@@ -111,6 +114,7 @@ export function toHttpErrorResponse(error: unknown, options: HttpErrorOptions): 
     body: {
       error: mapped.error || 'unauthorized',
       error_description: message,
+      ...(code === 'NEEDS_AUTHORIZATION' ? (error as { challenge?: Record<string, unknown> }).challenge : {}),
       ...(options.proof ? { _meta: { 'org.kya-os/response-proof': options.proof } } : {}),
     },
   };

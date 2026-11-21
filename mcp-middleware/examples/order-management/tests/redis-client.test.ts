@@ -4,7 +4,7 @@
 
 import { createServer, type AddressInfo, type Server } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { RedisNonceStore } from '@helixid/mcp-middleware';
+import { RedisNonceStore, RedisResumeTokenStore } from '@helixid/mcp-middleware';
 import { createRedisClient } from '../src/redis-client.js';
 
 /** Parses one RESP array command. */
@@ -19,15 +19,27 @@ function parseCommand(text: string): string[] {
 let server: Server;
 let url: string;
 const entries = new Map<string, number>();
+const values = new Map<string, string>();
 let reply: string | undefined;
 
 beforeEach(async () => {
   entries.clear();
+  values.clear();
   reply = undefined;
   server = createServer((socket) => {
     socket.on('data', (chunk) => {
-      const [command, key, , px, ms, nx] = parseCommand(chunk.toString('utf8'));
+      const [command, key, value, px, ms, nx] = parseCommand(chunk.toString('utf8'));
       if (reply !== undefined) return void socket.write(reply);
+      if (command === 'GETDEL') {
+        const expiry = entries.get(key!);
+        const held = values.get(key!);
+        entries.delete(key!);
+        values.delete(key!);
+        if (expiry === undefined || expiry <= Date.now() || held === undefined) return void socket.write('$-1\r\n');
+        // A bulk reply, split across two writes so the client must wait for all of it.
+        socket.write(`$${Buffer.byteLength(held)}\r\n${held.slice(0, 3)}`);
+        return void setTimeout(() => socket.write(`${held.slice(3)}\r\n`), 5);
+      }
       // A server-side disconnect after the reply: the client must notice and reconnect on the next command.
       if (key === 'drop') return void socket.end('+OK\r\n');
       // A hang-up with no reply at all.
@@ -36,6 +48,7 @@ beforeEach(async () => {
       const expiry = entries.get(key!);
       if (expiry !== undefined && expiry > Date.now()) return void socket.write('$-1\r\n');
       entries.set(key!, Date.now() + Number(ms));
+      values.set(key!, value!);
       socket.write('+OK\r\n');
     });
   });
@@ -73,6 +86,21 @@ describe('createRedisClient', () => {
     const results = await Promise.all(Array.from({ length: 40 }, (_, i) => (i % 2 ? first : second).insert('k7Hy9mNpQrStUvWxYz01Aa', 'did:key:z6Mkagent', Date.now() + 60_000)));
     expect(results.filter(Boolean)).toHaveLength(1);
     for (const client of clients) client.close();
+  });
+
+  it('reads a bulk reply to GETDEL (once, then the null bulk), so a RedisResumeTokenStore is single-use across instances (story L3-E)', async () => {
+    const client = createRedisClient(url);
+    expect(await client.set('r:tok', '{"agentDid":"did:key:z6Mkagent","tool":"refund_order","scopes":["orders:admin"],"expiresAt":9999999999999}', 'PX', 60_000, 'NX')).toBe('OK');
+    expect(await client.getdel('r:tok')).toBe('{"agentDid":"did:key:z6Mkagent","tool":"refund_order","scopes":["orders:admin"],"expiresAt":9999999999999}');
+    expect(await client.getdel('r:tok')).toBeNull();
+    const peer = createRedisClient(url);
+    const store = new RedisResumeTokenStore({ client });
+    const token = await store.issue({ agentDid: 'did:key:z6Mkagent', tool: 'refund_order', scopes: ['orders:admin'] }, Date.now() + 60_000);
+    const consumers = await Promise.all([new RedisResumeTokenStore({ client: peer }).consume(token), store.consume(token), store.consume(token)]);
+    expect(consumers.filter(Boolean)).toHaveLength(1);
+    expect(consumers.find(Boolean)).toMatchObject({ agentDid: 'did:key:z6Mkagent', tool: 'refund_order', scopes: ['orders:admin'] });
+    client.close();
+    peer.close();
   });
 
   it('surfaces errors and unexpected replies, and refuses a non-redis URL', async () => {
