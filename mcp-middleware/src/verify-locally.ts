@@ -150,6 +150,7 @@ export function cardEndpointOf(document: unknown): string | undefined {
 }
 
 /** The default `reportVerification`: says once that verifications go unrecorded until story A-1 connects the trail. */
+// eslint-disable-next-line no-console -- the default reporter's one line of output goes to the console
 export function unrecordedReporter(log: (message: string) => void = (message) => console.warn(message)): ReportVerification {
   let said = false;
   return () => {
@@ -166,7 +167,7 @@ export function createLocalVerifier(options: LocalVerifierOptions): LocalVerifie
   const clock = options.clock ?? Date.now;
   const nonceStore = options.nonceStore ?? new MemoryNonceStore({ now: clock });
   const allowLoopbackHttp = options.allowLoopbackHttp ?? false;
-  const doFetch: ResolverFetch = options.fetch ?? ((url) => fetch(url));
+  const doFetch: ResolverFetch = options.fetch ?? ((url): ReturnType<ResolverFetch> => fetch(url));
   const fetchJson = async (url: string): Promise<unknown> => {
     const target = resolutionUrl(url, allowLoopbackHttp);
     if (target === undefined) throw new Error(`refusing to fetch ${url}: only https: URLs are read`);
@@ -187,7 +188,7 @@ export function createLocalVerifier(options: LocalVerifierOptions): LocalVerifie
   const resolveDidKeys = options.resolveDidKeys ?? kyaos.verifier.createDidKeysResolver(resolveDid);
   const fetchStatusList: kyaos.verifier.FetchStatusList =
     options.fetchStatusList ??
-    (async (url) => {
+    (async (url): Promise<kyaos.verifier.StatusListRead> => {
       const list = await fetchJson(url);
       // The list is read live from its issuer here; story L3-C adds its proof check and the cache that reports `fresh: false`.
       return kyaos.verifier.decodeStatusListCredential(list, { fresh: true });

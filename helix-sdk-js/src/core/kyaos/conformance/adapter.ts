@@ -149,7 +149,10 @@ export class HelixConformanceAdapter implements ConformanceAdapter {
   async resolveDidWeb(input: DidResolutionInput): Promise<AdapterResult> {
     try {
       const resolve = createDidResolver({
-        fetch: async () => (input.didDocument === undefined ? { ok: false, status: 404, json: async () => null } : { ok: true, status: 200, json: async () => input.didDocument }),
+        fetch: async () => {
+          const found = input.didDocument !== undefined;
+          return { ok: found, status: found ? 200 : 404, json: async (): Promise<unknown> => (found ? input.didDocument : null) };
+        },
       });
       if (typeof input.did !== 'string' || !input.did.startsWith('did:web:')) return fail('not a did:web');
       const document = await resolve(input.did);
@@ -179,7 +182,7 @@ export class HelixConformanceAdapter implements ConformanceAdapter {
             ? {}
             : {
                 nonceStore: {
-                  insert: async (nonce: string, did: string | undefined) => {
+                  insert: async (nonce: string, did: string | undefined): Promise<boolean> => {
                     const key = `${did ?? ''}|${nonce}`;
                     if (used.has(key)) return false;
                     used.add(key);

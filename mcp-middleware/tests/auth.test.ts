@@ -328,6 +328,20 @@ describe('audit', () => {
     expect(JSON.parse(init.body as string)).not.toHaveProperty('resultSummary');
   });
 
+  it('createHelixAuditSink posts a KYA-OS caller with its agent DID, level and freshness, and refuses an error answer', async () => {
+    const f = vi.fn(async () => new Response('{}', { status: 201 }));
+    const sink = createHelixAuditSink({ baseUrl: 'http://localhost:3680', apiKey: 'hak_test', fetch: f as unknown as typeof fetch });
+    await sink({
+      event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: '2026-01-01T00:00:00.000Z', authMethod: 'kyaos',
+      agentDid: 'did:key:z6Mkagent', level: 'L3', fresh: false, effectiveScopes: ['orders:read'], reason: 'ok',
+    });
+    const body = JSON.parse((f.mock.calls[0] as unknown as [string, RequestInit])[1].body as string);
+    expect(body).toMatchObject({ agentDid: 'did:key:z6Mkagent', level: 'L3', fresh: false, effectiveScopes: ['orders:read'], reason: 'ok' });
+    expect(body).not.toHaveProperty('serviceDid');
+    const failing = createHelixAuditSink({ baseUrl: 'http://localhost:1', apiKey: 'k', fetch: (async () => new Response('', { status: 500 })) as unknown as typeof fetch });
+    await expect(failing({ event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: 't', authMethod: 'kyaos', agentDid: 'did:key:z6Mk', effectiveScopes: [] })).rejects.toThrow('500');
+  });
+
   it('createHelixAuditSink refuses an event with no agentDid and no serviceDid', async () => {
     const sink = createHelixAuditSink({ baseUrl: 'http://localhost:1', apiKey: 'k', fetch: vi.fn() as unknown as typeof fetch });
     await expect(

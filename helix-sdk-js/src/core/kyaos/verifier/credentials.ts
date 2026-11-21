@@ -37,7 +37,7 @@
  * parsed, so an oversized chain costs nothing to refuse.
  */
 
-import { deepEqual, parseDateTime, validateJsonSchema, type SchemaViolation } from './json-schema.js';
+import { deepEqual, parseDateTime, validateJsonSchema, type JsonSchema, type SchemaViolation } from './json-schema.js';
 import { CAPABILITY_ATTESTATION_SCHEMA, DELEGATION_HOP_SCHEMA, IDENTITY_CREDENTIAL_SCHEMA } from './schemas.js';
 
 export { describeViolations } from './json-schema.js';
@@ -231,11 +231,11 @@ export interface EvaluateDelegationChainRulesOptions extends EvaluateDelegationC
 }
 
 /** The hop schema with `proof` any object and not required. */
-const HOP_SCHEMA_ANY_PROOF = (() => {
+const HOP_SCHEMA_ANY_PROOF = ((): JsonSchema => {
   const schema = JSON.parse(JSON.stringify(DELEGATION_HOP_SCHEMA)) as { required: string[]; properties: Record<string, unknown> };
   schema.required = schema.required.filter((member) => member !== 'proof');
   schema.properties['proof'] = { type: 'object' };
-  return schema;
+  return schema as JsonSchema;
 })();
 
 export interface DelegationChainEvaluation {

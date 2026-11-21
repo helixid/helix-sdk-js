@@ -100,7 +100,7 @@ export interface DidResolverOptions {
  * fetched, or one whose `id` is not the DID (a substitution).
  */
 export function createDidResolver(options: DidResolverOptions = {}): (did: string) => Promise<JwsDidDocument | null> {
-  const doFetch = options.fetch ?? ((url: string) => fetch(url));
+  const doFetch = options.fetch ?? ((url: string): ReturnType<JsonFetch> => fetch(url));
   return async (did: string): Promise<JwsDidDocument | null> => {
     if (did.startsWith('did:key:')) return didKeyDocument(did) ?? null;
     const url = didWebDocumentUrl(did);
