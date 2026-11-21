@@ -81,3 +81,36 @@ Introspection needs this server's own client credentials at the authorization se
 OAuth: a JWT is routed to its issuer by the (unverified) `iss` claim and verified there, so an issuer not in the list is refused with no network call; a token that is not a JWT is opaque and names no issuer, so it goes to the one issuer configured for introspection. Only one issuer may be (construction throws otherwise): with two, every opaque token would have to be shown to both. An issuer with both `jwksUri` and `introspection` verifies JWTs by its keys alone unless `introspectJwts: true`, which also asks the issuer, so a revoked JWT is refused before it expires. `requireAccessTokenType: true` on an issuer refuses JWTs whose header `typ` is not `at+jwt` (RFC 9068). An authorization server that cannot be reached throws `AuthorizationServerUnavailableError`, which `toHttpErrorResponse` leaves unmapped: answer 5xx, never 401, because the caller's token was not shown to be bad. A 403 for a missing scope names it in the challenge (`scope="orders:admin"`, RFC 6750) so a client can request that scope and retry.
 
 Audit: every decision about an identified caller (VP agent or OAuth subject) is passed to `auditSink` and awaited before the tool runs. Unidentified callers are not logged, and a failing sink never blocks a call. OAuth callers have no agent DID, so set `serviceDid` (or `expectedTargetService`).
+
+## Serving the service's KYA-OS identity (Entity Card, story C-A)
+
+A KYA-OS service has a did:web whose DID document anchors its Entity Card (`KyaOsEntityCard`
+service entry). `serveIdentity` builds both documents from the middleware's own configuration
+and answers them at the paths the did:web derives, from the origin agents connect to:
+
+```ts
+import { serveIdentity } from '@helixid/mcp-middleware';
+
+const identity = serveIdentity({
+  publicOrigin: 'https://mcp.example.com',   // what the documents name; behind a proxy, not the bind address
+  path: '/mcp',                              // did:web:mcp.example.com:mcp → /mcp/did.json and /mcp/card.json
+  card: { name: 'Orders', kid: 'key-1', publicKeyJwk, capabilities: ['tools/list', 'tools/call'] },
+});
+// In the HTTP handler, before the MCP transport:
+if (req.method === 'GET' && identity.handle(new URL(req.url, publicOrigin).pathname, res)) return;
+// On server.json / catalog.json:
+const serverJson = identity.projectServerJson({ name: 'orders', version: '1.0.0' });
+// _meta["org.kya-os/card"] = claim-minimal summary + "org.kya-os/cardRef" (the canonical card.json)
+```
+
+Hosting follows the `/.well-known/mcp` cases: route `/{path}/did.json` and `/{path}/card.json` at
+the origin root to the middleware (a proxy path rule), mount `handle()` in whichever app serves the
+root, or write `identity.didDocument` and `identity.card` out as static files. A service whose
+`helix init` already wrote the files hands them in as `documents`. The card never carries a
+`conformanceLevel` (a verifier recomputes it) nor a proof (it rides per request).
+
+Verifier side, `resolveServerCard(serverJson, { did })` dereferences the projection to the canonical
+card through the SDK's SafeFetch (https only, public addresses only, pinned connection, same-origin
+redirects, 1 MiB, 5 s); a stripped projection falls back to the two-step resolution of `did`
+(`did.json` → `KyaOsEntityCard` → `card.json`). The sample server enables all of this with
+`PUBLIC_ORIGIN` (see `examples/order-management/src/main.ts`).
