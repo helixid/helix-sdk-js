@@ -83,3 +83,26 @@ OAuth: a JWT is routed to its issuer by the (unverified) `iss` claim and verifie
 Audit: every decision about an identified caller (VP agent or OAuth subject) is passed to `auditSink` and awaited before the tool runs. Unidentified callers are not logged, and a failing sink never blocks a call. OAuth callers have no agent DID, so set `serviceDid` (or `expectedTargetService`).
 
 Since KYA-OS story A-1 the audit log holds typed producer events (AAP-1 Recorded). `createHelixAuditSink` keeps its call shape and now records each decision as `proof.verified`, `delegation.verified` and `authorization.approved` / `authorization.denied` events, each strictly validated (an unknown member is refused), sequenced per source with `previousSourceEventDigest`, digested, and posted to `POST /v1/audit-log/events`. For the full lifecycle of a tool call (`session.established`, then `tool.call.started` / `completed` / `failed` / `denied` under one correlation id) build an `McpAuditTrail` with `createMcpAuditTrail({ reporter: createHelixAuditReporter({ baseUrl, apiKey }), serviceDid })`, pass `audit.toolAuditSink()` as `auditSink`, and wrap each call in `audit.beginToolCall({ toolName, credential }).run(...)`, as `examples/order-management` does. No event ever holds tool arguments, a response, a bearer token or a VP; an OAuth subject is recorded as a keyed commitment; tool names are withheld unless `includeToolNames` is set.
+
+## Audit delivery to the recorder (KYA-OS A-2, AAP-2 Chained)
+
+Audit events go to the HelixID recorder (`POST /v1/audit/submissions`), which
+assigns sequence, epoch, predecessor and time and signs a receipt. The server
+never chooses any of those.
+
+```ts
+const audit = createMcpAuditTrail({
+  reporter: createHelixAuditDelivery({ baseUrl, apiKey, delivery: 'required' }),
+  serviceDid,
+});
+const call = audit.beginToolCall({ toolName });
+auditToolHandlers(server, call); // before the tools are registered
+```
+
+| `delivery` | What it means |
+|---|---|
+| `required` (default) | The intent's signed receipt is obtained before the handler runs; if it cannot be, the call answers `audit_delivery_failed` and the handler does not run. If the terminal append fails after the handler ran, the result is marked `_meta["org.kya-os/audit"] = { status: "degraded", reason }` with `isError`. |
+| `buffered` | Events go to a durable outbox (`outboxDir`) keyed by `(sourceId, eventId)` and are delivered in the background, in order per source; the outbox survives a restart. An ephemeral outbox is refused at startup. |
+| `best-effort` | Refused unless `acceptAap1: true`: delivery is attempted and failures are only reported (AAP-1, capture only). |
+
+The order-management sample reads `AUDIT_DELIVERY`, `AUDIT_OUTBOX_DIR` and `AUDIT_ACCEPT_AAP1`.
