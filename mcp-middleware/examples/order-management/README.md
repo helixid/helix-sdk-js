@@ -9,7 +9,8 @@ A small MCP server with two tools behind `@helixid/mcp-middleware`:
 
 Any other tool name is denied before it runs. Callers come through either door:
 
-- **HelixID agents**: a signed VP in `Authorization: HelixVP <vp>` (or legacy `X-Helix-VP`, or MCP `params._meta["x-helix-vp"]`).
+- **KYA-OS agents**: a request proof in MCP `params._meta["org.kya-os/request-proof"]` and its delegation chain in
+  `params._meta["org.kya-os/delegation-chain"]`, verified in-process (story F-2): the Helix API is never on the request path.
 - **Standard MCP OAuth 2.1 clients**: `Authorization: Bearer <token>`, discovered through the RFC 9728 metadata at
   `/.well-known/oauth-protected-resource/mcp`.
 
@@ -48,25 +49,25 @@ curl "${H[@]}" -H 'authorization: Bearer demo-admin' $MCP -d '{"jsonrpc":"2.0","
 
 Orders live in memory (`ORD-1001`, `ORD-1002`) and reset on restart.
 
-## With HelixID: verify agent VPs and write the audit log
+## With HelixID: KYA-OS agents, verified locally
 
-Point the server at a HelixID API **you run locally** (for example `helix-server-enterprise` on port 3580, the port the
-console's dev proxy expects) and give it an account API key (`hak_…`) from that instance:
+Set `SERVICE_DID` to this server's DID and every tool call that carries a request proof is verified in-process
+(`createLocalVerifier` from `@helixid/mcp-middleware`): the proof's signature, audience (`SERVICE_DID`), request hash,
+lifetime and nonce; the carried chain's length (bounded before any entry is parsed), each hop's `eddsa-jcs-2022` proof by
+its own issuer, attenuation and status; the agent's Entity Card and its capability attestations. Only public DID
+documents, status lists and cards are fetched (https only), so calls are authorised with the Helix API unreachable.
 
 ```bash
-HELIX_API_URL=http://localhost:3580 \
-HELIX_API_KEY=hak_... \
-SERVICE_DID=did:web:orders.example \
-DEMO_MODE=1 \
-pnpm --filter @helixid/example-mcp-order-management start
+SERVICE_DID=did:web:orders.example pnpm --filter @helixid/example-mcp-order-management start
 ```
 
-- VPs are verified by that API (`POST /v1/vp/verify`): signature, delegation chain, expiry, target service and revocation.
-  `SERVICE_DID` rejects VPs signed for any other service.
-- Each decision is posted to `POST /v1/audit-log/events` and shows up under **Audit** in the console, with the agent DID or
-  the OAuth subject, the tool, and the scope that was missing on a denial.
-- `HELIX_API_URL` is required whenever `HELIX_API_KEY` is set. The SDK's `HelixClient` given only a key talks to the hosted
-  production API, so this sample refuses to start rather than fall back to it.
+- A caller's scopes are its verified attestations, intersected with the leaf hop's `allowedAction` and the tool scopes
+  here (`orders:read`, `orders:admin`). A refused proof answers 401 with the verifier's reason codes.
+- `KYAOS_TRUSTED_ISSUERS` (default `*`), `KYAOS_TRUSTED_ROOTS`, `KYAOS_MAX_CHAIN_LENGTH` (default 10) and
+  `KYAOS_CARDS_FILE` (agent DID to Entity Card, read before the card is fetched) tune the verifier;
+  `KYAOS_ALLOW_LOOPBACK_HTTP=1` reads loopback documents over http in development.
+- `HELIX_API_URL` + `HELIX_API_KEY` turn on the audit sink (`POST /v1/audit-log/events`); nothing else talks to the API.
+  `HELIX_API_URL` is required whenever `HELIX_API_KEY` is set, so the sink never falls back to the hosted production API.
 
 ## With a real authorization server
 
@@ -115,8 +116,8 @@ The gate runs at the HTTP layer, in front of the MCP transport, and only for `to
    what makes an MCP OAuth client start discovery; a tool-level error would not.
 3. Otherwise hand the request to a stateless `StreamableHTTPServerTransport`.
 
-`initialize` and `tools/list` are not gated, so HelixID clients that carry the VP in `params._meta` keep working and a VP
-is verified once per tool call. The tools themselves (`src/orders.ts`) contain no auth code.
+`initialize` and `tools/list` are not gated. A KYA-OS proof is verified once per tool call, over the JSON-RPC request as
+received. The tools themselves (`src/orders.ts`) contain no auth code.
 
 ## Configuration
 
@@ -124,9 +125,12 @@ is verified once per tool call. The tools themselves (`src/orders.ts`) contain n
 |---|---|---|
 | `PORT`, `HOST` | `3700`, `127.0.0.1` | Listen address |
 | `MCP_RESOURCE` | `http://localhost:$PORT/mcp` | Public URL of the MCP endpoint; the OAuth audience |
-| `HELIX_API_URL` | none | HelixID API for VP verification and audit |
+| `HELIX_API_URL` | none | HelixID API the audit sink writes to |
 | `HELIX_API_KEY` | none | Account API key; enables the audit sink |
-| `SERVICE_DID` | none | This server's DID |
+| `SERVICE_DID` | none | This server's DID: turns on in-process KYA-OS verification (proof audience and chain resource) |
+| `KYAOS_TRUSTED_ISSUERS`, `KYAOS_TRUSTED_ROOTS` | `*`, any | Attestation issuers and root-hop issuers the verifier trusts (comma-separated DIDs) |
+| `KYAOS_MAX_CHAIN_LENGTH` | `10` | Longest carried chain read |
+| `KYAOS_CARDS_FILE` | none | JSON map of agent DID to Entity Card |
 | `OAUTH_ISSUER` | none | One authorization server; its keys are read from its metadata |
 | `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` | none | With `OAUTH_ISSUER`: check tokens by RFC 7662 introspection (opaque tokens) |
 | `OAUTH_JWKS_URI`, `OAUTH_INTROSPECTION_URL` | from metadata | Give the endpoints explicitly and skip discovery |

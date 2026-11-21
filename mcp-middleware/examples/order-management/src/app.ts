@@ -74,7 +74,7 @@ interface ToolCallMessage {
 
 type Finisher = (result: CallToolResult) => Promise<CallToolResult>;
 
-const isMissingCredential = (error: unknown): boolean => (error as { code?: unknown } | null)?.code === 'VP_MISSING';
+const isMissingCredential = (error: unknown): boolean => (error as { code?: unknown } | null)?.code === 'PROOF_MISSING';
 
 /** The handshake tool's input, as the KYA-OS handshake-request schema has it; unknown members are dropped by zod. */
 const HANDSHAKE_INPUT = {
@@ -102,10 +102,9 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined =>
  * invalid credential gets a real HTTP 401 with `WWW-Authenticate` pointing at
  * the RFC 9728 metadata (which is how OAuth clients discover the
  * authorization server), and a scope failure gets a 403. Only `tools/call` is
- * gated: `initialize` and `tools/list` stay open, so HelixID clients that send
- * their VP in `params._meta` (not a header) keep working, and a VP is
- * verified once per tool call, not once per request. (A VP is not single-use
- * in Phase 1; see the middleware README.)
+ * gated: `initialize` and `tools/list` stay open. A KYA-OS agent carries its
+ * request proof and delegation chain in `params._meta` (story F-2), verified
+ * in-process on every call, so the Helix API is never on the request path.
  *
  * With `kyaos` set, the same layer runs the KYA-OS session and proof flow:
  * the `_kyaos_handshake` tool opens a session (credentials, when present,
@@ -117,8 +116,9 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined =>
  */
 export function createOrderServer(options: OrderServerOptions): Server {
   const store = options.store ?? createOrderStore();
-  const guard = helixidMCPMiddleware({ ...options.auth, toolScopes: TOOL_SCOPES });
   const kyaos = options.kyaos;
+  // The handshake needs an identified caller, not a scope: it is listed with none (story F-2).
+  const guard = helixidMCPMiddleware({ ...options.auth, toolScopes: kyaos ? { ...TOOL_SCOPES, [kyaos.handshakeToolName]: [] } : TOOL_SCOPES });
   const mcpPath = new URL(options.resource).pathname;
   const metadataUrl = protectedResourceMetadataUrl(options.resource);
   const metadataPath = new URL(metadataUrl).pathname;
@@ -167,6 +167,8 @@ export function createOrderServer(options: OrderServerOptions): Server {
         ...(name !== undefined ? { name } : {}),
         ...(input ? { input } : {}),
         ...(meta ? { _meta: meta } : {}),
+        // The request as received: the KYA-OS proof's requestHash is recomputed over exactly this (story F-2).
+        request: { method: message.method, params: params as Record<string, unknown> },
         headers: req.headers,
       };
       const refuse = (error: unknown, proof?: DetachedProof): void => {
@@ -182,7 +184,7 @@ export function createOrderServer(options: OrderServerOptions): Server {
         // The handshake is open to anonymous agents; a credential, when sent,
         // must be good and makes the session an authenticated one.
         try {
-          authenticatedAgentDid = (await guard.authorize({ ...toolCall, name: 'lookup_order' })).agentDid;
+          authenticatedAgentDid = (await guard.authorize(toolCall)).agentDid;
         } catch (error) {
           if (!isMissingCredential(error)) {
             refuse(error);

@@ -16,9 +16,8 @@ const STATUS: Record<MCPAuthErrorCode, number> = {
 
 /**
  * Errors raised by the middleware itself. `@helixid/sdk-js` error codes are a
- * closed union, so these new cases live here; missing/invalid VPs and
- * insufficient scope still use the sdk-js errors (VP_MISSING,
- * VP_VERIFICATION_FAILED, INSUFFICIENT_SCOPE) so existing handlers keep working.
+ * closed union, so these new cases live here; insufficient scope still uses
+ * the sdk-js error (INSUFFICIENT_SCOPE) so existing handlers keep working.
  */
 export class MCPAuthError extends Error {
   public readonly code: MCPAuthErrorCode;
@@ -29,6 +28,27 @@ export class MCPAuthError extends Error {
     this.name = 'MCPAuthError';
     this.code = code;
     this.httpStatus = STATUS[code];
+  }
+}
+
+export type ProofErrorCode = 'PROOF_MISSING' | 'PROOF_INVALID';
+
+/**
+ * A KYA-OS request proof that is absent, or that the local verifier refused
+ * (story F-2). `reasons` carries the verifier's reason codes
+ * (`nonce_replayed`, `audience_mismatch`, `attenuation_violation`, ...), so a
+ * host can answer or log the refusal without parsing the message.
+ */
+export class ProofError extends Error {
+  public readonly code: ProofErrorCode;
+  public readonly httpStatus = 401;
+  public readonly reasons: readonly string[];
+
+  constructor(code: ProofErrorCode, message: string, reasons: readonly string[] = []) {
+    super(message);
+    this.name = 'ProofError';
+    this.code = code;
+    this.reasons = reasons;
   }
 }
 

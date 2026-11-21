@@ -4,7 +4,7 @@
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { encodeHelixVP, type HelixClient, type SignedVP } from '@helixid/sdk-js';
+import { generateKeyPair, kyaos, publicKeyToMultibase } from '@helixid/sdk-js';
 import type { ToolAuditEvent } from '@helixid/mcp-middleware';
 import { createOrderServer } from '../src/app.js';
 import { createOrderStore } from '../src/orders.js';
@@ -14,13 +14,14 @@ const TOKENS: Record<string, { sub: string; scopes: string[] }> = {
   admin: { sub: 'user-admin', scopes: ['orders:read', 'orders:admin'] },
 };
 
-/** Stands in for the HelixID API: any VP whose id starts with "vp:ok" verifies, with read scope. */
-const fakeClient = {
-  verifyVP: async (vp: { id: string }) =>
-    vp.id.startsWith('vp:ok')
-      ? { valid: true, agentDid: 'did:key:agent', privilegeScopes: ['orders:read'], effectiveScopes: ['orders:read'], vpId: vp.id, delegationChain: [] }
-      : { valid: false, agentDid: '', privilegeScopes: [], effectiveScopes: [], vpId: '', delegationChain: [], error: 'bad signature' },
-} as unknown as HelixClient;
+/** A KYA-OS agent (did:key, resolved offline) that mints a request proof per call; nothing asks the Helix API (story F-2). */
+const agentKeys = generateKeyPair();
+const AGENT = `did:key:${publicKeyToMultibase(agentKeys.publicKey)}`;
+const agentSigner = new kyaos.EnvSigner({ did: AGENT, kid: AGENT.slice('did:key:'.length), envVar: 'AGENT_KEY', env: { AGENT_KEY: agentKeys.privateKey } });
+const SERVICE = 'did:web:orders.example';
+const proofMeta = async (name: string, args: Record<string, unknown>, audience = SERVICE): Promise<Record<string, unknown>> => ({
+  'org.kya-os/request-proof': await kyaos.verifier.signRequestProof({ method: 'tools/call', params: { name, arguments: args } }, agentSigner, { audience }),
+});
 
 let server: Server;
 let base: string;
@@ -33,8 +34,8 @@ beforeEach(async () => {
     authorizationServers: ['https://as.example.com'],
     store: createOrderStore(),
     auth: {
-      client: fakeClient,
-      serviceDid: 'did:web:orders.example',
+      serviceDid: SERVICE,
+      verifier: { reportVerification: () => undefined },
       validateOAuthToken: async (token) => {
         const found = TOKENS[token];
         if (!found) throw new Error('unknown token');
@@ -98,7 +99,7 @@ describe('order-management sample server', () => {
     expect(res.status).toBe(401);
     const challenge = res.headers.get('www-authenticate') ?? '';
     expect(challenge).toContain('Bearer resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp"');
-    expect(challenge).toContain('HelixVP resource_metadata=');
+    expect(challenge).toContain('KyaOS resource_metadata=');
     expect(audit).toEqual([]);
   });
 
@@ -147,29 +148,26 @@ describe('order-management sample server', () => {
     expect(audit.at(-1)).toMatchObject({ event: 'AUTHZ_DENIED', toolName: 'delete_order' });
   });
 
-  it('accepts a HelixID VP in the Authorization header and in _meta, attributed to the agent', async () => {
-    const vp = encodeHelixVP({ id: 'vp:ok:1' } as unknown as SignedVP);
-
-    const viaHeader = await callTool('lookup_order', { orderId: 'ORD-1001' }, { authorization: `HelixVP ${vp}` });
-    expect(viaHeader.status).toBe(200);
-    const viaMeta = await callTool('lookup_order', { orderId: 'ORD-1001' }, {}, { 'x-helix-vp': vp });
-    expect(viaMeta.status).toBe(200);
-
-    expect(audit.map((e) => [e.event, e.agentDid, e.authMethod])).toEqual([
-      ['AUTHZ_GRANTED', 'did:key:agent', 'helixvp'],
-      ['AUTHZ_GRANTED', 'did:key:agent', 'helixvp'],
-    ]);
+  it('verifies a KYA-OS request proof in _meta in-process, attributed to the agent, and refuses a replay or a tampered body', async () => {
+    const meta = await proofMeta('lookup_order', { orderId: 'ORD-1001' });
+    const first = await callTool('lookup_order', { orderId: 'ORD-1001' }, {}, meta);
+    // The agent presented no chain and no attested card: a valid proof with no delegated scope is refused by scope, never by the API.
+    expect(first.status).toBe(403);
+    expect(first.headers.get('www-authenticate')).toContain('scope="orders:read"');
+    expect(audit.at(-1)).toMatchObject({ event: 'AUTHZ_DENIED', agentDid: AGENT, authMethod: 'kyaos', level: 'L1', requiredScope: 'orders:read' });
+    const replay = await callTool('lookup_order', { orderId: 'ORD-1001' }, {}, meta);
+    expect(replay.status).toBe(401);
+    expect(replay.body.error_description).toContain('nonce_replayed');
+    const tampered = await callTool('lookup_order', { orderId: 'ORD-1002' }, {}, await proofMeta('lookup_order', { orderId: 'ORD-1001' }));
+    expect(tampered.status).toBe(401);
+    expect(tampered.body.error_description).toContain('request_hash_mismatch');
+    const elsewhere = await callTool('lookup_order', { orderId: 'ORD-1001' }, {}, await proofMeta('lookup_order', { orderId: 'ORD-1001' }, 'did:web:other.example'));
+    expect(elsewhere.status).toBe(401);
+    expect(elsewhere.body.error_description).toContain('audience_mismatch');
   });
 
-  it('rejects a VP that fails verification with 401', async () => {
-    const vp = encodeHelixVP({ id: 'vp:bad' } as unknown as SignedVP);
-    const res = await callTool('lookup_order', { orderId: 'ORD-1001' }, { authorization: `HelixVP ${vp}` });
-    expect(res.status).toBe(401);
-  });
-
-  it('rejects a VP and a bearer token together with 400', async () => {
-    const vp = encodeHelixVP({ id: 'vp:ok:1' } as unknown as SignedVP);
-    const res = await callTool('lookup_order', { orderId: 'ORD-1001' }, { ...bearer('reader'), 'x-helix-vp': vp });
+  it('rejects a proof and a bearer token together with 400', async () => {
+    const res = await callTool('lookup_order', { orderId: 'ORD-1001' }, bearer('reader'), await proofMeta('lookup_order', { orderId: 'ORD-1001' }));
     expect(res.status).toBe(400);
   });
 
