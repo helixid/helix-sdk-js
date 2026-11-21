@@ -29,3 +29,13 @@ export type {
   HttpErrorResponse,
 } from './metadata.js';
 export type { MCPAuthErrorCode } from './errors.js';
+// Story A-2: delivery to the HelixID recorder and audited tool handlers.
+export {
+  AUDIT_META_KEY,
+  auditToolHandlers,
+  auditUnavailableResponse,
+  createHelixAuditDelivery,
+  markAuditDegraded,
+  runAuditedTool,
+} from './audit-delivery.js';
+export type { AuditedToolResult, HelixAuditDeliveryOptions, RunAuditedToolOptions, ToolRegistrar } from './audit-delivery.js';
