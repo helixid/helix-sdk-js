@@ -98,15 +98,36 @@ export interface AuditLogFilters {
   /** One detail family, e.g. `tool`. */
   family?: string;
   since?: string;
+  /** The `nextCursor` of the previous page; absent for the first. */
+  cursor?: string;
   limit?: number;
 }
 
-/** One row of `GET /v1/audit-log`: the typed producer event as recorded, with its digest. */
+/**
+ * One row of helix-core's `GET /v1/audit-log` (operator): the typed producer
+ * event as recorded, where the recorder placed it, and its signed receipt.
+ */
 export interface AuditLogEvent {
   id: string;
   recordedAt: string;
   eventDigest: string;
   event: AuditProducerEvent;
+  ledgerId: string;
+  ledgerEpochId: string;
+  sequence: string;
+  entryDigest: string;
+  receipt: { core: Record<string, unknown>; jws: string };
+}
+
+/**
+ * One page of `GET /v1/audit-log`, newest first. Pass `nextCursor` back as
+ * `cursor` for the next page; it is null on the last. A hosted deployment's
+ * account view answers the same shape with its own item type (the event at
+ * the account's tier): read it as `getAuditLog<ItsItem>()`.
+ */
+export interface AuditLogPage<Item = AuditLogEvent> {
+  items: Item[];
+  nextCursor: string | null;
 }
 
 export interface StatusListCredentialResponse {
@@ -404,13 +425,15 @@ export class HelixClient {
     return this.http.post<StatusListCredential>('/v1/status-list', options);
   }
 
-  async getAuditLog(filters: AuditLogFilters = {}): Promise<AuditLogEvent[]> {
+  /** One page of the audit log, newest first; `nextCursor` fetches the next. */
+  async getAuditLog<Item = AuditLogEvent>(filters: AuditLogFilters = {}): Promise<AuditLogPage<Item>> {
     if (!this.http.get) throw new Error('GET not implemented by adapter');
-    return this.http.get(
+    return this.http.get<AuditLogPage<Item>>(
       `/v1/audit-log${toQueryString({
         eventType: filters.eventType,
         family: filters.family,
         since: filters.since,
+        cursor: filters.cursor,
         limit: filters.limit,
       })}`,
     );

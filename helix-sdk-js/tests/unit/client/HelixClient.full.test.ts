@@ -211,11 +211,13 @@ describe('HelixClient Full Unit Tests', () => {
     });
   });
 
-  it('gets audit log with filters', async () => {
-    mockHttp.get.mockResolvedValue([]);
-    await client.getAuditLog({ eventType: 'VC_ISSUED', since: '2026-07-03T00:00:00.000Z', limit: 10 });
+  it('gets one audit log page with filters and the cursor of the previous page', async () => {
+    mockHttp.get.mockResolvedValue({ items: [], nextCursor: null });
+    await expect(
+      client.getAuditLog({ eventType: 'tool.call.completed', family: 'tool', since: '2026-07-03T00:00:00.000Z', cursor: 'abc_-1', limit: 10 }),
+    ).resolves.toEqual({ items: [], nextCursor: null });
     expect(mockHttp.get).toHaveBeenCalledWith(
-      '/v1/audit-log?eventType=VC_ISSUED&since=2026-07-03T00%3A00%3A00.000Z&limit=10',
+      '/v1/audit-log?eventType=tool.call.completed&family=tool&since=2026-07-03T00%3A00%3A00.000Z&cursor=abc_-1&limit=10',
     );
   });
 
