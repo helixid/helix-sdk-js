@@ -1,18 +1,22 @@
-import { VPMissingError, VPVerificationFailedError, decodeHelixVP } from '@helixid/sdk-js';
-import { verifyVP } from '@helixid/sdk-js';
+import type { kyaos } from '@helixid/sdk-js';
 import type { ToolAuditEvent } from './audit.js';
 import { extractCredential } from './credentials.js';
-import { AuthorizationServerUnavailableError, MCPAuthError, ToolScopeError } from './errors.js';
+import { AuthorizationServerUnavailableError, MCPAuthError, ProofError, ToolScopeError } from './errors.js';
 import { createOAuthValidator } from './oauth.js';
 import type { MCPToolCall, MCPMiddlewareOptions } from './types.js';
+import { createLocalVerifier, type LocalVerifier } from './verify-locally.js';
 
 /** Who a tool call came from, once the guard has identified and authorized them. */
 export interface AuthorizedCaller {
-  authMethod: 'helixvp' | 'oauth';
+  authMethod: 'kyaos' | 'oauth';
   scopes: string[];
   agentDid?: string;
-  vpId?: string;
   oauthSubject?: string;
+  /** KYA-OS callers: the level the local verifier derived (story F-2), and the proof's assurance. */
+  level?: kyaos.verifier.ConformanceLevel;
+  proofAssurance?: kyaos.verifier.ProofAssurance;
+  /** KYA-OS callers: whether every status the level relies on was read live. */
+  fresh?: boolean;
 }
 
 type Caller = AuthorizedCaller;
@@ -25,31 +29,12 @@ type Caller = AuthorizedCaller;
  */
 export type MCPMiddleware = ((toolCall: MCPToolCall) => Promise<MCPToolCall>) & {
   authorize(toolCall: MCPToolCall): Promise<AuthorizedCaller>;
+  /** The local verifier the guard runs, when one is configured. */
+  readonly verifier: LocalVerifier | undefined;
 };
 
-/**
- * The HelixID API reports a bad credential the way the local verifier does:
- * as a typed error (VC_REVOKED, VP_EXPIRED, VP_SIGNATURE_INVALID, a target
- * service mismatch, ...), not as `valid: false`. Those are the caller's fault
- * and become a 401. Anything else from the API (our own API key refused, the
- * API down) is a server fault and is passed through unmapped.
- */
-const CREDENTIAL_FAULT_PREFIXES = ['VP_', 'VC_', 'DELEGATION_', 'CONSENT_GRANT_'];
-const CREDENTIAL_FAULT_CODES = new Set([
-  'DID_NOT_FOUND',
-  'INVALID_DID_FORMAT',
-  'UNSUPPORTED_DID_METHOD',
-  'SELF_SIGNED_VC_NOT_ALLOWED',
-  'MAX_DELEGATION_DEPTH_EXCEEDED',
-  'SCOPE_ESCALATION_DENIED',
-  'CREDENTIAL_NOT_FOR_THIS_AGENT',
-  'SERVICE_NOT_FOUND',
-  'VALIDATION_ERROR',
-]);
-function isCredentialFault(err: unknown): boolean {
-  const code = (err as { code?: unknown } | null)?.code;
-  if (typeof code !== 'string') return false;
-  return CREDENTIAL_FAULT_PREFIXES.some((prefix) => code.startsWith(prefix)) || CREDENTIAL_FAULT_CODES.has(code);
+function isLocalVerifier(value: unknown): value is LocalVerifier {
+  return typeof value === 'object' && value !== null && typeof (value as { verifyCall?: unknown }).verifyCall === 'function';
 }
 
 export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddleware {
@@ -58,6 +43,17 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
   }
   const validateOAuth = options.validateOAuthToken ?? (options.oauth ? createOAuthValidator(options.oauth) : undefined);
   const serviceDid = options.serviceDid ?? options.expectedTargetService;
+  // The verifier runs in-process (story F-2): nothing here ever asks the Helix API about a credential.
+  const localVerifier: LocalVerifier | undefined =
+    options.verifier === undefined
+      ? undefined
+      : isLocalVerifier(options.verifier)
+        ? options.verifier
+        : createLocalVerifier({
+            ...(options.toolScopes === undefined ? {} : { catalog: [...new Set(Object.values(options.toolScopes).flat())] }),
+            ...options.verifier,
+            serviceDid: options.verifier.serviceDid ?? serviceDid ?? '',
+          });
 
   const audit = async (caller: Caller, toolName: string | undefined, denied: { scope?: string; reason: string } | undefined): Promise<void> => {
     if (!options.auditSink) return;
@@ -69,7 +65,8 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
       effectiveScopes: caller.scopes,
       ...(caller.agentDid !== undefined ? { agentDid: caller.agentDid } : {}),
       ...(caller.oauthSubject !== undefined ? { oauthSubject: caller.oauthSubject } : {}),
-      ...(caller.vpId !== undefined ? { vpId: caller.vpId } : {}),
+      ...(caller.level !== undefined ? { level: caller.level } : {}),
+      ...(caller.fresh !== undefined ? { fresh: caller.fresh } : {}),
       ...(toolName !== undefined ? { toolName } : {}),
       ...(denied?.scope !== undefined ? { requiredScope: denied.scope } : {}),
       ...(denied ? { reason: denied.reason } : {}),
@@ -83,52 +80,44 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
   };
 
   const authorize = async (toolCall: MCPToolCall): Promise<AuthorizedCaller> => {
-    // Credentials come from Authorization / X-Helix-VP / _meta only; tool
-    // arguments are never consulted. Ambiguous credentials throw.
+    // Credentials come from Authorization or `_meta` only; tool arguments
+    // are never consulted. Ambiguous credentials throw.
     const credential = extractCredential(toolCall);
+    const toolName = typeof toolCall.name === 'string' ? toolCall.name : undefined;
     if (!credential) {
-      throw new VPMissingError(
-        'No credentials: send Authorization: HelixVP, X-Helix-VP, MCP _meta["x-helix-vp"]' +
-          (validateOAuth ? ', or Authorization: Bearer' : ''),
+      throw new ProofError(
+        'PROOF_MISSING',
+        'No credentials: send a KYA-OS request proof in _meta["org.kya-os/request-proof"]' + (validateOAuth ? ', or Authorization: Bearer' : ''),
       );
     }
 
     let caller: Caller;
-    if (credential.kind === 'vp') {
-      if (!options.client) {
-        throw new Error('helixidMCPMiddleware: `client` is required to verify HelixID VPs');
+    if (credential.kind === 'proof') {
+      if (!localVerifier) {
+        throw new Error('helixidMCPMiddleware: `verifier` is required to verify KYA-OS request proofs');
       }
-      const vp = decodeHelixVP(credential.encoded);
-      let result;
-      try {
-        result = await verifyVP(vp, options.client, {
-          allowSelfSigned: options.allowSelfSigned ?? false,
-          ...(options.expectedTargetService !== undefined
-            ? { expectedTargetService: options.expectedTargetService }
-            : {}),
-        });
-      } catch (err) {
-        if (isCredentialFault(err)) {
-          throw new VPVerificationFailedError(err instanceof Error ? err.message : String(err));
+      const result = await localVerifier.verifyCall({
+        ...(toolName === undefined ? {} : { name: toolName }),
+        ...(toolCall.input === undefined ? {} : { input: toolCall.input }),
+        ...(toolCall._meta === undefined ? {} : { _meta: toolCall._meta }),
+        ...(toolCall.request === undefined ? {} : { request: toolCall.request }),
+      });
+      /* c8 ignore next */
+      if (result === undefined) throw new ProofError('PROOF_MISSING', 'The request carries no KYA-OS request proof');
+      if (!result.ok) {
+        const refused = new ProofError('PROOF_INVALID', `The request proof was refused: ${result.reasons.join(', ')}`, result.reasons);
+        if (result.proofDid !== undefined) {
+          await audit({ authMethod: 'kyaos', scopes: [], agentDid: result.proofDid, level: result.level, fresh: result.fresh }, toolName, { reason: result.reasons.join(',') });
         }
-        if ((err as { code?: unknown } | null)?.code === 'INSUFFICIENT_SCOPE') {
-          // About this server's own access to the API (its key lacks a scope), not
-          // the caller: keep it from being answered as the caller's 403.
-          throw new Error(
-            `The HelixID API refused the verification request: ${err instanceof Error ? err.message : String(err)}`,
-            { cause: err },
-          );
-        }
-        throw err;
-      }
-      if (!result.valid) {
-        throw new VPVerificationFailedError(result.error);
+        throw refused;
       }
       caller = {
-        authMethod: 'helixvp',
+        authMethod: 'kyaos',
         scopes: result.effectiveScopes,
-        agentDid: result.agentDid,
-        vpId: result.vpId,
+        ...(result.proofDid === undefined ? {} : { agentDid: result.proofDid }),
+        level: result.level,
+        ...(result.proofAssurance === undefined ? {} : { proofAssurance: result.proofAssurance }),
+        fresh: result.fresh,
       };
     } else {
       if (!validateOAuth) {
@@ -152,7 +141,6 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
 
     // Authorization. With a toolScopes map the default is deny: an unlisted
     // tool (or a call with no tool name) never runs.
-    const toolName = typeof toolCall.name === 'string' ? toolCall.name : undefined;
     let required: string[];
     if (options.toolScopes) {
       if (toolName === undefined || !Object.hasOwn(options.toolScopes, toolName)) {
@@ -178,5 +166,5 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
     await authorize(toolCall);
     return toolCall;
   };
-  return Object.assign(guard, { authorize });
+  return Object.assign(guard, { authorize, verifier: localVerifier });
 }
