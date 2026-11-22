@@ -82,14 +82,12 @@ export {
   toDidKey,
   publicKeyFromDidKey,
   publicKeyJwkBytes,
-  agentKeyRegistration,
   assertNoPrivateMaterial,
   encodeBase58btc,
   decodeBase58btc,
   DEFAULT_AGENT_KEY_ID,
   type AgentKey,
   type AgentPublicKeyJwk,
-  type AgentKeyRegistration,
 } from './core/agent-key.js';
 export {
   generateKeyPair,
@@ -179,6 +177,13 @@ export {
   type TransportRequest,
   type DnsLookup,
 } from './core/entity-card.js';
+
+// KYA-OS story F-3: custody preference. `helix init` (self-custody onboarding),
+// HelixCustodialSigner (custodial agents sign through the API), the Signer the
+// agent runtime takes (a request proof: kyaos.verifier.signRequestProof), and the custody API client.
+export * as custody from './core/custody/index.js';
+export { EnvSigner, HelixCustodialSigner, HelixCustodyClient, helixInit, activateAgent, checkOwnHosting, changeToSelfCustody, rotationProof } from './core/custody/index.js';
+export type { Signer, HelixInitOptions, HelixInitResult, HelixCustodialSignerOptions, KeyCustodyMode, DidHostingMode, CustodyLabel } from './core/custody/index.js';
 
 // KYA-OS (stories rule 24): canonical JSON hashing, EdDSA JWS and the Signer,
 // the session handshake and the client side of the detached response proof.

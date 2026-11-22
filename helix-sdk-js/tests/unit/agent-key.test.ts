@@ -6,7 +6,6 @@ import { describe, expect, it } from 'vitest';
 import { HelixClient } from '../../src/client/HelixClient.js';
 import {
   DEFAULT_AGENT_KEY_ID,
-  agentKeyRegistration,
   agentPublicKey,
   assertNoPrivateMaterial,
   decodeBase58btc,
@@ -32,7 +31,6 @@ interface FixtureKey {
   did_web: string;
   kid_fragment: string;
   kid: string;
-  registration_body: { publicKeyJwk: { kty: 'OKP'; crv: 'Ed25519'; x: string }; kid: string };
 }
 
 interface Fixtures {
@@ -90,20 +88,14 @@ describe('toPublicKeyJwk, toDidKey', () => {
   });
 });
 
-describe('agentKeyRegistration and publicKeyJwkBytes', () => {
+describe('publicKeyJwkBytes', () => {
   const key = generateAgentKey();
   const jwk = toPublicKeyJwk(key.publicKeyHex);
 
-  it('builds {publicKeyJwk, kid} from hex, bytes or a JWK, with the default kid', () => {
-    expect(agentKeyRegistration(key.publicKeyHex)).toEqual({ publicKeyJwk: jwk, kid: DEFAULT_AGENT_KEY_ID });
-    expect(agentKeyRegistration(new Uint8Array(Buffer.from(key.publicKeyHex, 'hex')), 'k2')).toEqual({ publicKeyJwk: jwk, kid: 'k2' });
-    expect(agentKeyRegistration({ ...jwk, kid: 'ignored' })).toEqual({ publicKeyJwk: jwk, kid: DEFAULT_AGENT_KEY_ID });
-    expect(() => agentKeyRegistration(key.publicKeyHex, '')).toThrow(/kid/);
-  });
-
   it('refuses any private material and any JWK that is not a public OKP Ed25519 key', () => {
     const d = Buffer.from(key.privateKeyHex, 'hex').toString('base64url');
-    expect(() => agentKeyRegistration({ ...jwk, d } as never)).toThrow(/Private key material.*publicKeyJwk\.d|found d/);
+    expect(() => assertNoPrivateMaterial({ publicKeyJwk: { ...jwk, d } })).toThrow(/Private key material.*found publicKeyJwk\.d/);
+    expect(toPublicKeyJwk(new Uint8Array(Buffer.from(key.publicKeyHex, 'hex')), DEFAULT_AGENT_KEY_ID)).toEqual({ ...jwk, kid: 'key-1' });
     expect(() => publicKeyJwkBytes({ ...jwk, d })).toThrow(/found d/);
     expect(() => publicKeyJwkBytes({ ...jwk, use: 'sig' })).toThrow(/unexpected members \(use\)/);
     expect(() => publicKeyJwkBytes({ ...jwk, kty: 'EC' })).toThrow(/OKP/);
@@ -128,42 +120,9 @@ describe('agentKeyRegistration and publicKeyJwkBytes', () => {
   });
 });
 
-describe('HelixClient.registerAgentKey (self-custody invariant)', () => {
-  it('posts the public JWK and kid to /v1/agents/{did}/keys and nothing private is in the payload', async () => {
-    const key = generateAgentKey();
-    const client = new HelixClient('http://localhost:3000', { adminApiKey: 'admin' });
-    const calls: { path: string; payload: unknown }[] = [];
-    client.__setTestHttpAdapter({
-      post: async (path: string, payload: unknown) => {
-        calls.push({ path, payload });
-        return { did: 'did:web:x:agents:a', kid: 'did:web:x:agents:a#key-1', didKey: toDidKey(key.publicKeyHex), didDocument: {} };
-      },
-    } as never);
-
-    const result = await client.registerAgentKey('did:web:x:agents:a', key.publicKeyHex);
-    expect(result.kid).toBe('did:web:x:agents:a#key-1');
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.path).toBe('/v1/agents/did%3Aweb%3Ax%3Aagents%3Aa/keys');
-    expect(calls[0]!.payload).toEqual({ publicKeyJwk: toPublicKeyJwk(key.publicKeyHex), kid: 'key-1' });
-    const wire = JSON.stringify(calls[0]!.payload);
-    expect(wire).not.toMatch(/"d"/);
-    expect(wire).not.toContain(key.privateKeyHex);
-    expect(wire).not.toContain(Buffer.from(key.privateKeyHex, 'hex').toString('base64url'));
-    expect(Object.keys((calls[0]!.payload as { publicKeyJwk: object }).publicKeyJwk).sort()).toEqual(['crv', 'kty', 'x']);
-
-    await client.registerAgentKey('did:web:x:agents:a', toPublicKeyJwk(key.publicKeyHex), { kid: 'signing' });
-    expect(calls[1]!.payload).toEqual({ publicKeyJwk: toPublicKeyJwk(key.publicKeyHex), kid: 'signing' });
-  });
-
-  it('never sends a request that would carry private material, and needs an API', async () => {
-    const key = generateAgentKey();
-    const client = new HelixClient('http://localhost:3000');
-    let posted = false;
-    client.__setTestHttpAdapter({ post: async () => { posted = true; return {}; } } as never);
-    const d = Buffer.from(key.privateKeyHex, 'hex').toString('base64url');
-    await expect(client.registerAgentKey('did:web:x', { ...toPublicKeyJwk(key.publicKeyHex), d } as never)).rejects.toThrow(/Private key material/);
-    expect(posted).toBe(false);
-    await expect(new HelixClient().registerAgentKey('did:web:x', key.publicKeyHex)).rejects.toThrow();
+describe('registering an agent key', () => {
+  it('goes through enrollment only (helixInit: public JWK and a proof of possession); the L1-A key route is gone', () => {
+    expect('registerAgentKey' in HelixClient.prototype).toBe(false);
   });
 });
 
@@ -183,13 +142,12 @@ describe.skipIf(!existsSync(DID_FIXTURE))('helix-core fixtures/kya-os-helix/did.
   const fixtures = existsSync(DID_FIXTURE) ? (JSON.parse(readFileSync(DID_FIXTURE, 'utf8')) as Fixtures) : ({ keys: {}, base58btc: [], did_key_rejections: [] } as Fixtures);
 
   for (const [name, key] of Object.entries(fixtures.keys)) {
-    it(`key ${name}: the same seed gives the same public key, JWK, did:key and registration body as helix-core`, () => {
+    it(`key ${name}: the same seed gives the same public key, JWK and did:key as helix-core`, () => {
       expect(Buffer.from(agentPublicKey(key.private_key_hex)).toString('hex')).toBe(key.public_key_hex);
       expect(toPublicKeyJwk(key.public_key_hex)).toEqual(key.public_key_jwk);
       expect(toDidKey(key.public_key_hex)).toBe(key.did_key);
       expect(`z${encodeBase58btc(new Uint8Array([0xed, 0x01, ...Buffer.from(key.public_key_hex, 'hex')]))}`).toBe(key.public_key_multibase);
       expect(Buffer.from(publicKeyFromDidKey(key.did_key)!).toString('hex')).toBe(key.public_key_hex);
-      expect(agentKeyRegistration(key.public_key_hex, key.kid_fragment)).toEqual(key.registration_body);
       expect(key.kid).toBe(`${key.did_web}#${key.kid_fragment}`);
     });
   }
