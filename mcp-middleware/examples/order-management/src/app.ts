@@ -8,6 +8,8 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import {
   AuthorizationServerUnavailableError,
+  runAuditedTool,
+  type AuditedToolResult,
   buildProtectedResourceMetadata,
   helixidMCPMiddleware,
   protectedResourceMetadataUrl,
@@ -32,8 +34,10 @@ export interface OrderServerOptions {
    * Records each tool call's lifecycle (KYA-OS AAP-1): `session.established`,
    * then `tool.call.started` / `completed` / `failed`, or `tool.call.denied`
    * when the guard refuses. Pair it with `auth.auditSink: audit.toolAuditSink()`
-   * so the guard's own decisions join the same call. An audit write that fails
-   * fails the call (a 500): a call that cannot be recorded does not run.
+   * so the guard's own decisions join the same call. With required delivery
+   * (A-2) a call that cannot be recorded does not run: a failed session or
+   * intent append stops it, and a failed terminal append marks its result
+   * degraded (`_meta["org.kya-os/audit"]`).
    */
   audit?: McpAuditTrail;
   /**
@@ -267,8 +271,13 @@ export function createOrderServer(options: OrderServerOptions): Server {
       // Stateless: a fresh server and transport per request. Leaving out
       // sessionIdGenerator is what makes the transport stateless.
       const server = new McpServer({ name: 'order-management', version: '0.0.0' });
+      // A-2: each tool runs audited (runAuditedTool, as auditToolHandlers does),
+      // inside L2-A's proof wrapper: in required delivery the intent receipt comes
+      // before the handler, and the response proof is signed over the final
+      // result, a degraded marker included. The handshake is not a tool call
+      // and is not audited.
       const wrap: ToolWrapper = (name, handler) => async (args, extra) => {
-        const result = await handler(args, extra);
+        const result = call ? ((await runAuditedTool(call, async () => (await handler(args, extra)) as AuditedToolResult)) as CallToolResult) : await handler(args, extra);
         const finish = finishers.get(name)?.shift();
         return finish ? finish(result) : result;
       };
@@ -293,14 +302,7 @@ export function createOrderServer(options: OrderServerOptions): Server {
       // exactOptionalPropertyTypes (optional callbacks typed without `| undefined`);
       // the transport is the SDK's own Transport implementation.
       await server.connect(transport as Transport);
-      await call?.started();
-      try {
-        await transport.handleRequest(req, res, body);
-      } catch (error) {
-        await call?.failed('handler_error');
-        throw error;
-      }
-      await call?.completed();
+      await transport.handleRequest(req, res, body);
     };
 
     if (call) await call.run(serve);

@@ -35,6 +35,16 @@ export type {
   HttpErrorResponse,
 } from './metadata.js';
 export type { MCPAuthErrorCode, ProofErrorCode } from './errors.js';
+// Story A-2: delivery to the HelixID recorder and audited tool handlers.
+export {
+  AUDIT_META_KEY,
+  auditToolHandlers,
+  auditUnavailableResponse,
+  createHelixAuditDelivery,
+  markAuditDegraded,
+  runAuditedTool,
+} from './audit-delivery.js';
+export type { AuditedToolResult, HelixAuditDeliveryOptions, RunAuditedToolOptions, ToolRegistrar } from './audit-delivery.js';
 
 // The local verifier the guard runs in-process on every tool call (story F-2).
 export { createLocalVerifier, unrecordedReporter, cardEndpointOf, resolutionUrl, KYA_OS_CARD_SERVICE_TYPE } from './verify-locally.js';

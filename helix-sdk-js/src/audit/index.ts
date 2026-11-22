@@ -16,3 +16,8 @@ export * from './references.js';
 export * from './evidence.js';
 export * from './sink.js';
 export * from './trail.js';
+// Story A-2: delivery to the authoritative recorder (required, buffered, best-effort).
+export * from './recorder-client.js';
+export * from './outbox.js';
+export * from './outbox-contract.js';
+export * from './delivery.js';

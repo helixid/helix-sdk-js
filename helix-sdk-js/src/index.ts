@@ -54,6 +54,9 @@ export type {
   GetAgentScopesInput,
   AgentScopesResult,
   VerifyVPApiResult,
+  AuditLogFilters,
+  AuditLogEvent,
+  AuditLogPage,
 } from './client/HelixClient.js';
 
 export * from './errors/index.js';
