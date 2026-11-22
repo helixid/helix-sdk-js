@@ -5,8 +5,8 @@
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildDIDDocument, encodeHelixVP, generateKeyPair, kyaos, type HelixClient, type SignedVP } from '@helixid/sdk-js';
-import { MemoryNonceStore, createKyaOs, type KyaOsRuntime } from '@helixid/mcp-middleware';
+import { MemoryAuditSink, buildDIDDocument, encodeHelixVP, generateKeyPair, kyaos, type HelixClient, type SignedVP } from '@helixid/sdk-js';
+import { MemoryNonceStore, createKyaOs, createMcpAuditTrail, type KyaOsRuntime } from '@helixid/mcp-middleware';
 import { createOrderServer } from '../src/app.js';
 import { createOrderStore } from '../src/orders.js';
 
@@ -216,5 +216,69 @@ describe('order-management sample with KYA-OS', () => {
     expect(bodies).toHaveLength(2);
     const hashes = bodies.map((b) => (b.result._meta['org.kya-os/response-proof'] as kyaos.DetachedProof).meta.responseHash);
     expect(new Set(hashes).size).toBe(2);
+  });
+});
+
+describe('order-management sample with KYA-OS and the typed audit trail together', () => {
+  let audited: Server;
+  let auditedBase: string;
+  let sink: MemoryAuditSink;
+
+  beforeEach(async () => {
+    sink = new MemoryAuditSink();
+    const audit = createMcpAuditTrail({ reporter: sink, serviceDid: SERVICE });
+    audited = createOrderServer({
+      resource: 'http://localhost/mcp',
+      store: createOrderStore(),
+      auth: {
+        client: fakeClient,
+        serviceDid: SERVICE,
+        validateOAuthToken: async (token) => {
+          const found = TOKENS[token];
+          if (!found) throw new Error('unknown token');
+          return found;
+        },
+        auditSink: audit.toolAuditSink(),
+      },
+      kyaos: runtime,
+      audit,
+    });
+    await new Promise<void>((resolve) => audited.listen(0, '127.0.0.1', resolve));
+    auditedBase = `http://127.0.0.1:${(audited.address() as AddressInfo).port}`;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => audited.close(() => resolve()));
+  });
+
+  const auditedCall = async (name: string, args: Record<string, unknown>, headers: Record<string, string> = {}) => {
+    const res = await fetch(`${auditedBase}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...headers },
+      body: JSON.stringify({ jsonrpc: '2.0', id: nextId++, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    return { status: res.status, body: JSON.parse(await res.text()) };
+  };
+
+  it('records the typed lifecycle of a call and still signs its response proof; the handshake is not a tool call', async () => {
+    const handshake = await auditedCall('_kyaos_handshake', handshakeArgs({ agentDid: AGENT }));
+    expect(handshake.body.result.isError).toBeUndefined();
+    expect(sink.events).toEqual([]);
+
+    const allowed = await auditedCall('lookup_order', { orderId: 'ORD-1001', _kyaos_session: handshake.body.result.structuredContent.sessionId }, vpHeader('vp:ok-9'));
+    expect(allowed.status).toBe(200);
+    expect(proofOf(allowed.body).meta).toMatchObject({ outcome: 'allowed', clientDid: AGENT });
+    expect(sink.eventTypes).toEqual(['session.established', 'proof.verified', 'authorization.approved', 'tool.call.started', 'tool.call.completed']);
+    expect(new Set(sink.events.map((event) => event.correlationId)).size).toBe(1);
+    expect(sink.events.slice(1).every((event) => event.actor?.kind === 'pairwise_did')).toBe(true);
+    expect(JSON.stringify(sink.events)).not.toContain('ORD-1001');
+  });
+
+  it('records a denied call by its code and still answers with the denied proof', async () => {
+    const refused = await auditedCall('refund_order', { orderId: 'ORD-1001', reason: 'x' }, bearer('reader'));
+    expect(refused.status).toBe(403);
+    expect((refused.body._meta['org.kya-os/response-proof'] as kyaos.DetachedProof).meta).toMatchObject({ outcome: 'denied', reason: 'INSUFFICIENT_SCOPE' });
+    expect(sink.eventTypes).toEqual(['session.established', 'authorization.denied', 'tool.call.denied']);
+    expect(sink.events[2]!.reason).toEqual({ code: 'insufficient_scope' });
   });
 });
