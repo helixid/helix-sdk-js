@@ -6,8 +6,6 @@
 import { HelixClient, kyaos } from '@helixid/sdk-js';
 import { appendFileSync } from 'node:fs';
 import {
-  RedisNonceStore,
-  RedisResumeTokenStore,
   createHelixAuditSink,
   createKyaOs,
   createNeedsAuthorization,
@@ -24,7 +22,6 @@ import {
 } from '@helixid/mcp-middleware';
 import { createOrderServer } from './app.js';
 import { demoRetryAuthorizer } from './demo-authorizer.js';
-import { createRedisClient } from './redis-client.js';
 
 /**
  * Configuration (environment):
@@ -54,11 +51,17 @@ import { createRedisClient } from './redis-client.js';
  *   KYAOS_CLOCK_SKEW_SECONDS  30 to 600 (default 120)
  *   KYAOS_SESSIONS=0        no sessions: the handshake is refused, calls are proven without one
  *   KYAOS_SESSION_TTL_MINUTES idle TTL (default 30; fractions allowed)
- *   KYAOS_REDIS_URL         redis://host:port: a replay store shared by every instance; without it
- *                           the store is in memory and covers this instance only
+ *   KYAOS_NONCE_STORE       the replay store: memory (default, this instance only), redis or dynamo,
+ *                           read by @helixid/mcp-middleware itself (nonceStoreFromEnv); with it:
+ *                           redis: KYAOS_REDIS_URL, KYAOS_NONCE_KEY_PREFIX
+ *                           dynamo: KYAOS_DYNAMO_TABLE, KYAOS_DYNAMO_KEY_ATTRIBUTE, KYAOS_DYNAMO_TTL_ATTRIBUTE,
+ *                                   KYAOS_DYNAMO_REGION, KYAOS_DYNAMO_ENDPOINT (AWS credentials: the SDK's chain)
+ *                           See .env.example.
  *   KYAOS_AUTHORIZATION_URL KYA-OS (story L3-E): the consent page a caller without the authority for a
  *                         tool is sent to. Turns on the signed needs_authorization challenge and the
- *                         resume flow; the resume-token store shares KYAOS_REDIS_URL when set. In
+ *                         resume flow; the resume-token store follows KYAOS_NONCE_STORE (Redis on
+ *                         KYAOS_REDIS_URL, key prefix KYAOS_RESUME_KEY_PREFIX, when the replay store is
+ *                         Redis; memory otherwise), chosen by @helixid/mcp-middleware itself. In
  *                         DEMO_MODE the retry's DelegationCredential is checked structurally only (see
  *                         demo-authorizer.ts); outside it every retry is refused until a verifier
  *                         (stories F-2, L3-H) is wired in. Optional:
@@ -290,7 +293,6 @@ function numberFromEnv(name: string, integer: boolean): number | undefined {
 }
 
 let kyaOs: KyaOsRuntime | undefined;
-const redisUrl = env['KYAOS_REDIS_URL'];
 if (env['SERVICE_SIGNING_KEY']) {
   if (!serviceDid) fail('SERVICE_SIGNING_KEY needs SERVICE_DID (the DID whose document lists the key)');
   const skew = numberFromEnv('KYAOS_CLOCK_SKEW_SECONDS', true);
@@ -302,13 +304,12 @@ if (env['SERVICE_SIGNING_KEY']) {
       publicOrigin: env['KYAOS_PUBLIC_ORIGIN'] || new URL(resource).origin,
       ...(skew !== undefined ? { clockSkewSeconds: skew } : {}),
       session: { enabled: env['KYAOS_SESSIONS'] !== '0', ...(ttlMinutes !== undefined ? { ttlMinutes } : {}) },
-      ...(redisUrl ? { nonceStore: new RedisNonceStore({ client: createRedisClient(redisUrl) }) } : {}),
       toolsEndpoint: resource,
     });
   } catch (error) {
     fail(`KYA-OS: ${error instanceof Error ? error.message : String(error)}`);
   }
-} else if (redisUrl || env['KYAOS_PUBLIC_ORIGIN'] || env['KYAOS_CLOCK_SKEW_SECONDS'] || env['KYAOS_SESSIONS'] || env['KYAOS_SESSION_TTL_MINUTES']) {
+} else if (env['KYAOS_NONCE_STORE'] || env['KYAOS_PUBLIC_ORIGIN'] || env['KYAOS_CLOCK_SKEW_SECONDS'] || env['KYAOS_SESSIONS'] || env['KYAOS_SESSION_TTL_MINUTES']) {
   fail('KYAOS_* settings need SERVICE_SIGNING_KEY');
 }
 
@@ -327,7 +328,6 @@ if (authorizationUrl) {
         return url.toString();
       },
       ...(ttlSeconds !== undefined ? { ttlSeconds } : {}),
-      ...(redisUrl ? { store: new RedisResumeTokenStore({ client: createRedisClient(redisUrl) }) } : {}),
       ...(demo ? { authorizer: demoRetryAuthorizer(serviceDid) } : {}),
       ...(auth.auditSink ? { auditSink: auth.auditSink } : {}),
       onAuditError: (error) => console.error('audit write failed:', error),
@@ -338,6 +338,23 @@ if (authorizationUrl) {
   }
 } else if (env['KYAOS_RESUME_TTL_SECONDS']) {
   fail('KYAOS_RESUME_TTL_SECONDS needs KYAOS_AUTHORIZATION_URL');
+}
+
+if (kyaOs) {
+  // redis and dynamo load their client package in the background: a missing one stops the server here, not at the first call.
+  try {
+    await kyaOs.ready();
+  } catch (error) {
+    fail(`KYA-OS: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+if (auth.needsAuthorization) {
+  // The resume-token store follows the replay store; a Redis one loads ioredis in the background, like it.
+  try {
+    await auth.needsAuthorization.ready();
+  } catch (error) {
+    fail(`KYA-OS needs_authorization: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 const server = createOrderServer({
@@ -360,14 +377,14 @@ server.listen(port, host, () => {
   console.log(
     `  Consent:     ${
       authorizationUrl
-        ? `needs_authorization challenges to ${authorizationUrl}, resume tokens ${redisUrl ? `in redis ${redisUrl}` : 'in memory'}, retries ${demo ? 'checked structurally (DEMO_MODE, no signature verification)' : 'refused until a verifier is wired in'}`
+        ? `needs_authorization challenges to ${authorizationUrl}, resume tokens ${env['KYAOS_NONCE_STORE']?.trim().toLowerCase() === 'redis' ? 'in redis (KYAOS_REDIS_URL)' : 'in memory'}, retries ${demo ? 'checked structurally (DEMO_MODE, no signature verification)' : 'refused until a verifier is wired in'}`
         : 'off (set KYAOS_AUTHORIZATION_URL)'
     }`,
   );
   console.log(
     `  KYA-OS:      ${
       kyaOs
-        ? `proofs by ${kyaOs.serverDid}, sessions ${kyaOs.sessionsEnabled ? 'on' : 'off'}, skew ${kyaOs.clockSkewSeconds} s, replay store ${redisUrl ? `redis ${redisUrl}` : 'in memory (this instance only)'}`
+        ? `proofs by ${kyaOs.serverDid}, sessions ${kyaOs.sessionsEnabled ? 'on' : 'off'}, skew ${kyaOs.clockSkewSeconds} s (replay store: the line above)`
         : 'off (set SERVICE_SIGNING_KEY)'
     }`,
   );

@@ -14,6 +14,7 @@ export { MCPAuthError, ToolScopeError, AuthorizationServerUnavailableError } fro
 // KYA-OS signed needs_authorization and resume (story L3-E).
 export * from './needs-authorization.js';
 export * from './resume-token-store.js';
+export * from './resume-token-store-env.js';
 export type { MCPMiddlewareOptions, AttachHelixVPOptions, MCPToolCall } from './types.js';
 export type { AuthResult, OAuthJwtOptions, OAuthIssuerOptions, OAuthIntrospectionOptions, OAuthOptions } from './oauth.js';
 export type { AuditSink, ToolAuditEvent, HelixAuditSinkOptions } from './audit.js';

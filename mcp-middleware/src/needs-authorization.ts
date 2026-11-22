@@ -2,7 +2,9 @@
 // Licensed under the Apache License, Version 2.0
 
 import type { AuditSink, ToolAuditEvent } from './audit.js';
-import { MemoryResumeTokenStore, isResumeToken, type ResumeTokenRecord, type ResumeTokenStore } from './resume-token-store.js';
+import type { NonceStoreLog } from './kyaos/nonce-store-env.js';
+import { isResumeToken, type ResumeTokenRecord, type ResumeTokenStore } from './resume-token-store.js';
+import { deferredResumeTokenStoreFromEnv } from './resume-token-store-env.js';
 
 /**
  * The signed `needs_authorization` challenge and the resume flow (KYA-OS
@@ -161,8 +163,15 @@ export interface ChallengeInput extends ChallengeContext {
 export interface NeedsAuthorizationOptions {
   /** The consent page: a URL, or a function of the challenge's binding. Always covered by the proof. */
   authorizationUrl: string | ((context: ChallengeContext) => string);
-  /** Default `MemoryResumeTokenStore` (one instance); share a `RedisResumeTokenStore` across instances. */
+  /**
+   * Default: the store `KYAOS_NONCE_STORE` leads to (deferredResumeTokenStoreFromEnv: Redis on `KYAOS_REDIS_URL`
+   * when the replay store is Redis, memory otherwise). An explicit store wins.
+   */
   store?: ResumeTokenStore | undefined;
+  /** Where the default store reads its settings; default `process.env`. */
+  env?: Readonly<Record<string, string | undefined>> | undefined;
+  /** Where the default store logs its startup line and warnings; default `console`. */
+  log?: NonceStoreLog | undefined;
   /** Resume-token lifetime; default 600. */
   ttlSeconds?: number | undefined;
   /** Verifies the credential a retry carries (F-2, L3-H). Default: refuses. */
@@ -186,6 +195,8 @@ export interface ResumeRetry {
 
 export interface NeedsAuthorization {
   readonly store: ResumeTokenStore;
+  /** Settles when the store is ready: at once for an explicit or memory store; once `ioredis` is loaded for Redis, rejecting when it is missing. Await it at startup. */
+  ready(): Promise<void>;
   readonly ttlSeconds: number;
   /** Issues a resume token bound to the context and builds the challenge; audits it. */
   challenge(input: ChallengeInput): Promise<NeedsAuthorizationError>;
@@ -224,7 +235,8 @@ const refusingAuthorizer: RetryAuthorizer = () => {
 
 export function createNeedsAuthorization(options: NeedsAuthorizationOptions): NeedsAuthorization {
   const now = options.now ?? Date.now;
-  const store = options.store ?? new MemoryResumeTokenStore({ now });
+  const store: ResumeTokenStore & { ready?: Promise<void> } =
+    options.store ?? deferredResumeTokenStoreFromEnv(options.env ?? process.env, { now, log: options.log });
   const ttlSeconds = options.ttlSeconds ?? DEFAULT_RESUME_TTL_SECONDS;
   if (!(ttlSeconds > 0) || !Number.isFinite(ttlSeconds)) throw new RangeError('createNeedsAuthorization: ttlSeconds must be a positive number');
   const authorizer = options.authorizer ?? refusingAuthorizer;
@@ -303,5 +315,5 @@ export function createNeedsAuthorization(options: NeedsAuthorizationOptions): Ne
     return { scopes };
   };
 
-  return { store, ttlSeconds, challenge, authorizeRetry, readRetry: readResumeRetry };
+  return { store, ready: () => store.ready ?? Promise.resolve(), ttlSeconds, challenge, authorizeRetry, readRetry: readResumeRetry };
 }
