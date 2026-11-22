@@ -32,7 +32,9 @@ grants are all API calls (`HelixClient.onboardAgent()`, `signVP()`,
 | `http/` | `HttpAdapter` — internal HTTP client |
 | `audit/` | SDK-side audit log implementation |
 | `scope.ts` | `checkScope()` / `requireScope()` — local checks against a verification result's `effectiveScopes` |
-| `verify.ts` | `verifyVP()` — thin wrapper over `HelixClient.verifyVP()`; there is no local verification fallback by design |
+| `verify.ts` | `verifyVP()` — thin wrapper over `HelixClient.verifyVP()`. The API route it calls (`/v1/vp/verify`) is retired by KYA-OS story F-2; use `kyaos.verifier.verify()` |
+| `core/kyaos/verifier/` | `kyaos.verifier.verify(input, seams, options)` — the local verifier (story F-2): a KYA-OS request proof plus its carried delegation chain, verified in-process from public DID documents, status lists and the agent's card through injected seams, never a Helix database. Mirrored by `helix_sdk.verifier` in helix-sdk-py |
+| `core/kyaos/conformance/` | `kyaos.conformance.HelixConformanceAdapter` — the KYA-OS `ConformanceAdapter` and a runner for the vendored vector categories |
 | `vp-builder.ts` | `VPBuilder` — local VP construction and signing (the explicit private-key carveout above) |
 
 `HelixClient` is the primary entry point for the API-backed flows
