@@ -81,6 +81,31 @@ OAuth: a JWT is routed to its issuer by the (unverified) `iss` claim and verifie
 
 Audit: every decision about an identified caller (KYA-OS agent or OAuth subject) is passed to `auditSink` and awaited before the tool runs. Unidentified callers are not logged, and a failing sink never blocks a call. OAuth callers have no agent DID, so set `serviceDid`.
 
+Since KYA-OS story A-1 the audit log holds typed producer events (AAP-1 Recorded). `createHelixAuditSink` keeps its call shape and now records each decision as typed events: a KYA-OS caller (story F-2) as `proof.verified` (verification code `KYAOS_PROOF_<level>`, with `_CACHED` when a status was not read live) then `authorization.approved` / `authorization.denied`, a request proof the local verifier refused as `proof.rejected` by its first reason code, an OAuth caller as the authorization event alone; each strictly validated (an unknown member is refused), sequenced per source with `previousSourceEventDigest`, digested, and posted to `POST /v1/audit-log/events`. For the full lifecycle of a tool call (`session.established`, then `tool.call.started` / `completed` / `failed` / `denied` under one correlation id) build an `McpAuditTrail` with `createMcpAuditTrail({ reporter: createHelixAuditReporter({ baseUrl, apiKey }), serviceDid })`, pass `audit.toolAuditSink()` as `auditSink`, and wrap each call in `audit.beginToolCall({ toolName }).run(...)`, as `examples/order-management` does. No event ever holds tool arguments, a response, a bearer token or a credential; an OAuth subject is recorded as a keyed commitment; tool names are withheld unless `includeToolNames` is set.
+
+## Audit delivery to the recorder (KYA-OS A-2, AAP-2 Chained)
+
+Audit events go to the HelixID recorder (`POST /v1/audit/submissions`), which
+assigns sequence, epoch, predecessor and time and signs a receipt. The server
+never chooses any of those.
+
+```ts
+const audit = createMcpAuditTrail({
+  reporter: createHelixAuditDelivery({ baseUrl, apiKey, delivery: 'required' }),
+  serviceDid,
+});
+const call = audit.beginToolCall({ toolName });
+auditToolHandlers(server, call); // before the tools are registered
+```
+
+| `delivery` | What it means |
+|---|---|
+| `required` (default) | The intent's signed receipt is obtained before the handler runs; if it cannot be, the call answers `audit_delivery_failed` and the handler does not run. If the terminal append fails after the handler ran, the result is marked `_meta["org.kya-os/audit"] = { status: "degraded", reason }` with `isError`. |
+| `buffered` | Events go to a durable outbox (`outboxDir`) keyed by `(sourceId, eventId)` and are delivered in the background, in order per source; the outbox survives a restart. An ephemeral outbox is refused at startup. |
+| `best-effort` | Refused unless `acceptAap1: true`: delivery is attempted and failures are only reported (AAP-1, capture only). |
+
+The order-management sample reads `AUDIT_DELIVERY`, `AUDIT_OUTBOX_DIR` and `AUDIT_ACCEPT_AAP1`.
+
 ## Serving the service's KYA-OS identity (Entity Card, story C-A)
 
 A KYA-OS service has a did:web whose DID document anchors its Entity Card (`KyaOsEntityCard`
@@ -113,6 +138,7 @@ card through the SDK's SafeFetch (https only, public addresses only, pinned conn
 redirects, 1 MiB, 5 s); a stripped projection falls back to the two-step resolution of `did`
 (`did.json` → `KyaOsEntityCard` → `card.json`). The sample server enables all of this with
 `PUBLIC_ORIGIN` (see `examples/order-management/src/main.ts`).
+
 ## KYA-OS session, replay store and response proof (story L2-A)
 
 `createKyaOs()` adds the KYA-OS session layer around the gate above: a `_kyaos_handshake` tool, optional sessions, a replay store, and a detached proof signed by the service on every tool call outcome, so an agent or auditor can verify what the server received and returned without trusting anyone in between.
