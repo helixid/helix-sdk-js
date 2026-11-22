@@ -1,6 +1,6 @@
 export { helixidMCPMiddleware } from './middleware.js';
 export type { MCPMiddleware, AuthorizedCaller as MiddlewareCaller } from './middleware.js';
-export { createJwtValidator, createIntrospectionValidator, createOAuthValidator } from './oauth.js';
+export { createJwtValidator, createIntrospectionValidator, createOAuthValidator, cnfJktOf } from './oauth.js';
 export { createHelixAuditSink } from './audit.js';
 export { auth0, entra, keycloak, okta } from './providers.js';
 export type { ProviderIntrospection } from './providers.js';
@@ -9,7 +9,7 @@ export {
   protectedResourceMetadataUrl,
   toHttpErrorResponse,
 } from './metadata.js';
-export { MCPAuthError, ProofError, ToolScopeError, AuthorizationServerUnavailableError } from './errors.js';
+export { MCPAuthError, ProofError, LevelError, ToolScopeError, AuthorizationServerUnavailableError } from './errors.js';
 export type { MCPMiddlewareOptions, MiddlewareVerifierOptions, MCPToolCall } from './types.js';
 export type { AuthResult, OAuthJwtOptions, OAuthIssuerOptions, OAuthIntrospectionOptions, OAuthOptions } from './oauth.js';
 export type { AuditSink, ToolAuditEvent, HelixAuditSinkOptions } from './audit.js';
@@ -22,8 +22,14 @@ export type {
 export type { MCPAuthErrorCode, ProofErrorCode } from './errors.js';
 
 // The local verifier the guard runs in-process on every tool call (story F-2).
-export { createLocalVerifier, unrecordedReporter, cardEndpointOf, resolutionUrl, KYA_OS_CARD_SERVICE_TYPE } from './verify-locally.js';
+export { createLocalVerifier, requestOf, unrecordedReporter, cardEndpointOf, resolutionUrl, KYA_OS_CARD_SERVICE_TYPE } from './verify-locally.js';
 export type { LocalVerifier, LocalVerifierOptions, LocalVerifierCall, VerificationReport, ReportVerification, ResolverFetch } from './verify-locally.js';
 
 // KYA-OS session, replay store and server response proof (story L2-A).
 export * from './kyaos/index.js';
+
+// The minimum Card level per tool (story C-C).
+export { deriveConformanceLevel, derivedLevelOf, meetsMinimumLevel, minimumLevelFor, assertLevelPolicy, DEFAULT_MINIMUM_LEVEL, MINIMUM_LEVELS } from './level.js';
+export type { MinimumLevel, DerivedLevel, LevelPolicy } from './level.js';
+// The §11.2 request-proof check the guard runs through the local verifier (story C-C), for hosts that verify a proof alone.
+export { verifyRequestProof } from './verify-request-proof.js';

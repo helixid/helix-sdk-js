@@ -13,9 +13,13 @@ import { fixtureVerifier, makeAgent, proofMeta } from './proof-helpers.js';
 
 const SERVICE = 'did:web:svc.helix.test';
 const agent = makeAgent();
-/** A guard whose verifier resolves the test agent offline (story F-2: never the Helix API). */
+/**
+ * A guard whose verifier resolves the test agent offline (story F-2: never the Helix API). The agent has no
+ * card, so its calls come to L1: these tests are about credentials, scopes and audit, so every tool asks L1
+ * (story C-C's level check has its own tests in level.test.ts).
+ */
 const guard = (options: Omit<Parameters<typeof helixidMCPMiddleware>[0], 'verifier'> = {}) =>
-  helixidMCPMiddleware({ verifier: fixtureVerifier(SERVICE, { documents: { [agent.did]: agent.document } }), ...options });
+  helixidMCPMiddleware({ verifier: fixtureVerifier(SERVICE, { documents: { [agent.did]: agent.document } }), minimumLevel: 'L1', ...options });
 const proofFor = (name: string, input?: Record<string, unknown>) => proofMeta(agent.signer, SERVICE, { name, ...(input ? { input } : {}) });
 
 describe('credential extraction', () => {
@@ -30,9 +34,10 @@ describe('credential extraction', () => {
     await expect(mw({ name: 't', headers: new Headers({ Authorization: 'Bearer tok' }) })).resolves.toBeDefined();
   });
 
-  it('rejects a proof together with a bearer token, and duplicate Authorization headers', async () => {
+  it('rejects a chain without a proof together with a bearer token, and duplicate Authorization headers', async () => {
     const mw = guard({ validateOAuthToken: async () => ({ sub: 'u' }) });
-    await expect(mw({ name: 't', headers: { authorization: 'Bearer tok' }, _meta: await proofFor('t') })).rejects.toMatchObject({ code: 'CREDENTIAL_CONFLICT' });
+    // A proof with a bearer token is the §8.6 fusion (story C-C); a bare chain with one is two callers.
+    await expect(mw({ name: 't', headers: { authorization: 'Bearer tok' }, _meta: { 'org.kya-os/delegation-chain': [{}] } })).rejects.toMatchObject({ code: 'CREDENTIAL_CONFLICT' });
     await expect(mw({ name: 't', headers: { authorization: ['Bearer a', 'Bearer b'] } })).rejects.toMatchObject({ code: 'CREDENTIAL_CONFLICT' });
     await expect(mw({ name: 't', headers: { authorization: 'Bearer' } })).rejects.toMatchObject({ code: 'CREDENTIAL_CONFLICT' });
   });
@@ -340,6 +345,20 @@ describe('audit', () => {
     expect(body).not.toHaveProperty('serviceDid');
     const failing = createHelixAuditSink({ baseUrl: 'http://localhost:1', apiKey: 'k', fetch: (async () => new Response('', { status: 500 })) as unknown as typeof fetch });
     await expect(failing({ event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: 't', authMethod: 'kyaos', agentDid: 'did:key:z6Mk', effectiveScopes: [] })).rejects.toThrow('500');
+  });
+
+  it('createHelixAuditSink posts the story C-C level diagnostics: assurance, L3-minus, cnf diagnostics, required level', async () => {
+    const f = vi.fn(async () => new Response('{}', { status: 201 }));
+    const sink = createHelixAuditSink({ baseUrl: 'http://localhost:3680', apiKey: 'hak_test', fetch: f as unknown as typeof fetch });
+    await sink({
+      event: 'AUTHZ_DENIED', result: 'denied', timestamp: 't', authMethod: 'kyaos', agentDid: 'did:key:z6Mkagent', level: 'L3',
+      proofAssurance: 'L3-minus', l3Minus: true, cnfDiagnostics: ['cnf_present_but_token_unfused'], requiredLevel: 'L3', effectiveScopes: [],
+    });
+    await sink({ event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: 't', authMethod: 'kyaos', agentDid: 'did:key:z6Mkagent', cnfDiagnostics: [], effectiveScopes: [] });
+    const [first, second] = f.mock.calls.map((call) => JSON.parse((call as unknown as [string, RequestInit])[1].body as string));
+    expect(first).toMatchObject({ proofAssurance: 'L3-minus', l3Minus: true, cnfDiagnostics: ['cnf_present_but_token_unfused'], requiredLevel: 'L3' });
+    expect(second).not.toHaveProperty('cnfDiagnostics');
+    expect(second).not.toHaveProperty('proofAssurance');
   });
 
   it('createHelixAuditSink refuses an event with no agentDid and no serviceDid', async () => {

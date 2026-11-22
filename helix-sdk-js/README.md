@@ -34,6 +34,7 @@ grants are all API calls (`HelixClient.onboardAgent()`, `signVP()`,
 | `scope.ts` | `checkScope()` / `requireScope()` — local checks against a verification result's `effectiveScopes` |
 | `verify.ts` | `verifyVP()` — thin wrapper over `HelixClient.verifyVP()`. The API route it calls (`/v1/vp/verify`) is retired by KYA-OS story F-2; use `kyaos.verifier.verify()` |
 | `core/kyaos/verifier/` | `kyaos.verifier.verify(input, seams, options)` — the local verifier (story F-2): a KYA-OS request proof plus its carried delegation chain, verified in-process from public DID documents, status lists and the agent's card through injected seams, never a Helix database. Mirrored by `helix_sdk.verifier` in helix-sdk-py |
+| `core/kyaos/request-proof.ts` | `kyaos.mintRequestProof(call, signer, {audience, cnfJkt?})`, `kyaos.requestHashContentDigest(call)` (`sha-256=:<b64>:`), `kyaos.attachChain(hops)` and `kyaos.withRequestProof(call, signer, options)` — the per-request holder-of-key proof (story C-C): every tool call carries an `org.kya-os/proof.v1` signed by the agent's own Signer at `_meta["org.kya-os/request-proof"]`, with its delegation chain at `_meta["org.kya-os/delegation-chain"]`. The X-Helix-VP carrier is gone |
 | `core/kyaos/conformance/` | `kyaos.conformance.HelixConformanceAdapter` — the KYA-OS `ConformanceAdapter` and a runner for the vendored vector categories |
 | `vp-builder.ts` | `VPBuilder` — local VP construction and signing (the explicit private-key carveout above) |
 

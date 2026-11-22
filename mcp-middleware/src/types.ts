@@ -1,6 +1,7 @@
 import type { HeadersLike, kyaos } from '@helixid/sdk-js';
 import type { AuditSink } from './audit.js';
 import type { AuthResult, OAuthOptions } from './oauth.js';
+import type { MinimumLevel } from './level.js';
 import type { LocalVerifier, LocalVerifierOptions } from './verify-locally.js';
 
 export interface MCPToolCall {
@@ -42,6 +43,18 @@ export interface MCPMiddlewareOptions {
   toolScopes?: Record<string, string[]>;
   /** Fallback applied to every tool when `toolScopes` is not set. */
   requiredScopes?: string[];
+  /**
+   * The Card level every tool demands of a KYA-OS caller (story C-C): `L3`
+   * by default, a verified request proof plus a fully attested card read
+   * live. Checked after the scopes; a call below it is refused with
+   * PROOF_LEVEL_INSUFFICIENT and its derived level. OAuth-only callers
+   * carry no level and are not checked.
+   */
+  minimumLevel?: MinimumLevel;
+  /** Per-tool settings: `tools.lookup_order.minimumLevel = 'L2'` accepts a chain without a proof there. */
+  tools?: Record<string, { minimumLevel?: MinimumLevel }>;
+  /** Whether L3-minus (a proof with no token `cnf` to fuse with, §8.6) satisfies an `L3` minimum; default true. */
+  l3MinusSatisfiesL3?: boolean;
   /** This server's own DID: the proof audience. `serviceDid` is the same setting under its current name. */
   expectedTargetService?: string;
   /**

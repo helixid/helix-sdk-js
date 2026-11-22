@@ -13,6 +13,14 @@ export interface ToolAuditEvent {
   /** KYA-OS callers: the level the local verifier derived (story F-2) and whether every status was read live. */
   level?: 'L1' | 'L2' | 'L3';
   fresh?: boolean;
+  /** KYA-OS callers (story C-C): `L3` on a full `cnf` fusion, `L3-minus` without a token `cnf`; absent for a call with no proof. */
+  proofAssurance?: 'L3' | 'L3-minus';
+  /** KYA-OS callers: true when the call's L3 rests on an unfused proof (L3-minus). */
+  l3Minus?: boolean;
+  /** KYA-OS callers: the `cnf` diagnostics (`cnf_present_but_token_unfused`), when there are any. */
+  cnfDiagnostics?: string[];
+  /** KYA-OS callers refused on level: the tool's minimum. */
+  requiredLevel?: 'L1' | 'L2' | 'L3';
   /** OAuth callers: the token's `sub`. */
   oauthSubject?: string;
   toolName?: string;
@@ -65,6 +73,10 @@ export function createHelixAuditSink(options: HelixAuditSinkOptions): AuditSink 
         ...(serviceDid ? { serviceDid } : {}),
         ...(e.level ? { level: e.level } : {}),
         ...(e.fresh !== undefined ? { fresh: e.fresh } : {}),
+        ...(e.proofAssurance ? { proofAssurance: e.proofAssurance } : {}),
+        ...(e.l3Minus !== undefined ? { l3Minus: e.l3Minus } : {}),
+        ...(e.cnfDiagnostics && e.cnfDiagnostics.length > 0 ? { cnfDiagnostics: e.cnfDiagnostics } : {}),
+        ...(e.requiredLevel ? { requiredLevel: e.requiredLevel } : {}),
         ...(e.toolName ? { toolName: e.toolName } : {}),
         ...(e.requiredScope ? { requiredScope: e.requiredScope } : {}),
         effectiveScopes: e.effectiveScopes,

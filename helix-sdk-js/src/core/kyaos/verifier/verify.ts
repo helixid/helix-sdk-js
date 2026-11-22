@@ -24,24 +24,29 @@
  * verifies here from these inputs alone, and the module never asks a Helix
  * database whether it has seen one.
  *
- * Order (§11.2, §11.4, with every local check before the first network
- * read): seams and options; the carried chain's length, bounded before any
- * entry is parsed; the proof's shape, `kid`⇄`did`, audience, `requestHash`
- * and window; the signing key, its DID membership (RFC 7638) and the
- * detached JWS; the `cnf` fusion; the nonce; the chain's schema,
- * attenuation, continuity and windows; the leaf join `leafInvoker ===
- * proof.did`; trusted roots; the invoked action; each hop's
- * `eddsa-jcs-2022` proof by its own issuer; each credential's status; the
- * card, its `responsibleParty === issuer(rootVC)` gate and its attestations;
- * the level per §9.4 and the demotion matrix. A carried chain that fails is
- * refused; nothing is ever looked up in its place.
+ * Order: seams and options; the carried chain's length, bounded before any
+ * entry is parsed; the request proof in the exact §11.2 order
+ * (`verifyRequestProof`, story C-C: schema, `kid`⇄`did`, the signing key,
+ * its DID membership (RFC 7638), audience, `requestHash`, window, nonce,
+ * detached JWS, `cnf` fusion); the chain's schema, attenuation, continuity
+ * and windows; the leaf join `leafInvoker === proof.did`; trusted roots; the
+ * invoked action; each hop's `eddsa-jcs-2022` proof by its own issuer; each
+ * credential's status; the card, its `responsibleParty === issuer(rootVC)`
+ * gate and its attestations; the level per §9.4 and the demotion matrix. A
+ * carried chain that fails is refused; nothing is ever looked up in its
+ * place.
+ *
+ * A call may carry a chain and no proof (story C-C) when the caller allows
+ * it (`requireProof: false`): the chain is verified the same way, the agent
+ * is the leaf delegate, unproven, and the proof floor does not hold, so the
+ * level is at most L2. The middleware's minimum-level check decides whether
+ * that is enough for the tool.
  *
  * Ported to helix-sdk-py as `helix_sdk.verifier`, same seams, same codes,
  * same results, proven by the fixtures helix-core generates with this module.
  */
 
-import { InvalidJWSError } from '../../HelixError.js';
-import { base64UrlDecodeStrict, selectAssertionMethod, verificationMethodToJwk, type DidResolver, type Ed25519PublicJwk } from '../jws.js';
+import type { DidResolver, Ed25519PublicJwk } from '../jws.js';
 import { checkCapabilities, deriveConformanceLevel, type CapabilityCheck, type CardCapability, type ConformanceLevel } from './attestation.js';
 import { validateEntityCard, type EntityCard } from './card.js';
 import { ReasonCodes, type ReasonCode } from './codes.js';
@@ -54,19 +59,9 @@ import {
   type TrustedIssuers,
 } from './credentials.js';
 import { verifyDataIntegrity } from './data-integrity.js';
-import {
-  DEFAULT_PROOF_SKEW_SECONDS,
-  MAX_PROOF_TTL_SECONDS,
-  didOfKid,
-  jwkThumbprint,
-  parseRequestProof,
-  requestHashContentDigest,
-  verifyDetachedJws,
-  windowProblems,
-  type ProofRequest,
-  type RequestProof,
-} from './request-proof.js';
+import type { ProofRequest } from './request-proof.js';
 import { checkStatusEntry, type FetchStatusList } from './status.js';
+import { verifyRequestProof, type NonceStoreSeam, type ProofAssurance } from './verify-request-proof.js';
 
 /** What the verifier is given: the proof, the chain the request carried, the request, and the card when the caller already holds it. */
 export interface VerifierInput {
@@ -78,11 +73,6 @@ export interface VerifierInput {
   request?: ProofRequest | undefined;
   /** The agent's Entity Card, when the caller already holds it; else the `resolveCard` seam is asked. */
   card?: unknown;
-}
-
-/** The local replay store: one atomic conditional insert, the middleware's `NonceStore` shape. */
-export interface NonceStoreSeam {
-  insert(nonce: string, agentDid: string | undefined, expiresAt: number): Promise<boolean>;
 }
 
 export interface VerifierSeams {
@@ -124,6 +114,12 @@ export interface VerifierOptions {
   action?: string | undefined;
   /** The access token's RFC 9449 `cnf.jkt`, for the L3 fusion; absent means L3-minus. */
   tokenCnfJkt?: string | undefined;
+  /**
+   * Default true: a call without a request proof is refused `proof_missing`.
+   * False (story C-C): a call carrying a chain and no proof is verified on
+   * the chain alone, with the proof floor unmet, so its level is at most L2.
+   */
+  requireProof?: boolean | undefined;
 }
 
 export interface ChainSummary {
@@ -136,8 +132,6 @@ export interface ChainSummary {
   /** True when every hop's status was read live. */
   fresh: boolean;
 }
-
-export type ProofAssurance = 'L3' | 'L3-minus';
 
 export interface VerifierResult {
   ok: boolean;
@@ -152,6 +146,13 @@ export interface VerifierResult {
   chainSummary: ChainSummary;
   /** The accountable principal, once its proof verified. */
   proofDid?: string | undefined;
+  /**
+   * Who the call is for: the proof's DID, or, on a call verified without a
+   * proof, the chain's leaf delegate (unproven). Set on success.
+   */
+  agentDid?: string | undefined;
+  /** True when a request proof verified: the §9.4 proof floor. */
+  proofFloor: boolean;
   /** `L3` on a full `cnf` fusion, `L3-minus` without a token `cnf`; present once the proof verified. */
   proofAssurance?: ProofAssurance | undefined;
   /** The card's capabilities sorted; both empty when no card was presented. */
@@ -187,6 +188,7 @@ function refused(refusals: Refusals, chainSummary: ChainSummary, extra: Partial<
     capabilities: { verified: [], unverified: [] },
     fresh: false,
     warnings: [],
+    proofFloor: false,
     ...extra,
   };
 }
@@ -206,78 +208,6 @@ function missingSeams(seams: VerifierSeams, refusals: Refusals): void {
   }
 }
 
-interface ResolvedKey {
-  jwk: Ed25519PublicJwk;
-  publicKey: Uint8Array;
-}
-
-/** The signing key `proof.kid` names in `proof.did`'s document, under the CID §3.3 assertion rule. */
-async function resolveSigningKey(proof: RequestProof, seams: VerifierSeams, refusals: Refusals): Promise<ResolvedKey | undefined> {
-  let document;
-  try {
-    document = await seams.resolveDid!(proof.did);
-  } catch (error) {
-    refusals.add(ReasonCodes.DID_UNRESOLVED, `could not resolve ${proof.did}: ${(error as Error).message}`);
-    return undefined;
-  }
-  if (document === null || document === undefined) {
-    refusals.add(ReasonCodes.DID_UNRESOLVED, `${proof.did} did not resolve`);
-    return undefined;
-  }
-  try {
-    const jwk = verificationMethodToJwk(selectAssertionMethod(document, proof.did, proof.kid));
-    const publicKey = base64UrlDecodeStrict(jwk.x)!;
-    return { jwk: { kty: 'OKP', crv: 'Ed25519', x: jwk.x, kid: proof.kid }, publicKey };
-  } catch (error) {
-    const reason = error instanceof InvalidJWSError ? `${error.reason}: ` : '';
-    refusals.add(ReasonCodes.KEY_UNRESOLVABLE, `${reason}${(error as Error).message}`);
-    return undefined;
-  }
-}
-
-/** The RFC 7638 membership proof: the signing key's thumbprint is among those the DID publishes. */
-async function assertDidMembership(proof: RequestProof, key: ResolvedKey, seams: VerifierSeams, refusals: Refusals): Promise<void> {
-  let published: Ed25519PublicJwk[];
-  try {
-    published = await seams.resolveDidKeys!(proof.did);
-  } catch (error) {
-    refusals.add(ReasonCodes.DID_KEYS_UNRESOLVABLE, `could not list the keys of ${proof.did}: ${(error as Error).message}`);
-    return;
-  }
-  const wanted = jwkThumbprint(key.jwk);
-  const thumbprints = published.map((jwk) => {
-    try {
-      return jwkThumbprint(jwk);
-    } catch {
-      return undefined;
-    }
-  });
-  if (!thumbprints.includes(wanted)) {
-    refusals.add(ReasonCodes.KID_NOT_IN_DID_DOCUMENT, `${proof.kid} is not a key ${proof.did} publishes`);
-  }
-}
-
-/** §8.6: `token.cnf.jkt === proof.cnf.jkt === thumbprint(key)` for L3; no token cnf is L3-minus. */
-function cnfFusion(proof: RequestProof, key: ResolvedKey, options: VerifierOptions, refusals: Refusals, warnings: string[]): ProofAssurance {
-  const keyJkt = jwkThumbprint(key.jwk);
-  if (proof.cnf !== undefined && proof.cnf.jkt !== keyJkt) {
-    refusals.add(ReasonCodes.CNF_KEY_MISMATCH, 'cnf.jkt is not the thumbprint of the signing key');
-  }
-  if (options.tokenCnfJkt === undefined) {
-    if (proof.cnf !== undefined) warnings.push('cnf_present_but_token_unfused');
-    return 'L3-minus';
-  }
-  if (proof.cnf === undefined) {
-    refusals.add(ReasonCodes.CNF_REQUIRED_BY_TOKEN, 'the token is sender-constrained but the proof carries no cnf');
-    return 'L3-minus';
-  }
-  if (proof.cnf.jkt !== options.tokenCnfJkt) {
-    refusals.add(ReasonCodes.CNF_TOKEN_MISMATCH, 'cnf.jkt is not the token cnf.jkt');
-    return 'L3-minus';
-  }
-  return proof.cnf.jkt === keyJkt ? 'L3' : 'L3-minus';
-}
-
 /**
  * Verifies `input` with `seams` under `options`. Never throws for a bad
  * input: every refusal is a reason code in the result. Throws only for a
@@ -286,7 +216,6 @@ function cnfFusion(proof: RequestProof, key: ResolvedKey, options: VerifierOptio
  */
 export async function verify(input: VerifierInput, seams: VerifierSeams, options: VerifierOptions): Promise<VerifierResult> {
   const refusals = new Refusals();
-  const warnings: string[] = [];
 
   // 1. Seams and options, before anything is read.
   missingSeams(seams, refusals);
@@ -299,8 +228,6 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
   }
   if (refusals.any) return refused(refusals, NO_CHAIN);
   const now = seams.clock!();
-  const nowSeconds = Math.floor(now / 1000);
-  const skewSeconds = options.skewSeconds ?? DEFAULT_PROOF_SKEW_SECONDS;
 
   // 2. The carried chain's length, bounded before any entry is parsed (§10.5 rule 2).
   let hops: unknown[] | undefined;
@@ -318,57 +245,27 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
   const depth = hops?.length ?? 0;
   const noChain: ChainSummary = { depth, allowedAction: [], fresh: false };
 
-  // 3. The proof's shape and its local bindings (§11.2 steps 1, 2, 5, 6, 7).
-  if (input.proof === undefined || input.proof === null) {
-    refusals.add(ReasonCodes.PROOF_MISSING, 'the request carries no org.kya-os/request-proof');
-    return refused(refusals, noChain);
-  }
-  const proof = parseRequestProof(input.proof);
-  if (proof === undefined) {
-    refusals.add(ReasonCodes.MALFORMED_PROOF, 'the request proof is not an org.kya-os/proof.v1 object');
-    return refused(refusals, noChain);
-  }
-  if (didOfKid(proof.kid) !== proof.did) refusals.add(ReasonCodes.KID_DID_MISMATCH, 'kid does not belong to did');
-  if (proof.alg !== 'EdDSA') refusals.add(ReasonCodes.ALG_UNSUPPORTED, `proof alg ${proof.alg} is not EdDSA`);
-  if (proof.audience !== options.expectedAudience) {
-    refusals.add(ReasonCodes.AUDIENCE_MISMATCH, `audience ${proof.audience} is not this verifier (${options.expectedAudience})`);
-  }
-  if (input.request === undefined) {
-    refusals.add(ReasonCodes.REQUEST_MISSING, 'no request to recompute requestHash from');
-  } else {
-    let computed: string | undefined;
-    try {
-      computed = requestHashContentDigest(input.request);
-    } catch {
-      computed = undefined;
+  // 3. The request proof, in the exact §11.2 order (story C-C). A call that may go without one
+  //    (`requireProof: false`) and carries a chain is verified on the chain alone, without the proof floor.
+  const requireProof = options.requireProof ?? true;
+  const proofAbsent = input.proof === undefined || input.proof === null;
+  let proved: Partial<VerifierResult> = {};
+  let proofDid: string | undefined;
+  if (!proofAbsent || requireProof || hops === undefined) {
+    const verdict = await verifyRequestProof(input.proof, input.request, seams, {
+      expectedAudience: options.expectedAudience,
+      skewSeconds: options.skewSeconds,
+      maxTtlSeconds: options.maxTtlSeconds,
+      tokenCnfJkt: options.tokenCnfJkt,
+    });
+    if (!verdict.ok) {
+      verdict.reasons.forEach((code, index) => refusals.add(code, verdict.messages[index]!));
+      return refused(refusals, noChain);
     }
-    if (computed !== proof.requestHash) refusals.add(ReasonCodes.REQUEST_HASH_MISMATCH, 'requestHash does not recompute from the request');
+    proofDid = verdict.did!;
+    // Every binding held: from here a refusal names the principal it refused.
+    proved = { proofDid, proofAssurance: verdict.assurance, warnings: verdict.warnings, proofFloor: true };
   }
-  for (const problem of windowProblems(proof, nowSeconds, skewSeconds, options.maxTtlSeconds ?? MAX_PROOF_TTL_SECONDS)) {
-    refusals.add(ReasonCodes[problem.toUpperCase() as 'INVALID_WINDOW' | 'TTL_TOO_LONG' | 'CREATED_IN_FUTURE' | 'EXPIRED'], `proof window: ${problem}`);
-  }
-  if (refusals.any) return refused(refusals, noChain);
-
-  // 4. The signing key, its DID membership and the signature (§11.2 steps 3, 4, 9, 10).
-  const key = await resolveSigningKey(proof, seams, refusals);
-  if (key === undefined) return refused(refusals, noChain);
-  await assertDidMembership(proof, key, seams, refusals);
-  if (!verifyDetachedJws(proof, key.publicKey)) refusals.add(ReasonCodes.INVALID_SIGNATURE, 'the detached JWS does not verify over the covered claims');
-  const proofAssurance = cnfFusion(proof, key, options, refusals, warnings);
-  if (refusals.any) return refused(refusals, noChain, { warnings });
-  // The signature held: from here the refusal names the principal it refused.
-  const proved: Partial<VerifierResult> = { proofDid: proof.did, proofAssurance, warnings };
-
-  // 5. The nonce, consumed only once every binding held (§11.2 step 8).
-  try {
-    const expiresAt = (proof.expires + skewSeconds + 1) * 1000;
-    if (!(await seams.nonceStore!.insert(proof.nonce, proof.did, expiresAt))) {
-      refusals.add(ReasonCodes.NONCE_REPLAYED, `nonce ${proof.nonce} was already used by ${proof.did}`);
-    }
-  } catch (error) {
-    refusals.add(ReasonCodes.NONCE_STORE_UNAVAILABLE, `the nonce store could not answer: ${(error as Error).message}`);
-  }
-  if (refusals.any) return refused(refusals, noChain, proved);
 
   // 6. The chain: local rules first (§11.4 steps 1 to 4, 6), then each hop's proof (step 5), then status (step 7).
   let chainSummary: ChainSummary = { ...NO_CHAIN };
@@ -394,8 +291,8 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
       for (const rule of evaluation.broken) refusals.add(rule.code as ReasonCode, rule.reason);
       return refused(refusals, chainSummary, proved);
     }
-    if (evaluation.leafInvoker !== proof.did) {
-      refusals.add(ReasonCodes.LEAF_INVOKER_MISMATCH, `the leaf delegate ${String(evaluation.leafInvoker)} is not the proof's did ${proof.did}`);
+    if (proofDid !== undefined && evaluation.leafInvoker !== proofDid) {
+      refusals.add(ReasonCodes.LEAF_INVOKER_MISMATCH, `the leaf delegate ${String(evaluation.leafInvoker)} is not the proof's did ${proofDid}`);
       return refused(refusals, chainSummary, proved);
     }
     const chain = hops as SignedDelegationHop[];
@@ -440,13 +337,15 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
   }
 
   // 7. The card: its shape, the responsibleParty gate (§10.2) and its attestations (§9.2).
+  //    Without a proof the card is the leaf delegate's, which the chain names but nothing proves.
+  const agentDid = proofDid ?? chainSummary.leafInvoker!;
   let card: EntityCard | undefined;
   let cardValue: unknown = input.card;
   if (cardValue === undefined && typeof seams.resolveCard === 'function') {
     try {
-      cardValue = await seams.resolveCard(proof.did);
+      cardValue = await seams.resolveCard(agentDid);
     } catch (error) {
-      refusals.add(ReasonCodes.CARD_UNRESOLVABLE, `the card of ${proof.did} could not be read: ${(error as Error).message}`);
+      refusals.add(ReasonCodes.CARD_UNRESOLVABLE, `the card of ${agentDid} could not be read: ${(error as Error).message}`);
       return refused(refusals, chainSummary, proved);
     }
   }
@@ -457,8 +356,8 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
       return refused(refusals, chainSummary, proved);
     }
     card = cardValue as EntityCard;
-    if (card.id !== proof.did) {
-      refusals.add(ReasonCodes.CARD_SUBJECT_MISMATCH, `the card is ${card.id}'s, not ${proof.did}'s`);
+    if (card.id !== agentDid) {
+      refusals.add(ReasonCodes.CARD_SUBJECT_MISMATCH, `the card is ${card.id}'s, not ${agentDid}'s`);
       return refused(refusals, chainSummary, proved);
     }
     if (hops !== undefined && card.responsibleParty !== undefined && card.responsibleParty !== chainSummary.responsibleParty) {
@@ -470,7 +369,7 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
   let capabilitiesFresh = true;
   if (card !== undefined && Array.isArray(card.capabilities) && card.capabilities.length > 0) {
     const check = await checkCapabilities(card.capabilities as CardCapability[], seams.resolveDid!, {
-      subjectDid: proof.did,
+      subjectDid: agentDid,
       trustedIssuers: seams.trustedIssuers ?? '*',
       now,
       maxClockSkewMs: options.maxClockSkewMs,
@@ -480,10 +379,11 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
     capabilitiesFresh = check.fresh;
   }
 
-  // 8. Authority and level (story F-1 point 4; §9.4).
+  // 8. Authority and level (story F-1 point 4; §9.4): the proof floor holds only when a proof verified.
   const effectiveScopes = deriveEffectiveScopes(capabilities.verified, leafAllowedAction, options.catalog ?? leafAllowedAction);
   const fresh = chainFresh && capabilitiesFresh;
-  const level = deriveConformanceLevel(capabilities, true, fresh);
+  const proofFloor = proofDid !== undefined;
+  const level = deriveConformanceLevel(capabilities, proofFloor, fresh);
   return {
     ok: true,
     level,
@@ -491,11 +391,12 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
     reasons: [],
     messages: [],
     chainSummary,
-    proofDid: proof.did,
-    proofAssurance,
+    ...(proofDid === undefined ? {} : { proofDid, proofAssurance: proved.proofAssurance }),
+    agentDid,
+    proofFloor,
     capabilities,
     fresh,
-    warnings,
+    warnings: proved.warnings ?? [],
   };
 }
 

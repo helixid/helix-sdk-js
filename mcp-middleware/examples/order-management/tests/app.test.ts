@@ -166,9 +166,14 @@ describe('order-management sample server', () => {
     expect(elsewhere.body.error_description).toContain('audience_mismatch');
   });
 
-  it('rejects a proof and a bearer token together with 400', async () => {
-    const res = await callTool('lookup_order', { orderId: 'ORD-1001' }, bearer('reader'), await proofMeta('lookup_order', { orderId: 'ORD-1001' }));
-    expect(res.status).toBe(400);
+  it('takes a bearer token next to a proof as its sender constraint, not as a second caller (story C-C)', async () => {
+    // The proof decides who called: the token's scopes are not the agent's, so the unattested agent is still refused by scope.
+    const fused = await callTool('lookup_order', { orderId: 'ORD-1001' }, bearer('reader'), await proofMeta('lookup_order', { orderId: 'ORD-1001' }));
+    expect(fused.status).toBe(403);
+    expect(audit.at(-1)).toMatchObject({ event: 'AUTHZ_DENIED', agentDid: AGENT, authMethod: 'kyaos', proofAssurance: 'L3-minus' });
+    // A chain without a proof and a bearer token are two callers: refused with 400.
+    const both = await callTool('lookup_order', { orderId: 'ORD-1001' }, bearer('reader'), { 'org.kya-os/delegation-chain': [{}] });
+    expect(both.status).toBe(400);
   });
 
   it('answers 503 with Retry-After, not 401, when the authorization server cannot be reached', async () => {

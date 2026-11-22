@@ -361,7 +361,10 @@ describe('verify() edge cases beyond the fixtures', () => {
     const seams: verifier.VerifierSeams = { clock: () => NOW, resolveDid: async () => null, resolveDidKeys: async () => [], nonceStore: { insert: async () => true } };
     expect((await verifier.verify({ proof: null }, seams, { expectedAudience: AUDIENCE })).reasons).toEqual(['proof_missing']);
     const proof = await verifier.signRequestProof(request, signer, { audience: AUDIENCE, now: NOW });
-    const result = await verifier.verify({ proof, request: { method: 'x', params: { n: 1n as never } } }, seams, { expectedAudience: AUDIENCE });
+    // §11.2 (story C-C): the key is resolved (step 3) before requestHash is recomputed (step 6).
+    expect((await verifier.verify({ proof, request }, seams, { expectedAudience: AUDIENCE })).reasons).toEqual(['did_unresolved']);
+    const resolving = { ...seams, resolveDid: async () => document, resolveDidKeys: async () => verifier.ed25519KeysOf(document) };
+    const result = await verifier.verify({ proof, request: { method: 'x', params: { n: 1n as never } } }, resolving, { expectedAudience: AUDIENCE });
     expect(result.reasons).toEqual(['request_hash_mismatch']);
   });
 

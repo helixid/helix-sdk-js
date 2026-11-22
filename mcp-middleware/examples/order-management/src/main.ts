@@ -22,6 +22,7 @@ import {
 } from '@helixid/mcp-middleware';
 import { createOrderServer } from './app.js';
 import { TOOL_SCOPES } from './orders.js';
+import { LEVEL_VARIABLES, describeLevelSettings, readLevelSettings } from './levels.js';
 import { createRedisClient } from './redis-client.js';
 
 /**
@@ -42,6 +43,12 @@ import { createRedisClient } from './redis-client.js';
  *                           the card is fetched from the agent's DID document)
  *   KYAOS_ALLOW_LOOPBACK_HTTP=1  development only: read DID documents, cards and status lists over
  *                           http on loopback hosts
+ *   KYAOS_MINIMUM_LEVEL     the Card level every tool demands (story C-C): L1, L2 or L3 (default L3: a
+ *                           verified request proof, every capability attested, status read live)
+ *   KYAOS_TOOL_LEVELS       per-tool minimums, comma-separated tool=level (lookup_order=L2 accepts a
+ *                           delegation chain without a request proof for lookup_order)
+ *   KYAOS_L3_MINUS_SATISFIES_L3=0  refuse L3-minus (a proof with no token cnf to fuse) for L3 tools
+ *                           (default: accepted, as SPEC-ENTITY-CARD.md §9.4 allows)
  *   OAUTH_ISSUER          OAuth door, one authorization server. The issuer alone is enough: its keys are
  *                         read from its metadata (aud must be MCP_RESOURCE). Optional:
  *   OAUTH_JWKS_URI          its jwks_uri, to skip discovery
@@ -323,6 +330,12 @@ if (serviceDid) {
       fail(`KYAOS_CARDS_FILE: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+  // Story C-C: the minimum Card level, per tool.
+  try {
+    Object.assign(auth, readLevelSettings(env, Object.keys(TOOL_SCOPES)));
+  } catch (error) {
+    fail((error as Error).message);
+  }
   auth.verifier = createLocalVerifier({
     serviceDid,
     ...(trustedIssuers === undefined ? {} : { trustedIssuers }),
@@ -336,8 +349,14 @@ if (serviceDid) {
     // Story A-1 connects the audit trail here; until then each verification is logged once as unrecorded.
     log: (message) => console.warn(message),
   });
-} else if (env['KYAOS_TRUSTED_ISSUERS'] || env['KYAOS_TRUSTED_ROOTS'] || env['KYAOS_MAX_CHAIN_LENGTH'] || env['KYAOS_CARDS_FILE']) {
-  fail('KYAOS_TRUSTED_ISSUERS / KYAOS_TRUSTED_ROOTS / KYAOS_MAX_CHAIN_LENGTH / KYAOS_CARDS_FILE need SERVICE_DID');
+} else if (
+  env['KYAOS_TRUSTED_ISSUERS'] ||
+  env['KYAOS_TRUSTED_ROOTS'] ||
+  env['KYAOS_MAX_CHAIN_LENGTH'] ||
+  env['KYAOS_CARDS_FILE'] ||
+  LEVEL_VARIABLES.some((name) => env[name])
+) {
+  fail('KYAOS_TRUSTED_ISSUERS / KYAOS_TRUSTED_ROOTS / KYAOS_MAX_CHAIN_LENGTH / KYAOS_CARDS_FILE / KYAOS_MINIMUM_LEVEL / KYAOS_TOOL_LEVELS / KYAOS_L3_MINUS_SATISFIES_L3 need SERVICE_DID');
 }
 
 const server = createOrderServer({
@@ -357,7 +376,7 @@ server.listen(port, host, () => {
   console.log(
     `  KYA-OS proofs: ${
       auth.verifier
-        ? `verified in-process for ${serviceDid}, trusted issuers ${env['KYAOS_TRUSTED_ISSUERS'] || '*'}, chain length <= ${env['KYAOS_MAX_CHAIN_LENGTH'] || 10}`
+        ? `verified in-process for ${serviceDid}, trusted issuers ${env['KYAOS_TRUSTED_ISSUERS'] || '*'}, chain length <= ${env['KYAOS_MAX_CHAIN_LENGTH'] || 10}, ${describeLevelSettings(auth)}`
         : 'off (set SERVICE_DID)'
     }`,
   );

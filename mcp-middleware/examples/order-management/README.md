@@ -66,6 +66,10 @@ SERVICE_DID=did:web:orders.example pnpm --filter @helixid/example-mcp-order-mana
 - `KYAOS_TRUSTED_ISSUERS` (default `*`), `KYAOS_TRUSTED_ROOTS`, `KYAOS_MAX_CHAIN_LENGTH` (default 10) and
   `KYAOS_CARDS_FILE` (agent DID to Entity Card, read before the card is fetched) tune the verifier;
   `KYAOS_ALLOW_LOOPBACK_HTTP=1` reads loopback documents over http in development.
+- Every tool demands Card level L3 by default (story C-C): a verified request proof, every capability on the
+  agent's card attested, status read live. `KYAOS_MINIMUM_LEVEL`, `KYAOS_TOOL_LEVELS` (`lookup_order=L2`) and
+  `KYAOS_L3_MINUS_SATISFIES_L3=0` change that; a call below a tool's minimum answers 401 with `derivedLevel`
+  and `requiredLevel`. The handshake tool accepts any verified level.
 - `HELIX_API_URL` + `HELIX_API_KEY` turn on the audit sink (`POST /v1/audit-log/events`); nothing else talks to the API.
   `HELIX_API_URL` is required whenever `HELIX_API_KEY` is set, so the sink never falls back to the hosted production API.
 
@@ -131,6 +135,9 @@ received. The tools themselves (`src/orders.ts`) contain no auth code.
 | `KYAOS_TRUSTED_ISSUERS`, `KYAOS_TRUSTED_ROOTS` | `*`, any | Attestation issuers and root-hop issuers the verifier trusts (comma-separated DIDs) |
 | `KYAOS_MAX_CHAIN_LENGTH` | `10` | Longest carried chain read |
 | `KYAOS_CARDS_FILE` | none | JSON map of agent DID to Entity Card |
+| `KYAOS_MINIMUM_LEVEL` | `L3` | Card level every tool demands (story C-C): `L1`, `L2` or `L3` |
+| `KYAOS_TOOL_LEVELS` | none | Per-tool minimums, `tool=level,...`; `lookup_order=L2` accepts a chain without a proof there |
+| `KYAOS_L3_MINUS_SATISFIES_L3` | `1` | `0` refuses L3-minus (no token `cnf` to fuse) for L3 tools |
 | `OAUTH_ISSUER` | none | One authorization server; its keys are read from its metadata |
 | `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` | none | With `OAUTH_ISSUER`: check tokens by RFC 7662 introspection (opaque tokens) |
 | `OAUTH_JWKS_URI`, `OAUTH_INTROSPECTION_URL` | from metadata | Give the endpoints explicitly and skip discovery |
