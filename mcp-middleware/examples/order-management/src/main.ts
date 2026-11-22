@@ -10,13 +10,11 @@ import {
   createKyaOs,
   createNeedsAuthorization,
   type AuditSink,
-  createWellKnownMcp,
   type AuthResult,
   type KyaOsRuntime,
   type MCPMiddlewareOptions,
   type OAuthIntrospectionOptions,
   type OAuthIssuerOptions,
-  type WellKnownMcp,
   auth0,
   entra,
   keycloak,
@@ -24,6 +22,7 @@ import {
 } from '@helixid/mcp-middleware';
 import { createOrderServer } from './app.js';
 import { demoRetryAuthorizer } from './demo-authorizer.js';
+import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './well-known-env.js';
 
 /**
  * Configuration (environment):
@@ -366,29 +365,13 @@ if (auth.needsAuthorization) {
 }
 
 /** The discovery document (story L1-D): built once, validated against the schema, or the reason it is off. */
-let wellKnown: WellKnownMcp | undefined;
-let wellKnownOff: string | undefined;
-const wellKnownSetting = env['WELL_KNOWN_MCP'];
-if (wellKnownSetting === '0') {
-  wellKnown = createWellKnownMcp({ enabled: false });
-  wellKnownOff = 'off (WELL_KNOWN_MCP=0): 404';
-} else if (!serviceDid) {
-  wellKnownOff = 'off (set SERVICE_DID)';
-} else if (!/^did:(web|key):/.test(serviceDid) && wellKnownSetting !== '1') {
-  wellKnownOff = `off (SERVICE_DID ${serviceDid} is not a did:web or did:key, which the document's serverDid must be; WELL_KNOWN_MCP=1 makes this an error)`;
-} else {
-  try {
-    wellKnown = createWellKnownMcp({
-      publicOrigin: env['KYAOS_PUBLIC_ORIGIN'] || new URL(resource).origin,
-      serverDid: serviceDid,
-      toolsEndpoint: new URL(resource).pathname,
-      ...(kyaOs ? { kyaos: kyaOs.describe() } : {}),
-      ...(env['STATUS_LIST_CREDENTIAL'] ? { statusListCredential: env['STATUS_LIST_CREDENTIAL'] } : {}),
-    });
-  } catch (error) {
-    fail(`/.well-known/mcp: ${error instanceof Error ? error.message : String(error)}`);
-  }
+let discovery: WellKnownFromEnv = { wellKnown: undefined, off: undefined };
+try {
+  discovery = wellKnownFromEnv(env, resource, serviceDid, kyaOs);
+} catch (error) {
+  fail(`/.well-known/mcp: ${error instanceof Error ? error.message : String(error)}`);
 }
+const wellKnown = discovery.wellKnown;
 
 const server = createOrderServer({
   resource,
@@ -422,12 +405,5 @@ server.listen(port, host, () => {
         : 'off (set SERVICE_SIGNING_KEY)'
     }`,
   );
-  const document = wellKnown?.document;
-  console.log(
-    `  Discovery:   ${
-      document
-        ? `${new URL(document.endpoints.tools).origin}/.well-known/mcp, serverDid ${document.serverDid}, skew ${document.clockSkewSeconds} s, handshake ${document.endpoints.handshake ? 'advertised' : 'absent'} (route the path at that origin to this server: see mcp-middleware/docs/well-known.md)`
-        : wellKnownOff
-    }`,
-  );
+  console.log(`  Discovery:   ${describeWellKnown(discovery)}`);
 });
