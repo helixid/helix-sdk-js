@@ -1,9 +1,13 @@
 export { helixidMCPMiddleware } from './middleware.js';
+export type { MCPMiddleware, AuthorizedCaller as MiddlewareCaller } from './middleware.js';
 export { attachHelixVP } from './attach.js';
 export { createJwtValidator, createIntrospectionValidator, createOAuthValidator } from './oauth.js';
 export { createHelixAuditSink } from './audit.js';
 export { serveIdentity, resolveServerCard } from './identity.js';
 export type { ServeIdentityOptions, ServedIdentity } from './identity.js';
+export { DEFAULT_TRUSTED_ISSUERS } from './credentials.js';
+export type { TrustedIssuers } from './credentials.js';
+export { isTrustedIssuer, attestationTrust } from './trusted-issuers.js';
 export { auth0, entra, keycloak, okta } from './providers.js';
 export type { ProviderIntrospection } from './providers.js';
 export {
@@ -22,3 +26,6 @@ export type {
   HttpErrorResponse,
 } from './metadata.js';
 export type { MCPAuthErrorCode } from './errors.js';
+
+// KYA-OS session, replay store and server response proof (story L2-A).
+export * from './kyaos/index.js';

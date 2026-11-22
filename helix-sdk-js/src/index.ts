@@ -8,6 +8,22 @@ export type {
 } from './wallet/AgentWallet.js';
 export { VPBuilder } from './vp-builder.js';
 
+// KYA-OS story F-1: the credential split. The store holds identity,
+// capability attestations and delegation hops; presentChain() is what a
+// request carries; signAttestations() is the owner's self-custody path.
+export { CredentialStore, signAttestationDocument } from './core/credential-store.js';
+export type {
+  BitstringStatusEntry,
+  CapabilityAttestation,
+  CredentialSigner,
+  CredentialStoreData,
+  DataIntegrityProof,
+  DelegationHop,
+  PresentedChain,
+  SignAttestationsOptions,
+  StoredCredential,
+} from './core/credential-store.js';
+
 
 // Verifier
 export { verifyVP } from './verify.js';
@@ -160,3 +176,8 @@ export {
   type TransportRequest,
   type DnsLookup,
 } from './core/entity-card.js';
+
+// KYA-OS (stories rule 24): canonical JSON hashing, EdDSA JWS and the Signer,
+// the session handshake and the client side of the detached response proof.
+// `InvalidJWSError` and `ResponseProofError` come with the errors above.
+export * as kyaos from './core/kyaos/index.js';

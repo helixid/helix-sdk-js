@@ -114,3 +114,54 @@ card through the SDK's SafeFetch (https only, public addresses only, pinned conn
 redirects, 1 MiB, 5 s); a stripped projection falls back to the two-step resolution of `did`
 (`did.json` → `KyaOsEntityCard` → `card.json`). The sample server enables all of this with
 `PUBLIC_ORIGIN` (see `examples/order-management/src/main.ts`).
+## KYA-OS session, replay store and response proof (story L2-A)
+
+`createKyaOs()` adds the KYA-OS session layer around the gate above: a `_kyaos_handshake` tool, optional sessions, a replay store, and a detached proof signed by the service on every tool call outcome, so an agent or auditor can verify what the server received and returned without trusting anyone in between.
+
+```ts
+import { kyaos } from '@helixid/sdk-js';
+import { createKyaOs, helixidMCPMiddleware, toHttpErrorResponse } from '@helixid/mcp-middleware';
+
+const guard = helixidMCPMiddleware({ client, toolScopes });
+const kya = createKyaOs({
+  signer: new kyaos.EnvSigner({ did: 'did:web:mcp.example.com', envVar: 'SERVICE_SIGNING_KEY' }), // the key stays in the environment
+  publicOrigin: 'https://mcp.example.com',          // accepted as handshake audience next to the DID
+  clockSkewSeconds: 120,                            // 30 to 600
+  session: { enabled: true, ttlMinutes: 30 },
+  // nonceStore: new RedisNonceStore({ client: ioredis }), // an explicit store wins; default: the one KYAOS_NONCE_STORE names
+});
+await kya.ready(); // redis / dynamo: fails here when the client package is missing
+
+// The handshake is a tool: register it on your MCP server and answer with kya.handshakeToolResult(args).
+// Every other tool call: start it before the transport sees it, finish it in the handler.
+const started = await kya.start({ name, arguments: args, _meta }, { authorize: () => guard.authorize(toolCall) });
+if (started.outcome === 'denied') {
+  const denial = toHttpErrorResponse(started.error, { resourceMetadataUrl, proof: started.proof }); // 401/403 with the denied proof in the body
+  ...
+}
+const result = await started.finish(await handler(started.arguments)); // the result with _meta["org.kya-os/response-proof"]
+```
+
+- **Handshake** (`_kyaos_handshake`, `{nonce, audience, timestamp, agentDid?}`): the nonce is 22+ characters of base64url, the timestamp is within `clockSkewSeconds` of the server time, the audience is the server DID or `publicOrigin`, and the nonce was never seen before. The answer is `{sessionId: "kyaos_<uuid-v4>", serverDid, protocolVersion, serverCapabilities, sessionTtl, nonce}`. A credential sent with the handshake makes the session `authenticated`; without one it is `anonymous`.
+- **Replay store** (`NonceStore`): `(nonce, agentDid, expiry)` with one atomic conditional insert, retained until `ts + skew + 1 s` and never evicted early. `MemoryNonceStore` serves one instance; `RedisNonceStore` (`SET NX PX`, any client with ioredis's `set` signature) and `DynamoNonceStore` (a conditional `PutItem` through `DynamoDBDocument.put`) serve several. The nonces of the proofs the server signs go through the same store.
+- **Replay store from the environment** (`nonceStoreFromEnv()`, the default when no `nonceStore` is passed):
+
+  | Variable | Values | Default |
+  |---|---|---|
+  | `KYAOS_NONCE_STORE` | `memory`, `redis`, `dynamo` | `memory` |
+  | `KYAOS_REDIS_URL` | `redis://` or `rediss://` URL; required for `redis` | |
+  | `KYAOS_NONCE_KEY_PREFIX` | Redis key prefix | `kyaos:nonce:` |
+  | `KYAOS_DYNAMO_TABLE` | table name; required for `dynamo` | |
+  | `KYAOS_DYNAMO_KEY_ATTRIBUTE` | partition key attribute (string) | `pk` |
+  | `KYAOS_DYNAMO_TTL_ATTRIBUTE` | the table's TTL attribute (Unix seconds) | `expiresAt` |
+  | `KYAOS_DYNAMO_REGION` | AWS region | the AWS SDK's own |
+  | `KYAOS_DYNAMO_ENDPOINT` | endpoint URL, for DynamoDB Local | the AWS SDK's own |
+
+  AWS credentials come from the AWS SDK's standard chain, never from these variables. The clients are optional peer dependencies, loaded only when chosen: `npm install ioredis` for `redis`, `npm install @aws-sdk/client-dynamodb @aws-sdk/lib-dynamodb` for `dynamo`. It fails closed: an unknown store or a missing required variable throws from `createKyaOs()`, a missing package rejects `kya.ready()` (await it at startup), and nothing falls back to memory. One startup line names the store without secrets (a Redis password is shown as `***`); memory with `NODE_ENV` or `ENV` set to `production` also warns that it covers one process only. JS and Python instances write the same keys, so they can share one Redis or table.
+- **Sessions** (`SessionStore`, `MemorySessionStore`): optional (`session.enabled`). A call names its session in the `_kyaos_session` argument; every valid call moves `lastActivity` and the expiry out by the idle TTL. A call without a session is still authorised from its credentials alone. An unknown, expired or malformed session id is a `denied` call (`KYAOS_REJECTED`, 400).
+- **Response proof**: a detached EdDSA JWS over the proof meta `{did, kid, ts, nonce, audience, sessionId, requestHash, responseHash?, outcome, reason?, clientDid?, prf}` at `_meta["org.kya-os/response-proof"]`. `requestHash` covers `{method, params}` minus `params._meta` and every `_kyaos*` argument; `responseHash` covers the result minus its top-level `_meta` (the envelope profile, `prf`), present on `allowed` and `needs_authorization`, absent on `denied` and `step_up_required`. `_kyaos*` arguments are stripped before the tool runs; every non-KYA-OS `_meta` key is ignored.
+- **Client side**: `kyaos.verifyResponseProof(result, serverDid, resolveDid, { request })` in `@helixid/sdk-js` (and `helix_sdk.response_proof.verify_response_proof` in helix-sdk-py) verifies the signature against the server's DID document and recomputes both hashes; a swapped body fails.
+- **Discovery**: `describeKyaOs()` (or `kya.describe()`) gives `endpoints.handshake`, `clockSkewSeconds` and `capabilities.proofs` for the `/.well-known/mcp` document.
+- **Self-custody and cross-border**: the service `Signer` is the only thing that touches the private key (the middleware hands it bytes and takes back a signature); the verify path reads the nonce store and local config only, never a Helix database.
+
+The sample in `examples/order-management` wires all of this (`SERVICE_SIGNING_KEY`, `KYAOS_*` variables); its README has the details.

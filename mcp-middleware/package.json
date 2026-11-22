@@ -37,21 +37,38 @@
     "test:non-live": "vitest run --passWithNoTests",
     "test:unit": "vitest run tests --passWithNoTests",
     "lint": "eslint src tests",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:coverage": "vitest run --coverage --passWithNoTests"
   },
   "dependencies": {
     "@helixid/sdk-js": "workspace:^"
   },
   "peerDependencies": {
-    "@modelcontextprotocol/sdk": "*"
+    "@modelcontextprotocol/sdk": "*",
+    "ioredis": "^5.0.0 || ^6.0.0",
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@aws-sdk/lib-dynamodb": "^3.0.0"
   },
   "peerDependenciesMeta": {
     "@modelcontextprotocol/sdk": {
       "optional": true
+    },
+    "ioredis": {
+      "optional": true
+    },
+    "@aws-sdk/client-dynamodb": {
+      "optional": true
+    },
+    "@aws-sdk/lib-dynamodb": {
+      "optional": true
     }
   },
   "devDependencies": {
+    "@aws-sdk/client-dynamodb": "3.1164.0",
+    "@aws-sdk/lib-dynamodb": "3.1164.0",
     "@types/node": "^20.0.0",
+    "@vitest/coverage-v8": "^4.1.8",
+    "ioredis": "6.0.0",
     "typescript": "^5.4.0",
     "vitest": "^4.1.8"
   }
