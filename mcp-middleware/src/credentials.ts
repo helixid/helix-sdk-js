@@ -9,6 +9,15 @@ export type ExtractedCredential =
   | { kind: 'vp'; encoded: string }
   | { kind: 'oauth'; token: string };
 
+/**
+ * KYA-OS story C-B: which issuers' capability attestations a verifier counts.
+ * `'*'` trusts every issuer; a list trusts exactly those DIDs. Shipped as
+ * allow-all (stories rule 9); the setting stays so a service can set a list.
+ * See `isTrustedIssuer` in ./trusted-issuers.ts.
+ */
+export type TrustedIssuers = '*' | readonly string[];
+export const DEFAULT_TRUSTED_ISSUERS: TrustedIssuers = '*';
+
 const VP_SCHEME = 'helixvp';
 const BEARER_SCHEME = 'bearer';
 const VP_HEADER = 'x-helix-vp';

@@ -3,10 +3,12 @@
 
 /* eslint-disable no-console -- command-line entry point: startup and error output is the point */
 
-import { HelixClient } from '@helixid/sdk-js';
+import { HelixClient, kyaos } from '@helixid/sdk-js';
 import {
   createHelixAuditSink,
+  createKyaOs,
   type AuthResult,
+  type KyaOsRuntime,
   type MCPMiddlewareOptions,
   type OAuthIntrospectionOptions,
   type OAuthIssuerOptions,
@@ -44,6 +46,20 @@ import { TOOL_SCOPES } from './orders.js';
  *   SERVICE_PUBLIC_KEY_JWK  the service key's public JWK, {"kty":"OKP","crv":"Ed25519","x":...}
  *   SERVICE_KID             its verification-method fragment (default key-1)
  *   SERVICE_RESPONSIBLE_PARTY  the accountable org DID, when there is one
+ *   SERVICE_SIGNING_KEY   KYA-OS (story L2-A): this server's Ed25519 private key (hex), the key
+ *                         SERVICE_DID's document lists as key-1. Turns on the _kyaos_handshake tool,
+ *                         sessions and a server-signed proof on every tool call outcome. Optional:
+ *   KYAOS_PUBLIC_ORIGIN     the origin agents connect to, accepted as handshake audience next to the
+ *                           DID (default: the origin of MCP_RESOURCE)
+ *   KYAOS_CLOCK_SKEW_SECONDS  30 to 600 (default 120)
+ *   KYAOS_SESSIONS=0        no sessions: the handshake is refused, calls are proven without one
+ *   KYAOS_SESSION_TTL_MINUTES idle TTL (default 30; fractions allowed)
+ *   KYAOS_NONCE_STORE       the replay store: memory (default, this instance only), redis or dynamo,
+ *                           read by @helixid/mcp-middleware itself (nonceStoreFromEnv); with it:
+ *                           redis: KYAOS_REDIS_URL, KYAOS_NONCE_KEY_PREFIX
+ *                           dynamo: KYAOS_DYNAMO_TABLE, KYAOS_DYNAMO_KEY_ATTRIBUTE, KYAOS_DYNAMO_TTL_ATTRIBUTE,
+ *                                   KYAOS_DYNAMO_REGION, KYAOS_DYNAMO_ENDPOINT (AWS credentials: the SDK's chain)
+ *                           See .env.example.
  */
 const DEMO_TOKENS: Record<string, AuthResult> = {
   'demo-reader': { sub: 'demo-reader', scopes: ['orders:read'] },
@@ -272,11 +288,53 @@ if (publicOrigin) {
   };
 }
 
+/** A positive number from an optional variable; `integer` demands a whole one. */
+function numberFromEnv(name: string, integer: boolean): number | undefined {
+  const raw = env[name];
+  if (!raw) return undefined;
+  const value = Number(raw);
+  if (!(value > 0) || !Number.isFinite(value) || (integer && !Number.isInteger(value))) {
+    fail(`${name} must be a positive ${integer ? 'integer' : 'number'}`);
+  }
+  return value;
+}
+
+let kyaOs: KyaOsRuntime | undefined;
+if (env['SERVICE_SIGNING_KEY']) {
+  if (!serviceDid) fail('SERVICE_SIGNING_KEY needs SERVICE_DID (the DID whose document lists the key)');
+  const skew = numberFromEnv('KYAOS_CLOCK_SKEW_SECONDS', true);
+  const ttlMinutes = numberFromEnv('KYAOS_SESSION_TTL_MINUTES', false);
+  try {
+    kyaOs = createKyaOs({
+      // The key is read from the environment at every signature; the server never holds it.
+      signer: new kyaos.EnvSigner({ did: serviceDid, envVar: 'SERVICE_SIGNING_KEY' }),
+      publicOrigin: env['KYAOS_PUBLIC_ORIGIN'] || new URL(resource).origin,
+      ...(skew !== undefined ? { clockSkewSeconds: skew } : {}),
+      session: { enabled: env['KYAOS_SESSIONS'] !== '0', ...(ttlMinutes !== undefined ? { ttlMinutes } : {}) },
+      toolsEndpoint: resource,
+    });
+  } catch (error) {
+    fail(`KYA-OS: ${error instanceof Error ? error.message : String(error)}`);
+  }
+} else if (env['KYAOS_NONCE_STORE'] || env['KYAOS_PUBLIC_ORIGIN'] || env['KYAOS_CLOCK_SKEW_SECONDS'] || env['KYAOS_SESSIONS'] || env['KYAOS_SESSION_TTL_MINUTES']) {
+  fail('KYAOS_* settings need SERVICE_SIGNING_KEY');
+}
+
+if (kyaOs) {
+  // redis and dynamo load their client package in the background: a missing one stops the server here, not at the first call.
+  try {
+    await kyaOs.ready();
+  } catch (error) {
+    fail(`KYA-OS: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 const server = createOrderServer({
   resource,
   ...(identity ? { identity } : {}),
   ...(issuers.length > 0 ? { authorizationServers: issuers.map((i) => i.issuer) } : {}),
   auth,
+  ...(kyaOs ? { kyaos: kyaOs } : {}),
   onServerError: (error) => console.error('server error:', error),
 });
 server.listen(port, host, () => {
@@ -290,4 +348,11 @@ server.listen(port, host, () => {
   console.log(`  OAuth:       ${demo ? 'DEMO tokens demo-reader, demo-admin' : modes.length ? modes.join(', ') : 'off'}`);
   console.log(`  Audit:       ${auth.auditSink ? `${apiUrl}/v1/audit-log/events` : 'off (set HELIX_API_URL + HELIX_API_KEY)'}`);
   console.log(`  Identity:    ${identity ? `${identity.publicOrigin}${new URL(resource).pathname.replace(/\/$/, '')}/{did,card}.json` : 'off (set PUBLIC_ORIGIN)'}`);
+  console.log(
+    `  KYA-OS:      ${
+      kyaOs
+        ? `proofs by ${kyaOs.serverDid}, sessions ${kyaOs.sessionsEnabled ? 'on' : 'off'}, skew ${kyaOs.clockSkewSeconds} s (replay store: the line above)`
+        : 'off (set SERVICE_SIGNING_KEY)'
+    }`,
+  );
 });

@@ -6,13 +6,26 @@ import { AuthorizationServerUnavailableError, MCPAuthError, ToolScopeError } fro
 import { createOAuthValidator } from './oauth.js';
 import type { MCPToolCall, MCPMiddlewareOptions } from './types.js';
 
-interface Caller {
+/** Who a tool call came from, once the guard has identified and authorized them. */
+export interface AuthorizedCaller {
   authMethod: 'helixvp' | 'oauth';
   scopes: string[];
   agentDid?: string;
   vpId?: string;
   oauthSubject?: string;
 }
+
+type Caller = AuthorizedCaller;
+
+/**
+ * The guard: called with a tool call, resolves it unchanged once the caller
+ * is identified and allowed to run the tool, rejects otherwise.
+ * `authorize()` does the same and resolves the caller instead, for hosts
+ * that need to know who called (the KYA-OS proof's `clientDid`, say).
+ */
+export type MCPMiddleware = ((toolCall: MCPToolCall) => Promise<MCPToolCall>) & {
+  authorize(toolCall: MCPToolCall): Promise<AuthorizedCaller>;
+};
 
 /**
  * The HelixID API reports a bad credential the way the local verifier does:
@@ -39,7 +52,7 @@ function isCredentialFault(err: unknown): boolean {
   return CREDENTIAL_FAULT_PREFIXES.some((prefix) => code.startsWith(prefix)) || CREDENTIAL_FAULT_CODES.has(code);
 }
 
-export function helixidMCPMiddleware(options: MCPMiddlewareOptions) {
+export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddleware {
   if (options.oauth && options.validateOAuthToken) {
     throw new Error('Provide either `oauth` or `validateOAuthToken`, not both');
   }
@@ -69,7 +82,7 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions) {
     }
   };
 
-  return async (toolCall: MCPToolCall): Promise<MCPToolCall> => {
+  const authorize = async (toolCall: MCPToolCall): Promise<AuthorizedCaller> => {
     // Credentials come from Authorization / X-Helix-VP / _meta only; tool
     // arguments are never consulted. Ambiguous credentials throw.
     const credential = extractCredential(toolCall);
@@ -158,6 +171,12 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions) {
     }
 
     await audit(caller, toolName, undefined);
+    return caller;
+  };
+
+  const guard = async (toolCall: MCPToolCall): Promise<MCPToolCall> => {
+    await authorize(toolCall);
     return toolCall;
   };
+  return Object.assign(guard, { authorize });
 }
