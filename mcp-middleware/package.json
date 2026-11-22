@@ -13,6 +13,7 @@
   },
   "files": [
     "dist/",
+    "schemas/",
     "README.md",
     "LICENSE"
   ],
@@ -41,7 +42,9 @@
     "test:coverage": "vitest run --coverage --passWithNoTests"
   },
   "dependencies": {
-    "@helixid/sdk-js": "workspace:^"
+    "@helixid/sdk-js": "workspace:^",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1"
   },
   "peerDependencies": {
     "@modelcontextprotocol/sdk": "*",

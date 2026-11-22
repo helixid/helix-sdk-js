@@ -19,3 +19,5 @@ export * from './response-proof.js';
 export * as verifier from './verifier/index.js';
 export * as conformance from './conformance/index.js';
 export * from './request-proof.js';
+export * from './needs-authorization.js';
+export * from './discovery.js';

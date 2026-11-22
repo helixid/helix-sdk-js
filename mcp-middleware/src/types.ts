@@ -3,6 +3,7 @@ import type { AuditSink } from './audit.js';
 import type { AuthResult, OAuthOptions } from './oauth.js';
 import type { MinimumLevel } from './level.js';
 import type { LocalVerifier, LocalVerifierOptions } from './verify-locally.js';
+import type { NeedsAuthorization } from './needs-authorization.js';
 
 export interface MCPToolCall {
   name?: string;
@@ -75,4 +76,11 @@ export interface MCPMiddlewareOptions {
   onAuditError?: (error: unknown) => void;
   /** This server's DID: the proof audience, included in audit events; defaults to `expectedTargetService`. */
   serviceDid?: string;
+  /**
+   * KYA-OS story L3-E: answers a call whose delegation is missing or does not
+   * cover the tool's scopes with a signed `needs_authorization` challenge
+   * (instead of the plain 403), and verifies the retry that carries the
+   * resume token and the new delegation credential. See `createNeedsAuthorization`.
+   */
+  needsAuthorization?: NeedsAuthorization;
 }

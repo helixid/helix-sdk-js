@@ -150,7 +150,27 @@ const result = await started.finish(await handler(started.arguments)); // the re
 - **Sessions** (`SessionStore`, `MemorySessionStore`): optional (`session.enabled`). A call names its session in the `_kyaos_session` argument; every valid call moves `lastActivity` and the expiry out by the idle TTL. A call without a session is still authorised from its credentials alone. An unknown, expired or malformed session id is a `denied` call (`KYAOS_REJECTED`, 400).
 - **Response proof**: a detached EdDSA JWS over the proof meta `{did, kid, ts, nonce, audience, sessionId, requestHash, responseHash?, outcome, reason?, clientDid?, prf}` at `_meta["org.kya-os/response-proof"]`. `requestHash` covers `{method, params}` minus `params._meta` and every `_kyaos*` argument; `responseHash` covers the result minus its top-level `_meta` (the envelope profile, `prf`), present on `allowed` and `needs_authorization`, absent on `denied` and `step_up_required`. `_kyaos*` arguments are stripped before the tool runs; every non-KYA-OS `_meta` key is ignored.
 - **Client side**: `kyaos.verifyResponseProof(result, serverDid, resolveDid, { request })` in `@helixid/sdk-js` (and `helix_sdk.response_proof.verify_response_proof` in helix-sdk-py) verifies the signature against the server's DID document and recomputes both hashes; a swapped body fails.
-- **Discovery**: `describeKyaOs()` (or `kya.describe()`) gives `endpoints.handshake`, `clockSkewSeconds` and `capabilities.proofs` for the `/.well-known/mcp` document.
+- **Discovery**: `describeKyaOs()` (or `kya.describe()`) gives `endpoints.handshake`, `clockSkewSeconds` and `capabilities.proofs` for the `/.well-known/mcp` document, which `createWellKnownMcp({ publicOrigin, serverDid, kyaos: kya.describe() })` builds, validates against the KYA-OS schema at startup and serves (story L1-D; on by default, `enabled: false` answers 404). Route `/.well-known/mcp` at your origin root to the middleware and set `publicOrigin` to the origin agents connect to: [docs/well-known.md](./docs/well-known.md) has the nginx, ALB and API Gateway snippets.
 - **Self-custody and cross-border**: the service `Signer` is the only thing that touches the private key (the middleware hands it bytes and takes back a signature); the verify path reads the nonce store and local config only, never a Helix database.
 
 The sample in `examples/order-management` wires all of this (`SERVICE_SIGNING_KEY`, `KYAOS_*` variables); its README has the details.
+
+## KYA-OS signed `needs_authorization` and resume (story L3-E)
+
+When a caller is identified but its delegation does not cover the tool's scopes, the guard answers with the SPEC §9.2 challenge instead of a plain 403: `{error: "needs_authorization", message, authorizationUrl, resumeToken, expiresAt, scopes, display?}`. Under the KYA-OS runtime the challenge is the call's tool result (`isError`, the challenge as text and as `structuredContent`) signed with `outcome: needs_authorization` and a `responseHash` over the whole result, so `authorizationUrl` is covered by the service signature; the SDK (`kyaos.handleNeedsAuthorization`) recomputes that hash before surfacing the URL and refuses a swapped one with `response_hash_mismatch`.
+
+```ts
+import { createNeedsAuthorization, helixidMCPMiddleware } from '@helixid/mcp-middleware';
+
+const needsAuthorization = createNeedsAuthorization({
+  authorizationUrl: (c) => `https://consent.example/authorize?agent=${c.agentDid}&tool=${c.tool}`,
+  ttlSeconds: 600,                                   // resume-token lifetime
+  // store: default follows KYAOS_NONCE_STORE (Redis on KYAOS_REDIS_URL when the replay store is Redis, else memory)
+  authorizer: verifyDelegation,                      // the seam stories F-2 and L3-H implement; default refuses every retry
+  auditSink,                                         // every challenge is an AUTHZ_DENIED event with reason "needs_authorization"
+});
+await needsAuthorization.ready();                   // a Redis store loads ioredis in the background, like the replay store
+const guard = helixidMCPMiddleware({ ...options, needsAuthorization });
+```
+
+`resumeToken` is opaque (32 random bytes), bound to the agent, the tool and the scopes asked for, single-use and gone at `expiresAt` (`ResumeTokenStore`: `MemoryResumeTokenStore`, `RedisResumeTokenStore` with `SET NX PX` / `GETDEL`; `resumeTokenStoreFromEnv` picks one from L2-A's `KYAOS_NONCE_STORE`, key prefix `KYAOS_RESUME_KEY_PREFIX`). A retry carries it as the `_kyaos_resume` control argument and the new DelegationCredential as `_kyaos_delegation` (both stripped before the tool, never hashed); the guard consumes the token, checks the binding (`resume_token_unknown`, `resume_token_agent_mismatch`, `resume_token_tool_mismatch`, `resume_token_scope_mismatch`, `delegation_missing`), hands the credential to the `authorizer`, and only then runs the usual scope check with what the credential grants. Completing consent alone never authorises the call. Without the KYA-OS runtime `toHttpErrorResponse` answers the challenge as an unsigned 403 whose body is the challenge. The store is local state next to the nonce store, never a Helix database (cross-border rule).

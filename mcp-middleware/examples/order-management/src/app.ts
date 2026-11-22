@@ -15,6 +15,7 @@ import {
   type DetachedProof,
   type KyaOsRuntime,
   type MCPMiddlewareOptions,
+  type WellKnownMcp,
 } from '@helixid/mcp-middleware';
 import { z } from 'zod';
 import { TOOL_SCOPES, createOrderStore, registerOrderTools, type OrderStore, type ToolWrapper } from './orders.js';
@@ -32,6 +33,11 @@ export interface OrderServerOptions {
    * Off when not given.
    */
   kyaos?: KyaOsRuntime;
+  /**
+   * The KYA-OS discovery document (story L1-D), served at `/.well-known/mcp`
+   * from `createWellKnownMcp()`; a disabled one answers 404. Off when not given.
+   */
+  wellKnown?: WellKnownMcp;
   store?: OrderStore;
   /** Called for errors that are not the caller's fault (they become a 500). */
   onServerError?: (error: unknown) => void;
@@ -68,6 +74,7 @@ function sendJson(res: ServerResponse, status: number, body: unknown, headers: R
 }
 
 interface ToolCallMessage {
+  id?: unknown;
   method: 'tools/call';
   params?: { name?: unknown; arguments?: unknown; _meta?: unknown };
 }
@@ -113,6 +120,11 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined =>
  * stripped) and finished inside the tool handler, where the result is
  * hashed and the proof signed into `_meta["org.kya-os/response-proof"]`. A
  * refusal carries its `denied` proof in the 400/401/403 body.
+ *
+ * With `auth.needsAuthorization` set (story L3-E), a caller whose delegation
+ * does not cover the tool gets the signed `needs_authorization` challenge as
+ * the call's result, and a retry carrying `_kyaos_resume` and
+ * `_kyaos_delegation` is verified through that layer before the tool runs.
  */
 export function createOrderServer(options: OrderServerOptions): Server {
   const store = options.store ?? createOrderStore();
@@ -214,6 +226,12 @@ export function createOrderServer(options: OrderServerOptions): Server {
         refuse(started.error, started.proof);
         return;
       }
+      if (started.outcome === 'needs_authorization') {
+        // KYA-OS story L3-E: the signed challenge is the call's result (a tool error result with the
+        // proof in _meta), answered here since the tool itself never runs.
+        sendJson(res, 200, { jsonrpc: '2.0', id: message.id ?? null, result: started.result });
+        return;
+      }
       // Control arguments (`_kyaos*`) never reach the tool.
       message.params = { ...params, arguments: started.arguments };
       const list = finishers.get(name ?? '') ?? [];
@@ -254,6 +272,7 @@ export function createOrderServer(options: OrderServerOptions): Server {
   };
 
   return createServer((req, res) => {
+    if (options.wellKnown?.handle(req, res)) return;
     const path = new URL(req.url ?? '/', 'http://localhost').pathname;
     if (path === metadataPath && req.method === 'GET') {
       sendJson(res, 200, metadata);

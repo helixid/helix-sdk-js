@@ -428,6 +428,21 @@ export class ResponseProofError extends HelixError {
   }
 }
 
+/**
+ * A KYA-OS `needs_authorization` challenge that cannot be acted on (story
+ * L3-E): the proof verified but is not a challenge's, or the challenge is
+ * malformed, its `authorizationUrl` is not http(s), or it has expired.
+ * `reason` is one of `ChallengeReasons` in core/kyaos/needs-authorization.ts.
+ */
+export class NeedsAuthorizationError extends HelixError {
+  public readonly reason: string;
+  constructor(reason: string, message = 'needs_authorization challenge is invalid') {
+    super('NEEDS_AUTHORIZATION_INVALID', message, 400, { reason });
+    this.name = 'NeedsAuthorizationError';
+    this.reason = reason;
+  }
+}
+
 export class JWTPublicKeyNotFoundError extends HelixError {
   constructor(message = 'JWT public key is not configured') {
     super('JWT_PUBLIC_KEY_NOT_FOUND', message, 500);

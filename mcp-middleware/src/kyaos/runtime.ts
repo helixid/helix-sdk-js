@@ -8,6 +8,7 @@ import { type NonceStore } from './nonce-store.js';
 import { deferredNonceStoreFromEnv, type NonceStoreLog } from './nonce-store-env.js';
 import { attachResponseProof, buildResponseProof, type DetachedProof, type ProofMeta } from './response-proof.js';
 import { MemorySessionStore, type KyaOsSession, type SessionStore } from './session-store.js';
+import { challengeToolResult, isNeedsAuthorizationError, type NeedsAuthorizationChallenge } from '../needs-authorization.js';
 
 /**
  * The KYA-OS session, replay and response-proof layer of the middleware
@@ -105,7 +106,20 @@ export interface KyaOsAllowed {
   finish<T extends Record<string, unknown>>(result: T): Promise<T & { _meta: Record<string, unknown> }>;
 }
 
-export type KyaOsStarted = KyaOsDenied | KyaOsAllowed;
+/** KYA-OS story L3-E: the call lacks authority; `result` is the signed challenge to answer with (a tool result). */
+export interface KyaOsNeedsAuthorization {
+  outcome: 'needs_authorization';
+  challenge: NeedsAuthorizationChallenge;
+  /** The `NeedsAuthorizationError` the host's authorization threw. */
+  error: unknown;
+  proof: DetachedProof;
+  requestHash: string;
+  session?: KyaOsSession | undefined;
+  /** `challengeToolResult(challenge)` with the proof at `_meta["org.kya-os/response-proof"]`; `responseHash` covers all of it. */
+  result: Record<string, unknown> & { _meta: Record<string, unknown> };
+}
+
+export type KyaOsStarted = KyaOsDenied | KyaOsAllowed | KyaOsNeedsAuthorization;
 
 export interface KyaOsRuntime {
   readonly serverDid: string;
@@ -129,7 +143,7 @@ export interface KyaOsRuntime {
     call: KyaOsCallInput,
     run: (args: Record<string, unknown>, context: { session?: KyaOsSession | undefined; clientDid?: string | undefined }) => Promise<T> | T,
     options?: KyaOsStartOptions,
-  ): Promise<KyaOsDenied | (KyaOsAllowed & { result: T & { _meta: Record<string, unknown> } })>;
+  ): Promise<KyaOsDenied | KyaOsNeedsAuthorization | (KyaOsAllowed & { result: T & { _meta: Record<string, unknown> } })>;
 }
 
 /** The `sessionId` a proof carries for a call that named no session. */
@@ -273,6 +287,21 @@ export function createKyaOs(options: KyaOsOptions): KyaOsRuntime {
       }
     } catch (error) {
       const reason = reasonOf(error);
+      if (isNeedsAuthorizationError(error)) {
+        // L3-E: the challenge is a response body, so its proof carries responseHash over all of it (authorizationUrl included).
+        const body = challengeToolResult(error.challenge);
+        const proof = await sign({
+          sessionId: session?.id ?? NO_SESSION_ID,
+          audience: session?.audience,
+          requestHash,
+          responseHash: kyaos.hashResponse(body, kyaos.RESPONSE_PROOF_ENVELOPE_PROFILE),
+          outcome: 'needs_authorization',
+          reason: `requires delegation with scope: ${error.challenge.scopes.join(' ')}`,
+          ...(clientDid !== undefined ? { clientDid } : {}),
+          prf: kyaos.RESPONSE_PROOF_ENVELOPE_PROFILE,
+        });
+        return { outcome: 'needs_authorization', challenge: error.challenge, error, proof, requestHash, session, result: attachResponseProof(body, proof) };
+      }
       const proof = await sign({
         sessionId: session?.id ?? NO_SESSION_ID,
         audience: session?.audience,
@@ -325,9 +354,9 @@ export function createKyaOs(options: KyaOsOptions): KyaOsRuntime {
       call: KyaOsCallInput,
       run: (args: Record<string, unknown>, context: { session?: KyaOsSession | undefined; clientDid?: string | undefined }) => Promise<T> | T,
       startOptions?: KyaOsStartOptions,
-    ): Promise<KyaOsDenied | (KyaOsAllowed & { result: T & { _meta: Record<string, unknown> } })> => {
+    ): Promise<KyaOsDenied | KyaOsNeedsAuthorization | (KyaOsAllowed & { result: T & { _meta: Record<string, unknown> } })> => {
       const started = await start(call, startOptions);
-      if (started.outcome === 'denied') return started;
+      if (started.outcome !== 'allowed') return started;
       const result = await run(started.arguments, { session: started.session, clientDid: started.clientDid });
       return { ...started, result: await started.finish(result) };
     },

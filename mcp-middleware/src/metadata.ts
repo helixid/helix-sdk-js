@@ -53,6 +53,7 @@ export interface HttpErrorResponse {
     derivedLevel?: string;
     requiredLevel?: string;
     _meta?: Record<string, unknown>;
+    [member: string]: unknown;
   };
 }
 
@@ -85,6 +86,9 @@ const MAPPED: Record<string, { status: number; error: string }> = {
   TOOL_NOT_PERMITTED: { status: 403, error: 'insufficient_scope' },
   // KYA-OS session layer (story L2-A): a session id that is unknown, expired, malformed or another agent's.
   KYAOS_REJECTED: { status: 400, error: 'invalid_request' },
+  // KYA-OS story L3-E: the challenge (hosts without the signing runtime answer it here, unsigned) and a refused retry.
+  NEEDS_AUTHORIZATION: { status: 403, error: 'needs_authorization' },
+  RESUME_REFUSED: { status: 403, error: 'insufficient_scope' },
 };
 
 /**
@@ -122,6 +126,7 @@ export function toHttpErrorResponse(error: unknown, options: HttpErrorOptions): 
       error_description: message,
       ...(typeof e?.derivedLevel === 'string' ? { derivedLevel: e.derivedLevel } : {}),
       ...(typeof e?.requiredLevel === 'string' ? { requiredLevel: e.requiredLevel } : {}),
+      ...(code === 'NEEDS_AUTHORIZATION' ? (error as { challenge?: Record<string, unknown> }).challenge : {}),
       ...(options.proof ? { _meta: { 'org.kya-os/response-proof': options.proof } } : {}),
     },
   };
