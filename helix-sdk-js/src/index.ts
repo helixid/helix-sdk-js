@@ -106,3 +106,8 @@ export type { SessionClaims, SessionIssueInput, SessionManagerOptions } from './
 // (session-bridge tokens come from POST /v1/vp/verify with session: true), so only
 // verification -- given the API's published session public key -- belongs here.
 export { verifyJWT } from './core/jwt.js';
+
+// KYA-OS (stories rule 24): canonical JSON hashing, EdDSA JWS and the Signer,
+// the session handshake and the client side of the detached response proof.
+// `InvalidJWSError` and `ResponseProofError` come with the errors above.
+export * as kyaos from './core/kyaos/index.js';
