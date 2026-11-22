@@ -4,6 +4,7 @@ import type { ToolAuditEvent } from './audit.js';
 import { extractCredential } from './credentials.js';
 import { AuthorizationServerUnavailableError, MCPAuthError, ToolScopeError } from './errors.js';
 import { createOAuthValidator } from './oauth.js';
+import { challengeFor, resumeRetry } from './needs-authorization-guard.js';
 import type { MCPToolCall, MCPMiddlewareOptions } from './types.js';
 
 /** Who a tool call came from, once the guard has identified and authorized them. */
@@ -164,8 +165,14 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
       required = options.requiredScopes ?? [];
     }
 
+    // KYA-OS story L3-E: a retry after consent carries its resume token and credential (needs-authorization-guard.ts).
+    const retry = await resumeRetry(options.needsAuthorization, caller, toolCall, toolName, required);
+    if (retry !== undefined) caller = retry;
     const missing = required.find((scope) => !caller.scopes.includes(scope));
     if (missing !== undefined) {
+      // KYA-OS story L3-E: an identified caller without the authority gets a signed challenge instead of the plain 403.
+      const challenge = retry === undefined ? await challengeFor(options.needsAuthorization, caller, toolName, required) : undefined;
+      if (challenge !== undefined) throw challenge;
       await audit(caller, toolName, { scope: missing, reason: 'insufficient scope' });
       throw new ToolScopeError(missing, required);
     }
