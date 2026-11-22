@@ -168,6 +168,13 @@ describe('HelixCustodyClient', () => {
     expect(api.calls).toEqual([]);
   });
 
+  it('sends requestedDomains and maxDelegationDepth with createAgent as given', async () => {
+    const api = fakeApi({ 'POST /v1/agents': (body) => ({ status: 201, body: { did: DID, ...body } }) });
+    const client = new HelixCustodyClient({ apiUrl: 'https://helix.example', adminApiKey: 'admin', fetch: api.fetch });
+    await client.createAgent({ name: 'Router', keyCustody: 'helix', requestedDomains: ['orders.example'], maxDelegationDepth: 2 });
+    expect(JSON.parse(api.calls[0]!.body!)).toEqual({ name: 'Router', keyCustody: 'helix', requestedDomains: ['orders.example'], maxDelegationDepth: 2 });
+  });
+
   it('reaches every custody endpoint by subject kind', async () => {
     const seen: string[] = [];
     const fetchLike: FetchLike = async (url, init) => {

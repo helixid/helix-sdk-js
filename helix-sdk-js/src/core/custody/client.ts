@@ -158,8 +158,22 @@ export class HelixCustodyClient {
     return payload as T;
   }
 
-  /** Custodial agents are created in one call; self-custody returns the enrollment token for `helix init`. */
-  createAgent(input: { name: string; scopes?: string[]; keyCustody?: KeyCustodyMode; didHosting?: DidHostingMode; did?: string; ownerDid?: string; expiry?: number }): Promise<OnboardingResult> {
+  /**
+   * Custodial agents are created in one call; self-custody returns the enrollment token for `helix init`.
+   * `requestedDomains` (bare hosts or http(s) URLs) become `#domain-N` LinkedDomains entries in the agent's
+   * DID document; `maxDelegationDepth` (0 to 5, default 0) is written on its identity credential.
+   */
+  createAgent(input: {
+    name: string;
+    scopes?: string[];
+    keyCustody?: KeyCustodyMode;
+    didHosting?: DidHostingMode;
+    did?: string;
+    ownerDid?: string;
+    expiry?: number;
+    requestedDomains?: string[];
+    maxDelegationDepth?: number;
+  }): Promise<OnboardingResult> {
     return this.request('POST', '/v1/agents', input);
   }
 
