@@ -13,6 +13,10 @@ export {
   toHttpErrorResponse,
 } from './metadata.js';
 export { MCPAuthError, ProofError, ToolScopeError, AuthorizationServerUnavailableError } from './errors.js';
+// KYA-OS signed needs_authorization and resume (story L3-E).
+export * from './needs-authorization.js';
+export * from './resume-token-store.js';
+export * from './resume-token-store-env.js';
 export type { MCPMiddlewareOptions, MiddlewareVerifierOptions, MCPToolCall } from './types.js';
 export type { AuthResult, OAuthJwtOptions, OAuthIssuerOptions, OAuthIntrospectionOptions, OAuthOptions } from './oauth.js';
 export type { AuditSink, ToolAuditEvent, HelixAuditSinkOptions } from './audit.js';
@@ -34,3 +38,17 @@ export type { LocalVerifier, LocalVerifierOptions, LocalVerifierCall, Verificati
 
 // KYA-OS session, replay store and server response proof (story L2-A).
 export * from './kyaos/index.js';
+
+// The /.well-known/mcp discovery document (story L1-D).
+export {
+  WELL_KNOWN_MCP_PATH,
+  DEFAULT_WELL_KNOWN_VERSION,
+  DEFAULT_SUPPORTED_DID_METHODS,
+  DEFAULT_PROOF_ALGORITHMS,
+  WellKnownMcpError,
+  buildWellKnownMcp,
+  createWellKnownMcp,
+  validateWellKnownMcp,
+  assertWellKnownMcp,
+} from './well-known.js';
+export type { WellKnownMcp, WellKnownMcpConfig, WellKnownMcpDocument, WellKnownMcpResponse, WellKnownMcpValidation, WellKnownCapabilities } from './well-known.js';
