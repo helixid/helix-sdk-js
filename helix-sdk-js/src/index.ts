@@ -63,14 +63,12 @@ export {
   toDidKey,
   publicKeyFromDidKey,
   publicKeyJwkBytes,
-  agentKeyRegistration,
   assertNoPrivateMaterial,
   encodeBase58btc,
   decodeBase58btc,
   DEFAULT_AGENT_KEY_ID,
   type AgentKey,
   type AgentPublicKeyJwk,
-  type AgentKeyRegistration,
 } from './core/agent-key.js';
 export {
   generateKeyPair,
