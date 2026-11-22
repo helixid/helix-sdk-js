@@ -17,6 +17,7 @@ import {
   type KyaOsRuntime,
   type MCPMiddlewareOptions,
   type ServeIdentityOptions,
+  type WellKnownMcp,
 } from '@helixid/mcp-middleware';
 import { z } from 'zod';
 import { TOOL_SCOPES, createOrderStore, registerOrderTools, type OrderStore, type ToolWrapper } from './orders.js';
@@ -34,6 +35,11 @@ export interface OrderServerOptions {
    * Off when not given.
    */
   kyaos?: KyaOsRuntime;
+  /**
+   * The KYA-OS discovery document (story L1-D), served at `/.well-known/mcp`
+   * from `createWellKnownMcp()`; a disabled one answers 404. Off when not given.
+   */
+  wellKnown?: WellKnownMcp;
   store?: OrderStore;
   /** Called for errors that are not the caller's fault (they become a 500). */
   onServerError?: (error: unknown) => void;
@@ -265,6 +271,7 @@ export function createOrderServer(options: OrderServerOptions): Server {
   };
 
   return createServer((req, res) => {
+    if (options.wellKnown?.handle(req, res)) return;
     const path = new URL(req.url ?? '/', 'http://localhost').pathname;
     if (path === metadataPath && req.method === 'GET') {
       sendJson(res, 200, metadata);
