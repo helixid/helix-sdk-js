@@ -1,4 +1,4 @@
-import { AuditEvents } from '../core/audit-events.js';
+import type { AuditProducerEvent, AuditSink } from '../audit/index.js';
 import { generateKeyPair, type KeyPair } from '../core/keys.js';
 import { agentKeyRegistration, type AgentPublicKeyJwk } from '../core/agent-key.js';
 import { SDKOnlyModeNoAPIError } from '../errors/index.js';
@@ -29,21 +29,6 @@ export interface VerifyVPApiResult extends VerifyVPResult {
     expiresAt: string;
     publicKeyEndpoint: string;
   };
-}
-
-/**
- * Agent-side record of a consent grant landing in the wallet (spec §2a) — the
- * agent-side analogue of `VC_ISSUED`.
- */
-export interface ConsentGrantedAuditEntry {
-  vcId: string;
-  agentDid: string;
-  issuer?: string;
-  userDid?: string;
-  scopes?: string[];
-  durability?: string;
-  grantedAt: string;
-  source: 'sdk';
 }
 
 interface HttpAdapterLike {
@@ -109,23 +94,41 @@ export interface VCSummary {
 }
 
 export interface AuditLogFilters {
+  /** One KYA-OS event type, e.g. `tool.call.completed`. */
   eventType?: string;
+  /** One detail family, e.g. `tool`. */
+  family?: string;
   since?: string;
+  /** The `nextCursor` of the previous page; absent for the first. */
+  cursor?: string;
   limit?: number;
 }
 
+/**
+ * One row of helix-core's `GET /v1/audit-log` (operator): the typed producer
+ * event as recorded, where the recorder placed it, and its signed receipt.
+ */
 export interface AuditLogEvent {
   id: string;
-  eventType: string;
-  timestamp: string;
-  subjectDid?: string;
-  vcId?: string;
-  targetService?: string;
-  result?: string;
-  delegatedFrom?: string;
-  delegatedTo?: string;
-  parentVcId?: string;
-  delegationDepth?: number;
+  recordedAt: string;
+  eventDigest: string;
+  event: AuditProducerEvent;
+  ledgerId: string;
+  ledgerEpochId: string;
+  sequence: string;
+  entryDigest: string;
+  receipt: { core: Record<string, unknown>; jws: string };
+}
+
+/**
+ * One page of `GET /v1/audit-log`, newest first. Pass `nextCursor` back as
+ * `cursor` for the next page; it is null on the last. A hosted deployment's
+ * account view answers the same shape with its own item type (the event at
+ * the account's tier): read it as `getAuditLog<ItsItem>()`.
+ */
+export interface AuditLogPage<Item = AuditLogEvent> {
+  items: Item[];
+  nextCursor: string | null;
 }
 
 export interface StatusListCredentialResponse {
@@ -251,8 +254,8 @@ export class HelixClient {
     }
 
     this.sdkOnlyMode = resolvedUrl === undefined;
-    // Enterprise's /v1/audit-log/consent-granted takes an account, so an
-    // API key enables the consent audit write just as the admin key does.
+    // POST /v1/audit-log/events takes an admin or account key, so an API key
+    // enables audit writes just as the admin key does.
     this.apiAuditEnabled = !this.sdkOnlyMode && Boolean(options?.adminApiKey || options?.apiKey);
     // The adapter sends whichever credential was given on every call, so
     // enterprise (apiKey) and core (adminApiKey) differ only in which routes
@@ -423,12 +426,15 @@ export class HelixClient {
     return this.http.post<StatusListCredential>('/v1/status-list', options);
   }
 
-  async getAuditLog(filters: AuditLogFilters = {}): Promise<AuditLogEvent[]> {
+  /** One page of the audit log, newest first; `nextCursor` fetches the next. */
+  async getAuditLog<Item = AuditLogEvent>(filters: AuditLogFilters = {}): Promise<AuditLogPage<Item>> {
     if (!this.http.get) throw new Error('GET not implemented by adapter');
-    return this.http.get(
+    return this.http.get<AuditLogPage<Item>>(
       `/v1/audit-log${toQueryString({
         eventType: filters.eventType,
+        family: filters.family,
         since: filters.since,
+        cursor: filters.cursor,
         limit: filters.limit,
       })}`,
     );
@@ -585,24 +591,21 @@ export class HelixClient {
   }
 
   /**
-   * Best-effort consent-grant audit. Called by {@link AgentWallet} once a grant
-   * VC is safely stored; a failure here must never surface to the caller, since
-   * the credential is already in the wallet either way.
+   * Records one typed producer event (`POST /v1/audit-log/events`): the body is
+   * the event exactly as an `AuditTrail` built it, validated strictly by the
+   * API. A no-op without an API key (audit writes need one). Errors propagate:
+   * a producer that must not fail on an audit write (the wallet) catches them.
    */
-  async recordConsentGrantedAudit(entry: ConsentGrantedAuditEntry): Promise<void> {
+  async recordAuditEvent(event: AuditProducerEvent): Promise<void> {
     if (!this.apiAuditEnabled) {
       return;
     }
+    await this.http.post('/v1/audit-log/events', event);
+  }
 
-    try {
-      await this.http.post('/v1/audit-log/consent-granted', {
-        ...entry,
-        subjectDid: entry.agentDid,
-        eventType: AuditEvents.CONSENT_GRANTED,
-      });
-    } catch {
-      // Audit writes are best-effort. The stored credential remains authoritative.
-    }
+  /** An `AuditSink` for an `AuditTrail` whose events this client should report to the API. */
+  auditSink(): AuditSink {
+    return { append: (entry) => this.recordAuditEvent(entry.event) };
   }
 
   /**
