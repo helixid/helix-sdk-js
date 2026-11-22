@@ -4,8 +4,9 @@
 
 import { createServer, type AddressInfo, type Server } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { RedisNonceStore } from '@helixid/mcp-middleware';
-import { createRedisClient } from '../src/redis-client.js';
+import { kyaos } from '@helixid/sdk-js';
+import { RedisNonceStore, RedisStatusCacheStore } from '@helixid/mcp-middleware';
+import { createRedisClient, parseReply } from '../src/redis-client.js';
 
 /** Parses one RESP array command. */
 function parseCommand(text: string): string[] {
@@ -19,15 +20,32 @@ function parseCommand(text: string): string[] {
 let server: Server;
 let url: string;
 const entries = new Map<string, number>();
+const values = new Map<string, string>();
 let reply: string | undefined;
 
 beforeEach(async () => {
   entries.clear();
+  values.clear();
   reply = undefined;
   server = createServer((socket) => {
     socket.on('data', (chunk) => {
-      const [command, key, , px, ms, nx] = parseCommand(chunk.toString('utf8'));
+      const [command, key, value, px, ms, nx] = parseCommand(chunk.toString('utf8'));
       if (reply !== undefined) return void socket.write(reply);
+      // The status cache's commands (story L3-C).
+      if (command === 'GET') {
+        const stored = values.get(key!);
+        return void socket.write(stored === undefined ? '$-1\r\n' : `$${Buffer.byteLength(stored)}\r\n${stored}\r\n`);
+      }
+      if (command === 'DEL') return void socket.write(`:${values.delete(key!) ? 1 : 0}\r\n`);
+      if (command === 'INCR') {
+        const next = Number(values.get(key!) ?? '0') + 1;
+        values.set(key!, String(next));
+        return void socket.write(`:${next}\r\n`);
+      }
+      if (command === 'SET' && px === 'PX' && nx === undefined) {
+        values.set(key!, value!);
+        return void socket.write('+OK\r\n');
+      }
       // A server-side disconnect after the reply: the client must notice and reconnect on the next command.
       if (key === 'drop') return void socket.end('+OK\r\n');
       // A hang-up with no reply at all.
@@ -79,7 +97,7 @@ describe('createRedisClient', () => {
     const client = createRedisClient(url);
     reply = '-ERR nope\r\n';
     await expect(client.set('k', 'v', 'PX', 1, 'NX')).rejects.toThrow('redis: ERR nope');
-    reply = ':1\r\n';
+    reply = '?1\r\n';
     await expect(client.set('k', 'v', 'PX', 1, 'NX')).rejects.toThrow('unexpected reply');
     reply = '_\r\n';
     expect(await client.set('k', 'v', 'PX', 1, 'NX')).toBeNull();
@@ -89,5 +107,32 @@ describe('createRedisClient', () => {
     await expect(closed.set('k', 'v', 'PX', 1, 'NX')).rejects.toThrow();
     closed.close();
     expect(createRedisClient('redis://').set).toBeDefined();
+  });
+});
+
+describe('createRedisClient for the status cache (story L3-C)', () => {
+  it('speaks GET, SET PX, DEL and INCR, and backs a RedisStatusCacheStore', async () => {
+    const client = createRedisClient(url);
+    expect(await client.get('missing')).toBeNull();
+    expect(await client.set('k', 'héllo world', 'PX', 1000)).toBe('OK');
+    expect(await client.get('k')).toBe('héllo world');
+    expect(await client.del('k')).toBe(1);
+    expect(await client.incr('g')).toBe(1);
+    expect(await client.incr('g')).toBe(2);
+    const store = new RedisStatusCacheStore({ client });
+    const cache = new kyaos.verifier.StatusCache({ store });
+    await cache.setVerdict({ credentialId: 'c', url: 'https://s.example/l', index: '1', purpose: 'revocation', issuer: 'did:web:i', keeper: 'did:web:i' }, { revoked: false });
+    expect(await cache.invalidate('c')).toBe('credential');
+    expect(await cache.invalidate('c')).toBe('all-lists');
+    client.close();
+  });
+
+  it('parses RESP2 replies, waiting for a bulk string to arrive whole', () => {
+    expect(parseReply(Buffer.from('+OK'))).toBeUndefined();
+    expect(parseReply(Buffer.from('$5\r\nhel'))).toBeUndefined();
+    expect(parseReply(Buffer.from('$5\r\nhello\r\n'))).toBe('hello');
+    expect(parseReply(Buffer.from('$-1\r\n'))).toBeNull();
+    expect(parseReply(Buffer.from(':42\r\n'))).toBe(42);
+    expect(parseReply(Buffer.from('-ERR x\r\n'))).toBeInstanceOf(Error);
   });
 });

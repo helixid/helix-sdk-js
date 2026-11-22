@@ -117,3 +117,33 @@ const result = await started.finish(await handler(started.arguments)); // the re
 - **Self-custody and cross-border**: the service `Signer` is the only thing that touches the private key (the middleware hands it bytes and takes back a signature); the verify path reads the nonce store and local config only, never a Helix database.
 
 The sample in `examples/order-management` wires all of this (`SERVICE_SIGNING_KEY`, `KYAOS_*` variables); its README has the details.
+
+## Revocation: signed status lists, the status cache and the revocation signal (story L3-C)
+
+Every status list the local verifier reads is held to SPEC.md §6.6 before a bit is read, and every failure reads as revoked:
+
+- **Proof first.** A list is fetched (`createResolutionFetch` by default: https only, a host written as an IP must be public unicast, same-origin redirects, 5 s, 1 MiB; pass your SafeFetch as `fetch` to pin the connection too), its `DataIntegrityProof` (`eddsa-jcs-2022`, or the §6.2 `Ed25519Signature2020`) is verified against its issuer's `assertionMethod` key, and only then are the bits inflated (multibase `u` + GZIP, MSB first). Unreachable, malformed, unsigned, badly signed, wrong-purpose and out-of-range lists, and lists outside their window, are refused (`status_unavailable`, `status_list_malformed`, `status_list_proof_invalid`, `status_list_mismatch`, `status_entry_malformed`, `status_stale`).
+- **Both formats.** W3C Bitstring Status List v1.0 (what Helix issues, one list per issuer DID) and StatusList2021 (read for Core L3.11).
+- **The keeper.** A list counts only when its `issuer` keeps the URL: `statusListIssuers` (issuer DID to exact URLs or `https:` origins) first, then the pinned root (`resourceOwner`), then the credential's own issuer.
+- **Chain walk.** Root to leaf, stopping at the first revoked or unresolvable hop; `fresh` is the AND of every read and is on every `VerificationReport`.
+- **Cache.** `statusCache` (a `kyaos.verifier.StatusCache`, or its options): `statusCacheTtl` (default 300 s), `highPrivilegeScopes` held to `highPrivilegeTtl` (≤ 60 s), `maxStaleSeconds` (a list read inside its window may be served past `validUntil` that long). A cached read is `fresh: false`, which demotes a Card L3 request to L2. With several instances, give the cache a `RedisStatusCacheStore` (any client with ioredis's `get`/`set PX`/`del`/`incr`), next to the `RedisNonceStore`.
+
+```ts
+import { kyaos } from '@helixid/sdk-js';
+import { createLocalVerifier, createRevocationSignalClient, RedisStatusCacheStore } from '@helixid/mcp-middleware';
+
+const verifier = createLocalVerifier({
+  serviceDid: 'did:web:mcp.example.com',
+  statusCache: { store: new RedisStatusCacheStore({ client: ioredis }), statusCacheTtl: 300, highPrivilegeScopes: ['orders:admin'] },
+});
+// One outbound SSE connection per instance to Helix, reconnecting on drop; each valid SET drops the cached verdict.
+const signals = createRevocationSignalClient(verifier, {
+  eventsUrl: 'https://api.helixid.example/v1/events/revocations',
+  trustedIssuers: ['did:web:api.helixid.example'], // the Helix issuer whose SETs are honoured
+  onSignal: (report) => audit(report),              // every signal, honoured or ignored
+});
+signals.start();
+// Or push (RFC 8935): mount signals.webhookHandler() at the URL registered with Helix (202, or 400 {err, description}).
+```
+
+- **Revocation signal.** Helix emits one Security Event Token (RFC 8417) per revoked credential, carrying only its id. `RevocationSignalClient` verifies the issuer (checked before anything is resolved) and the signature, then calls `statusCache.invalidate(credentialId)`, which deletes that credential's verdict and the list it was read from (every cached list when it held nothing for the id). In the shared Redis one delete is seen by every instance; a duplicate is harmless. A signal with a bad signature or from an unknown issuer is ignored and reported through `onSignal`; it never revokes anything. Nothing is polled.

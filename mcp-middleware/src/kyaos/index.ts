@@ -24,3 +24,5 @@ export { MemorySessionStore } from './session-store.js';
 export type { SessionStore, KyaOsSession, CreateSessionInput, IdentityState, MemorySessionStoreOptions } from './session-store.js';
 export { buildResponseProof, attachResponseProof, RESPONSE_PROOF_META_KEY } from './response-proof.js';
 export type { ProofMeta, DetachedProof, ProofOutcome } from './response-proof.js';
+export { RedisStatusCacheStore } from './status-cache-store.js';
+export type { RedisStatusCacheClient } from './status-cache-store.js';

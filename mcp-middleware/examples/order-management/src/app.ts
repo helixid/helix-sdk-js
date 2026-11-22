@@ -33,6 +33,11 @@ export interface OrderServerOptions {
    */
   kyaos?: KyaOsRuntime;
   store?: OrderStore;
+  /**
+   * KYA-OS story L3-C: the RFC 8935 receiver of Helix's revocation signals
+   * (`RevocationSignalClient.webhookHandler()`), mounted at `path`.
+   */
+  revocationWebhook?: { path: string; handle(req: IncomingMessage, res: ServerResponse): Promise<void> };
   /** Called for errors that are not the caller's fault (they become a 500). */
   onServerError?: (error: unknown) => void;
 }
@@ -252,6 +257,10 @@ export function createOrderServer(options: OrderServerOptions): Server {
     const path = new URL(req.url ?? '/', 'http://localhost').pathname;
     if (path === metadataPath && req.method === 'GET') {
       sendJson(res, 200, metadata);
+      return;
+    }
+    if (options.revocationWebhook !== undefined && path === options.revocationWebhook.path) {
+      options.revocationWebhook.handle(req, res).catch((error: unknown) => serverError(res, error));
       return;
     }
     if (path === mcpPath) {

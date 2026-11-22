@@ -27,7 +27,8 @@ import {
   type TrustedIssuers,
 } from './credentials.js';
 import { verifyDataIntegrity, type DidResolver } from './data-integrity.js';
-import { checkStatusEntry, type FetchStatusList } from './status.js';
+import { revocationCheckerOf, type RevocationChecker } from './revocation.js';
+import type { FetchStatusList, StatusListRead } from './status.js';
 
 export type ConformanceLevel = 'L1' | 'L2' | 'L3';
 
@@ -62,8 +63,14 @@ export interface VerifyAttestationOptions {
   /** Epoch ms. */
   now: number;
   maxClockSkewMs?: number | undefined;
-  /** Reads the status list the entry names; without it the attestation is refused `status_seam_missing`. */
+  /** Reads the status list the entry names; without it (and without `checkRevocation`) the attestation is refused `status_seam_missing`. */
   fetchStatusList?: FetchStatusList | undefined;
+  /** The revocation check (story L3-C), in place of a bare `fetchStatusList` read: cached, keeper-aware. */
+  checkRevocation?: RevocationChecker | undefined;
+  /** The scopes the request touches, which pick the status cache TTL. */
+  scopes?: readonly string[] | undefined;
+  /** The lists read live during this verification (see `RevocationContext.reads`). */
+  reads?: Map<string, StatusListRead> | undefined;
 }
 
 /**
@@ -97,20 +104,18 @@ export async function verifyCapabilityAttestation(
   }
   const proof = await verifyDataIntegrity(credential as unknown as Record<string, unknown>, resolveDid);
   if (!proof.ok) return proof;
-  if (options.fetchStatusList === undefined) {
+  const checker =
+    options.checkRevocation ?? (options.fetchStatusList === undefined ? undefined : revocationCheckerOf(options.fetchStatusList, options.maxClockSkewMs));
+  if (checker === undefined) {
     return { ok: false, reason: ReasonCodes.STATUS_SEAM_MISSING, message: 'no fetchStatusList seam to read the attestation status with' };
   }
-  let read;
+  let status;
   try {
-    read = await options.fetchStatusList(credential.credentialStatus.statusListCredential);
+    status = await checker(credential, { now: options.now, scopes: options.scopes, reads: options.reads });
   } catch (error) {
-    return { ok: false, reason: ReasonCodes.STATUS_UNAVAILABLE, message: `status list could not be read: ${(error as Error).message}` };
+    return { ok: false, reason: ReasonCodes.STATUS_UNAVAILABLE, message: `the revocation check failed: ${(error as Error).message}` };
   }
-  const status = checkStatusEntry(credential.credentialStatus, credential.issuer, read, {
-    now: options.now,
-    maxClockSkewMs: options.maxClockSkewMs,
-  });
-  if (!status.ok) return { ok: false, reason: status.code, message: status.message };
+  if (status.revoked) return { ok: false, reason: status.code ?? ReasonCodes.STATUS_REVOKED, message: status.message ?? 'revoked' };
   return { ok: true, credential, capability: subject.capability, issuer: credential.issuer, fresh: status.fresh };
 }
 

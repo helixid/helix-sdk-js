@@ -2,12 +2,12 @@
 // Licensed under the Apache License, Version 2.0
 // KYA-OS story F-2: the local verifier's default seams (public resolution, decoded lists, cards) and its report hook.
 
-import { gzipSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
 import { buildDIDDocument, generateKeyPair, kyaos } from '@helixid/sdk-js';
 import { MemoryNonceStore } from '../src/kyaos/nonce-store.js';
 import { cardEndpointOf, createLocalVerifier, resolutionUrl, unrecordedReporter } from '../src/verify-locally.js';
 import { NOW_MS, proofMeta } from './proof-helpers.js';
+import { bitstringList, listIssuer, wellKnownDidUrl } from './revocation-helpers.js';
 
 const SERVICE = 'did:web:orders.helix.test';
 const AGENT = 'did:web:127.0.0.1%3A4000:agents:a1';
@@ -15,8 +15,8 @@ const keys = generateKeyPair();
 const signer = new kyaos.EnvSigner({ did: AGENT, envVar: 'K', env: { K: keys.privateKey } });
 const document = { ...buildDIDDocument(AGENT, keys.publicKey), service: [{ id: '#kya-os-card', type: 'KyaOsEntityCard', serviceEndpoint: 'https://127.0.0.1:4000/agents/a1/card.json' }] };
 const card = { id: AGENT, entityType: 'agent', name: 'a1', capabilities: ['read:orders'] };
-const bits = gzipSync(new Uint8Array(32));
-const statusList = { id: 'https://issuer.example/status/1', issuer: 'did:web:issuer.example', validFrom: '2026-01-01T00:00:00Z', validUntil: '2027-01-01T00:00:00Z', credentialSubject: { statusPurpose: 'revocation', encodedList: `u${bits.toString('base64url')}` } };
+const listIssuerKey = listIssuer('did:web:issuer.example');
+const statusList = bitstringList('https://issuer.example/status/1', listIssuerKey);
 
 /** A fetch that serves the agent's document, card and a status list, remembering what was asked. */
 function staticFetch(served: Record<string, unknown>, asked: string[] = []) {
@@ -54,13 +54,17 @@ describe('createLocalVerifier defaults', () => {
       'http://127.0.0.1:4000/agents/a1/did.json': document,
       'http://127.0.0.1:4000/agents/a1/card.json': card,
       'https://issuer.example/status/1': statusList,
+      'https://issuer.example/status/unsigned': bitstringList('https://issuer.example/status/unsigned', listIssuerKey, { unsigned: true }),
+      [wellKnownDidUrl(listIssuerKey.did)]: listIssuerKey.document,
     };
     const verifier = createLocalVerifier({ serviceDid: SERVICE, fetch: staticFetch(served, asked), allowLoopbackHttp: true, clock: () => NOW_MS, reportVerification: () => undefined });
     const result = await verifier.verifyCall({ name: 't', _meta: await proofMeta(signer, SERVICE, { name: 't' }) });
     expect(result).toMatchObject({ ok: true, level: 'L1', proofDid: AGENT });
     // The document is read for the key, for the membership proof and for the card service (no cache yet).
     expect(asked).toEqual(['http://127.0.0.1:4000/agents/a1/did.json', 'http://127.0.0.1:4000/agents/a1/did.json', 'http://127.0.0.1:4000/agents/a1/did.json', 'http://127.0.0.1:4000/agents/a1/card.json']);
-    expect(await verifier.seams.fetchStatusList!('https://issuer.example/status/1')).toMatchObject({ issuer: 'did:web:issuer.example', id: 'https://issuer.example/status/1', fresh: true });
+    expect(await verifier.seams.fetchStatusList!('https://issuer.example/status/1')).toMatchObject({ issuer: 'did:web:issuer.example', id: 'https://issuer.example/status/1', fresh: true, proofVerified: true });
+    // The list's own proof is verified before any bit is read (story L3-C).
+    await expect(verifier.seams.fetchStatusList!('https://issuer.example/status/unsigned')).rejects.toMatchObject({ code: 'status_list_proof_invalid' });
     await expect(verifier.seams.fetchStatusList!('https://issuer.example/status/missing')).rejects.toThrow(/answered 404/);
     await expect(verifier.seams.fetchStatusList!('http://issuer.example/status/1')).rejects.toThrow(/only https/);
     expect(verifier.nonceStore).toBeInstanceOf(MemoryNonceStore);

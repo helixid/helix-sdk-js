@@ -132,7 +132,7 @@ export class HelixConformanceAdapter implements ConformanceAdapter {
   }
 
   async verifyStatusList(input: StatusListInput): Promise<AdapterResult> {
-    const refusal = statusListRefusal(input, this.#now());
+    const refusal = await statusListRefusal(input, this.#now());
     return refusal === undefined ? PASS : fail(refusal);
   }
 
