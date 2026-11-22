@@ -3,6 +3,9 @@ export type { MCPMiddleware, AuthorizedCaller as MiddlewareCaller } from './midd
 export { attachHelixVP } from './attach.js';
 export { createJwtValidator, createIntrospectionValidator, createOAuthValidator } from './oauth.js';
 export { createHelixAuditSink } from './audit.js';
+export { DEFAULT_TRUSTED_ISSUERS } from './credentials.js';
+export type { TrustedIssuers } from './credentials.js';
+export { isTrustedIssuer, attestationTrust } from './trusted-issuers.js';
 export { auth0, entra, keycloak, okta } from './providers.js';
 export type { ProviderIntrospection } from './providers.js';
 export {
@@ -11,6 +14,10 @@ export {
   toHttpErrorResponse,
 } from './metadata.js';
 export { MCPAuthError, ToolScopeError, AuthorizationServerUnavailableError } from './errors.js';
+// KYA-OS signed needs_authorization and resume (story L3-E).
+export * from './needs-authorization.js';
+export * from './resume-token-store.js';
+export * from './resume-token-store-env.js';
 export type { MCPMiddlewareOptions, AttachHelixVPOptions, MCPToolCall } from './types.js';
 export type { AuthResult, OAuthJwtOptions, OAuthIssuerOptions, OAuthIntrospectionOptions, OAuthOptions } from './oauth.js';
 export type { AuditSink, ToolAuditEvent, HelixAuditSinkOptions } from './audit.js';

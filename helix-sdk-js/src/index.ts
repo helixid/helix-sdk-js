@@ -8,6 +8,22 @@ export type {
 } from './wallet/AgentWallet.js';
 export { VPBuilder } from './vp-builder.js';
 
+// KYA-OS story F-1: the credential split. The store holds identity,
+// capability attestations and delegation hops; presentChain() is what a
+// request carries; signAttestations() is the owner's self-custody path.
+export { CredentialStore, signAttestationDocument } from './core/credential-store.js';
+export type {
+  BitstringStatusEntry,
+  CapabilityAttestation,
+  CredentialSigner,
+  CredentialStoreData,
+  DataIntegrityProof,
+  DelegationHop,
+  PresentedChain,
+  SignAttestationsOptions,
+  StoredCredential,
+} from './core/credential-store.js';
+
 
 // Verifier
 export { verifyVP } from './verify.js';
@@ -54,6 +70,24 @@ export type { DelegationLink, VerifyVPOptions, VerifyVPResult } from './core/ver
 export type { SignedVC } from './core/schemas/vc.js';
 export type { SignedVP } from './core/schemas/vp.js';
 export type { VPBuilderOptions } from './core/vp-builder-impl.js';
+// KYA-OS story L1-A: the agent's own Ed25519 key, generated client side; only
+// its public half (JWK, did:key) ever leaves the process.
+export {
+  generateAgentKey,
+  agentPublicKey,
+  toPublicKeyJwk,
+  toDidKey,
+  publicKeyFromDidKey,
+  publicKeyJwkBytes,
+  agentKeyRegistration,
+  assertNoPrivateMaterial,
+  encodeBase58btc,
+  decodeBase58btc,
+  DEFAULT_AGENT_KEY_ID,
+  type AgentKey,
+  type AgentPublicKeyJwk,
+  type AgentKeyRegistration,
+} from './core/agent-key.js';
 export {
   generateKeyPair,
   publicKeyToMultibase,
@@ -91,5 +125,5 @@ export { verifyJWT } from './core/jwt.js';
 
 // KYA-OS (stories rule 24): canonical JSON hashing, EdDSA JWS and the Signer,
 // the session handshake and the client side of the detached response proof.
-// `InvalidJWSError` and `ResponseProofError` come with the errors above.
+// `InvalidJWSError`, `ResponseProofError` and `NeedsAuthorizationError` come with the errors above.
 export * as kyaos from './core/kyaos/index.js';
