@@ -18,6 +18,16 @@ export type ExtractedCredential =
   | { kind: 'proof'; proof: unknown; chain: unknown; bearer?: string }
   | { kind: 'oauth'; token: string };
 
+/**
+ * KYA-OS story C-B: which issuers' capability attestations a verifier counts.
+ * `'*'` trusts every issuer; a list trusts exactly those DIDs. Shipped as
+ * allow-all (stories rule 9); the setting stays so a service can set a list.
+ * The one definition is the local verifier's (`kyaos.verifier.TrustedIssuers`,
+ * story F-2); see `isTrustedIssuer` in ./trusted-issuers.ts.
+ */
+export type TrustedIssuers = kyaos.verifier.TrustedIssuers;
+export const DEFAULT_TRUSTED_ISSUERS: TrustedIssuers = '*';
+
 const BEARER_SCHEME = 'bearer';
 
 /** All values of a header, case-insensitively; empty values are dropped. */

@@ -12,6 +12,22 @@ export type {
 // params._meta (kyaos.withRequestProof); a service verifies it in-process
 // (kyaos.verifier.verify, or @helixid/mcp-middleware).
 export type { HeadersLike } from './http/headers.js';
+// KYA-OS story F-1: the credential split. The store holds identity,
+// capability attestations and delegation hops; presentChain() is what a
+// request carries; signAttestations() is the owner's self-custody path.
+export { CredentialStore, signAttestationDocument } from './core/credential-store.js';
+export type {
+  BitstringStatusEntry,
+  CapabilityAttestation,
+  CredentialSigner,
+  CredentialStoreData,
+  DataIntegrityProof,
+  DelegationHop,
+  PresentedChain,
+  SignAttestationsOptions,
+  StoredCredential,
+} from './core/credential-store.js';
+
 // Local Ed25519 linked-data proof create/verify -- signing stays client-side
 // (see the SDK-API-only design); needed by issuers that aren't
 // registered with helix-api (e.g. independent did:web Service Providers)
