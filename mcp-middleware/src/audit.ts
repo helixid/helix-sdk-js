@@ -9,7 +9,7 @@
  *
  * The middleware hands `auditSink` one `ToolAuditEvent` per authorization
  * decision; `McpAuditTrail.toolAuditSink()` turns each into the typed events
- * of the protocol (`proof.verified`, `delegation.verified`,
+ * of the protocol (`proof.verified` / `proof.rejected`,
  * `authorization.approved` / `authorization.denied`), and
  * `beginToolCall()` records the call's own lifecycle (`session.established`,
  * `tool.call.started` / `completed` / `failed` / `denied`) under one
@@ -27,10 +27,6 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import {
   AUDIT_BINDING_MCP,
   AuditTrail,
-  UNKNOWN_DELEGATION_REF,
-  credentialDigest,
-  delegationChainDigests,
-  delegationRef,
   keyedCommitmentValue,
   pairwiseDid,
   publicDid,
@@ -47,13 +43,6 @@ import {
   type SessionPhase,
   type ToolPhase,
 } from '@helixid/sdk-js';
-
-/** SPEC section 7.8: how the presented delegation credential and its chain are referenced. */
-export interface DelegationEvidence {
-  delegationRef?: string;
-  delegationCredentialDigest?: string;
-  delegationChainDigests?: string[];
-}
 
 /** One authorization decision for one tool call, as the middleware reports it. */
 export interface ToolAuditEvent {
@@ -78,8 +67,6 @@ export interface ToolAuditEvent {
   serviceDid?: string;
   /** The tool call this decision belongs to; defaults to the current `beginToolCall()` context. */
   correlationId?: string;
-  /** The presented delegation credential; defaults to the current `beginToolCall()` context. */
-  delegation?: DelegationEvidence;
 }
 
 /** Receives every decision for an identified caller. Await-ed before the tool runs. */
@@ -164,8 +151,6 @@ export interface ToolCallAuditOptions {
   correlationId?: string;
   /** The caller, when already known; the authorization sink fills it in otherwise. */
   actor?: PartyRef;
-  /** The caller's credential, when it is a decoded HelixID VP: its agent credential becomes the delegation evidence. */
-  credential?: unknown;
 }
 
 /** The members a tool call's events share, kept in `AsyncLocalStorage` for the call's duration. */
@@ -173,57 +158,9 @@ interface ToolCallState {
   correlationId: string;
   toolName: string | undefined;
   actor: PartyRef | undefined;
-  delegation: DelegationEvidence | undefined;
 }
 
 const OAUTH_SUBJECT_KEY_ID = 'oauth-subject-v1';
-
-type JsonObject = Record<string, unknown>;
-
-const isObject = (value: unknown): value is JsonObject => typeof value === 'object' && value !== null && !Array.isArray(value);
-
-function isAgentCredential(value: unknown): value is JsonObject {
-  if (!isObject(value)) return false;
-  const type = value['type'];
-  if (Array.isArray(type) && type.includes('HelixAgentCredential')) return true;
-  const subject = value['credentialSubject'];
-  return isObject(subject) && subject['type'] === 'HelixAgent';
-}
-
-/**
- * The delegation evidence of a decoded HelixID VP (SPEC section 7.8): the
- * presented credential is its last agent credential, the chain is that
- * credential's `delegationChain` (root first) followed by the credential
- * itself. Undefined when the value is not a VP or shows no agent credential.
- */
-export function delegationEvidenceOf(credential: unknown): DelegationEvidence | undefined {
-  if (!isObject(credential)) return undefined;
-  const presentedList = credential['verifiableCredential'];
-  if (!Array.isArray(presentedList)) return undefined;
-  const presented = presentedList.filter(isAgentCredential).at(-1);
-  if (presented === undefined) return undefined;
-  const chain = presented['delegationChain'];
-  const ref = delegationRef(presented);
-  const digest = credentialDigest(presented);
-  const chainDigests = delegationChainDigests([...(Array.isArray(chain) ? chain : []), presented]);
-  return {
-    ...(ref !== undefined ? { delegationRef: ref } : {}),
-    ...(digest !== undefined ? { delegationCredentialDigest: digest } : {}),
-    ...(chainDigests !== undefined ? { delegationChainDigests: chainDigests } : {}),
-  };
-}
-
-/** The authorization evidence that carries the delegation fields (`decision` as given). */
-function delegationAuthorization(delegation: DelegationEvidence, decision: AuthorizationEvidence['decision'], scopeId?: string): AuthorizationEvidence {
-  return {
-    source: 'delegation',
-    decision,
-    ...(scopeId !== undefined ? { scopeId } : {}),
-    ...(delegation.delegationRef !== undefined ? { delegationRef: delegation.delegationRef } : {}),
-    ...(delegation.delegationCredentialDigest !== undefined ? { delegationCredentialDigest: delegation.delegationCredentialDigest as Digest } : {}),
-    ...(delegation.delegationChainDigests !== undefined ? { delegationChainDigests: delegation.delegationChainDigests as Digest[] } : {}),
-  };
-}
 
 /** The guard's own denials of an identified caller; any other reason a KYA-OS caller is denied with is the local verifier's. */
 const GUARD_REASONS: ReadonlySet<string> = new Set(['tool is not in toolScopes', 'insufficient scope', 'needs_authorization']);
@@ -249,11 +186,6 @@ export class ToolCallAudit {
   /** The caller, once known (given at `beginToolCall`, or learned from the authorization decision). */
   get actor(): PartyRef | undefined {
     return this.state.actor;
-  }
-
-  /** The presented delegation credential's evidence, when the credential was a HelixID VP. */
-  get delegation(): DelegationEvidence | undefined {
-    return this.state.delegation;
   }
 
   /**
@@ -432,16 +364,13 @@ export class McpAuditTrail {
   /**
    * Starts one tool call's audit. Run the guard and the tool inside
    * `run()`; call `started()` / `completed()` / `failed()` / `denied()` as
-   * the call goes. When `credential` is a decoded HelixID VP its agent
-   * credential becomes the delegation evidence the authorization sink
-   * attaches to `proof.verified` and `delegation.verified`.
+   * the call goes.
    */
   beginToolCall(options: ToolCallAuditOptions = {}): ToolCallAudit {
     const state: ToolCallState = {
       correlationId: options.correlationId ?? `audit_${randomUUID()}`,
       toolName: options.toolName,
       actor: options.actor,
-      delegation: delegationEvidenceOf(options.credential),
     };
     return new ToolCallAudit(this, this.calls, state);
   }
@@ -450,8 +379,7 @@ export class McpAuditTrail {
    * The middleware's `auditSink`: translates each authorization decision into
    * the typed events. A KYA-OS caller (story F-2): `proof.verified`, its
    * verification code naming the level the local verifier derived (and
-   * `_CACHED` when a status was not read live), then `delegation.verified`
-   * when the presented credential is known, then `authorization.approved` or
+   * `_CACHED` when a status was not read live), then `authorization.approved` or
    * `authorization.denied` (reason `needs_authorization` for an L3-E
    * challenge); a request proof the verifier refused is `proof.rejected` by
    * its first reason code, and nothing else. An OAuth caller: only the
@@ -462,7 +390,6 @@ export class McpAuditTrail {
       const call = this.calls.getStore();
       const actor = this.actorOf(event) ?? call?.actor;
       if (call !== undefined && call.actor === undefined && actor !== undefined) call.actor = actor;
-      const delegation = event.delegation ?? call?.delegation;
       const base: McpAuditContext = {
         ...(actor !== undefined ? { actor } : {}),
         ...(event.correlationId !== undefined ? { correlationId: event.correlationId } : {}),
@@ -480,21 +407,11 @@ export class McpAuditTrail {
         await this.proof('verified', {
           outcome: 'succeeded',
           verificationCode: kyaosVerificationCode(event),
-          context: { ...base, ...(delegation !== undefined ? { authorization: delegationAuthorization(delegation, 'allowed') } : {}) },
+          context: base,
         });
-        if (delegation !== undefined) {
-          await this.delegation('verified', {
-            delegationRef: delegation.delegationRef ?? UNKNOWN_DELEGATION_REF,
-            outcome: 'succeeded',
-            context: { ...base, authorization: delegationAuthorization(delegation, 'allowed') },
-          });
-        }
       }
       const decision: AuthorizationEvidence['decision'] = allowed ? 'allowed' : 'denied';
-      const authorization: AuthorizationEvidence =
-        kyaos && delegation !== undefined
-          ? delegationAuthorization(delegation, decision, scopeId)
-          : { source: kyaos ? 'delegation' : 'policy', decision, ...(scopeId !== undefined ? { scopeId } : {}) };
+      const authorization: AuthorizationEvidence = { source: kyaos ? 'delegation' : 'policy', decision, ...(scopeId !== undefined ? { scopeId } : {}) };
       const context: McpAuditContext = { ...base, authorization };
       if (allowed) {
         await this.authorization('approved', { outcome: 'succeeded', context, ...(toolName !== undefined ? { toolName } : {}) });
