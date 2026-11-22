@@ -1,6 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { createEd25519Proof } from './proof.js';
-import { base58btcEncode, hashCanonicalPayload } from './vp-crypto.js';
 import { VPInvalidStructureError } from './HelixError.js';
 import type { SignedVC } from './schemas/vc.js';
 import type { SignedVP } from './schemas/vp.js';
@@ -60,16 +59,8 @@ export class VPBuilder {
     verificationMethodId: string,
     overrides?: VPBuilderSignOverrides,
   ): Promise<SignedVP> {
-    const payload = this.payload(overrides);
-    return {
-      ...payload,
-      proof: await createEd25519Proof(payload, privateKeyHex, verificationMethodId, overrides?.proofCreatedAt),
-    };
-  }
-
-  private payload(overrides?: VPBuilderSignOverrides): Omit<SignedVP, 'proof'> {
     const expiresAt = overrides?.expiresAt ?? new Date(Date.now() + 5 * 60 * 1000);
-    return {
+    const payload = {
       '@context': ['https://www.w3.org/ns/credentials/v2'],
       type: ['VerifiablePresentation'],
       id: overrides?.id ?? `vp:helix:${randomUUID()}`,
@@ -81,6 +72,11 @@ export class VPBuilder {
       // never serialized as null/undefined.
       ...(this.options.userDid !== undefined ? { delegatedBy: this.options.userDid } : {}),
       targetService: this.options.targetService,
+    };
+
+    return {
+      ...payload,
+      proof: await createEd25519Proof(payload, privateKeyHex, verificationMethodId, overrides?.proofCreatedAt),
     };
   }
 }
