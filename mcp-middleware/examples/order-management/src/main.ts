@@ -6,7 +6,6 @@
 import { readFileSync } from 'node:fs';
 import { kyaos } from '@helixid/sdk-js';
 import {
-  RedisNonceStore,
   createHelixAuditSink,
   createKyaOs,
   createLocalVerifier,
@@ -22,7 +21,6 @@ import {
 } from '@helixid/mcp-middleware';
 import { createOrderServer } from './app.js';
 import { TOOL_SCOPES } from './orders.js';
-import { createRedisClient } from './redis-client.js';
 
 /**
  * Configuration (environment):
@@ -63,8 +61,12 @@ import { createRedisClient } from './redis-client.js';
  *   KYAOS_CLOCK_SKEW_SECONDS  30 to 600 (default 120)
  *   KYAOS_SESSIONS=0        no sessions: the handshake is refused, calls are proven without one
  *   KYAOS_SESSION_TTL_MINUTES idle TTL (default 30; fractions allowed)
- *   KYAOS_REDIS_URL         redis://host:port: a replay store shared by every instance; without it
- *                           the store is in memory and covers this instance only
+ *   KYAOS_NONCE_STORE       the replay store: memory (default, this instance only), redis or dynamo,
+ *                           read by @helixid/mcp-middleware itself (nonceStoreFromEnv); with it:
+ *                           redis: KYAOS_REDIS_URL, KYAOS_NONCE_KEY_PREFIX
+ *                           dynamo: KYAOS_DYNAMO_TABLE, KYAOS_DYNAMO_KEY_ATTRIBUTE, KYAOS_DYNAMO_TTL_ATTRIBUTE,
+ *                                   KYAOS_DYNAMO_REGION, KYAOS_DYNAMO_ENDPOINT (AWS credentials: the SDK's chain)
+ *                           See .env.example.
  */
 const DEMO_TOKENS: Record<string, AuthResult> = {
   'demo-reader': { sub: 'demo-reader', scopes: ['orders:read'] },
@@ -279,7 +281,6 @@ function numberFromEnv(name: string, integer: boolean): number | undefined {
 }
 
 let kyaOs: KyaOsRuntime | undefined;
-const redisUrl = env['KYAOS_REDIS_URL'];
 if (env['SERVICE_SIGNING_KEY']) {
   if (!serviceDid) fail('SERVICE_SIGNING_KEY needs SERVICE_DID (the DID whose document lists the key)');
   const skew = numberFromEnv('KYAOS_CLOCK_SKEW_SECONDS', true);
@@ -291,14 +292,22 @@ if (env['SERVICE_SIGNING_KEY']) {
       publicOrigin: env['KYAOS_PUBLIC_ORIGIN'] || new URL(resource).origin,
       ...(skew !== undefined ? { clockSkewSeconds: skew } : {}),
       session: { enabled: env['KYAOS_SESSIONS'] !== '0', ...(ttlMinutes !== undefined ? { ttlMinutes } : {}) },
-      ...(redisUrl ? { nonceStore: new RedisNonceStore({ client: createRedisClient(redisUrl) }) } : {}),
       toolsEndpoint: resource,
     });
   } catch (error) {
     fail(`KYA-OS: ${error instanceof Error ? error.message : String(error)}`);
   }
-} else if (redisUrl || env['KYAOS_PUBLIC_ORIGIN'] || env['KYAOS_CLOCK_SKEW_SECONDS'] || env['KYAOS_SESSIONS'] || env['KYAOS_SESSION_TTL_MINUTES']) {
+} else if (env['KYAOS_NONCE_STORE'] || env['KYAOS_PUBLIC_ORIGIN'] || env['KYAOS_CLOCK_SKEW_SECONDS'] || env['KYAOS_SESSIONS'] || env['KYAOS_SESSION_TTL_MINUTES']) {
   fail('KYAOS_* settings need SERVICE_SIGNING_KEY');
+}
+
+if (kyaOs) {
+  // redis and dynamo load their client package in the background: a missing one stops the server here, not at the first call.
+  try {
+    await kyaOs.ready();
+  } catch (error) {
+    fail(`KYA-OS: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /** A comma-separated list of DIDs, or undefined when the variable is unset or `*`. */
@@ -366,7 +375,7 @@ server.listen(port, host, () => {
   console.log(
     `  KYA-OS:      ${
       kyaOs
-        ? `proofs by ${kyaOs.serverDid}, sessions ${kyaOs.sessionsEnabled ? 'on' : 'off'}, skew ${kyaOs.clockSkewSeconds} s, replay store ${redisUrl ? `redis ${redisUrl}` : 'in memory (this instance only)'}`
+        ? `proofs by ${kyaOs.serverDid}, sessions ${kyaOs.sessionsEnabled ? 'on' : 'off'}, skew ${kyaOs.clockSkewSeconds} s (replay store: the line above)`
         : 'off (set SERVICE_SIGNING_KEY)'
     }`,
   );
