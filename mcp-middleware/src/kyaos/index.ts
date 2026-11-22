@@ -8,6 +8,7 @@ export type {
   KyaOsAllowed,
   KyaOsCallInput,
   KyaOsDenied,
+  KyaOsNeedsAuthorization,
   KyaOsOptions,
   KyaOsRuntime,
   KyaOsSessionOptions,

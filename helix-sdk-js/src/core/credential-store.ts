@@ -28,9 +28,14 @@
  * signing goes through a Signer that keeps the key wherever it lives.
  */
 
-import { sha256 } from '@noble/hashes/sha2';
-import { utf8ToBytes } from '@noble/hashes/utils';
-import { base58btcEncode, toCanonicalJson } from './vp-crypto.js';
+import { base58btcEncode } from './vp-crypto.js';
+import {
+  CAPABILITY_ATTESTATION_TYPE,
+  DELEGATION_CREDENTIAL_TYPE,
+  IDENTITY_CREDENTIAL_TYPE,
+  invokerOf as hopInvoker,
+} from './kyaos/verifier/credentials.js';
+import { hashData } from './kyaos/verifier/data-integrity.js';
 
 /** Whoever holds an Ed25519 key and signs with it: the same shape as helix-core's Signer (story L1-C). */
 export interface CredentialSigner {
@@ -115,9 +120,8 @@ export interface SignAttestationsOptions {
   created?: string;
 }
 
-export const IDENTITY_CREDENTIAL_TYPE = 'AgentIdentityCredential';
-export const CAPABILITY_ATTESTATION_TYPE = 'CapabilityAttestationCredential';
-export const DELEGATION_CREDENTIAL_TYPE = 'DelegationCredential';
+// The credential type names are the local verifier's (story F-2): one definition for both.
+export { CAPABILITY_ATTESTATION_TYPE, DELEGATION_CREDENTIAL_TYPE, IDENTITY_CREDENTIAL_TYPE };
 
 const VC_V2_CONTEXT = 'https://www.w3.org/ns/credentials/v2';
 const HELIX_CONTEXT = 'https://helixid.io/contexts/v1';
@@ -130,11 +134,10 @@ function kindOf(credential: StoredCredential): 'identity' | 'attestation' | 'hop
   return undefined;
 }
 
+/** The delegate a hop names (the verifier's `invokerOf`), when it is a string. */
 function invokerOf(hop: StoredCredential): string | undefined {
-  const subject = hop.credentialSubject as { invoker?: unknown; controller?: unknown };
-  if (typeof subject.invoker === 'string') return subject.invoker;
-  if (typeof subject.controller === 'string') return subject.controller;
-  return undefined;
+  const delegate: unknown = hopInvoker(hop as never);
+  return typeof delegate === 'string' ? delegate : undefined;
 }
 
 function uuid(): string {
@@ -145,9 +148,8 @@ function uuid(): string {
  * `eddsa-jcs-2022` as the KYA-OS reference and helix-core write it:
  * SHA-256(canonical proof options with the document @context) followed by
  * SHA-256(canonical unsecured document), Ed25519 over the two, base58btc.
- * Canonical JSON is the SDK's sorted-key form, which equals RFC 8785 for
- * these documents (strings, arrays and objects only; story L2-A's port of
- * helix-core's `canonicalize` replaces it for the general case).
+ * The hash is the local verifier's own `hashData` (RFC 8785, story F-2), so
+ * what this signs is exactly what the verifier checks.
  */
 export async function signAttestationDocument<T extends Record<string, unknown>>(
   document: T,
@@ -167,12 +169,7 @@ export async function signAttestationDocument<T extends Record<string, unknown>>
   };
   const config: Record<string, unknown> = { ...proof };
   if (document['@context'] !== undefined) config['@context'] = document['@context'];
-  const proofHash = sha256(utf8ToBytes(toCanonicalJson(config)));
-  const documentHash = sha256(utf8ToBytes(toCanonicalJson(document)));
-  const data = new Uint8Array(proofHash.length + documentHash.length);
-  data.set(proofHash, 0);
-  data.set(documentHash, proofHash.length);
-  const signature = await signer.sign(data);
+  const signature = await signer.sign(hashData(config, document));
   if (!(signature instanceof Uint8Array) || signature.length !== 64) {
     throw new Error('signer did not return a 64-byte Ed25519 signature');
   }

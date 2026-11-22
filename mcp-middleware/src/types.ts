@@ -1,25 +1,40 @@
-import type { SignedVP } from '@helixid/sdk-js';
-import type { HeadersLike, HelixClient } from '@helixid/sdk-js';
+import type { HeadersLike, kyaos } from '@helixid/sdk-js';
 import type { AuditSink } from './audit.js';
 import type { AuthResult, OAuthOptions } from './oauth.js';
+import type { LocalVerifier, LocalVerifierOptions } from './verify-locally.js';
+import type { NeedsAuthorization } from './needs-authorization.js';
 
 export interface MCPToolCall {
   name?: string;
   input?: Record<string, unknown>;
-  /** The MCP request's `params._meta`; carries the VP as `_meta["x-helix-vp"]` (stdio and any transport). */
-  _meta?: Record<string, unknown>;
   /**
-   * HTTP request headers, when the MCP server runs over HTTP. Carries the VP as
-   * `Authorization: HelixVP <vp>` (or legacy `X-Helix-VP`), or an OAuth token as
-   * `Authorization: Bearer <token>`.
+   * The MCP request's `params._meta`; carries the KYA-OS request proof as
+   * `_meta["org.kya-os/request-proof"]` and the delegation chain as
+   * `_meta["org.kya-os/delegation-chain"]` (stdio and any transport).
    */
+  _meta?: Record<string, unknown>;
+  /** HTTP request headers, when the MCP server runs over HTTP: an OAuth token as `Authorization: Bearer <token>`. */
   headers?: HeadersLike;
+  /**
+   * The JSON-RPC request as received (`{method, params}`), when the host has
+   * it: the proof's `requestHash` is recomputed over exactly this. Without
+   * it the request is rebuilt from `name`, `input` and `_meta`.
+   */
+  request?: kyaos.verifier.ProofRequest;
   [key: string]: unknown;
 }
 
+/** The local verifier's settings, when the middleware builds it; `serviceDid` defaults to the middleware's. */
+export type MiddlewareVerifierOptions = Partial<Omit<LocalVerifierOptions, 'serviceDid'>> & { serviceDid?: string | undefined };
+
 export interface MCPMiddlewareOptions {
-  /** Required to verify HelixID VPs (verification calls the API). Not needed for an OAuth-only server. */
-  client?: HelixClient;
+  /**
+   * How KYA-OS request proofs are verified: in-process, from the proof and
+   * the carried chain alone (story F-2), with the Helix API never asked. A
+   * built `LocalVerifier` (shared with other guards), or its settings. Not
+   * needed for an OAuth-only server.
+   */
+  verifier?: LocalVerifier | MiddlewareVerifierOptions;
   /**
    * Per-tool required scopes. Deny by default: when this map is set, a tool
    * that is not a key in it is rejected before it runs (an empty array allows
@@ -28,11 +43,7 @@ export interface MCPMiddlewareOptions {
   toolScopes?: Record<string, string[]>;
   /** Fallback applied to every tool when `toolScopes` is not set. */
   requiredScopes?: string[];
-  allowSelfSigned?: boolean;
-  /**
-   * This server's own DID. When set, a VP signed for any other service is
-   * rejected, so a VP meant for one service can't be replayed against another.
-   */
+  /** This server's own DID: the proof audience. `serviceDid` is the same setting under its current name. */
   expectedTargetService?: string;
   /**
    * Accept `Authorization: Bearer` access tokens from one trusted authorization
@@ -50,17 +61,13 @@ export interface MCPMiddlewareOptions {
   auditSink?: AuditSink;
   /** Called when `auditSink` throws. Audit failures never block or fail a tool call. */
   onAuditError?: (error: unknown) => void;
-  /** Included in audit events; defaults to `expectedTargetService`. */
+  /** This server's DID: the proof audience, included in audit events; defaults to `expectedTargetService`. */
   serviceDid?: string;
+  /**
+   * KYA-OS story L3-E: answers a call whose delegation is missing or does not
+   * cover the tool's scopes with a signed `needs_authorization` challenge
+   * (instead of the plain 403), and verifies the retry that carries the
+   * resume token and the new delegation credential. See `createNeedsAuthorization`.
+   */
+  needsAuthorization?: NeedsAuthorization;
 }
-
-export interface AttachHelixVPOptions {
-  /** Agent self-custody has been retired — signing happens server-side via this client, not a local wallet. */
-  client: HelixClient;
-  /** The agent's DID, previously implied by which wallet file was loaded. */
-  agentDid: string;
-  targetService: string;
-  userDid?: string;
-}
-
-export type HelixVPInput = SignedVP;

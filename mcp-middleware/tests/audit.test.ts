@@ -6,9 +6,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   MemoryAuditSink,
-  credentialDigest,
-  delegationChainDigests,
-  delegationRef,
   keyedCommitmentValue,
   parseAuditEvent,
   type AuditProducerEvent,
@@ -20,7 +17,7 @@ import {
   createHelixAuditReporter,
   createHelixAuditSink,
   createMcpAuditTrail,
-  delegationEvidenceOf,
+  createNeedsAuthorization,
   type ToolAuditEvent,
 } from '../src/index.js';
 
@@ -37,24 +34,14 @@ const decision = (overrides: Partial<ToolAuditEvent> = {}): ToolAuditEvent => ({
   event: 'AUTHZ_GRANTED',
   result: 'allowed',
   timestamp: '2026-01-01T00:00:00.000Z',
-  authMethod: 'helixvp',
+  authMethod: 'kyaos',
   agentDid: AGENT,
-  vpId: 'vp:helix:1',
+  level: 'L2',
+  fresh: true,
   toolName: 'lookup_order',
   effectiveScopes: ['orders:read'],
   serviceDid: SERVICE,
   ...overrides,
-});
-
-/** An agent credential signed the way SPEC section 7.8 reads it (proofValue is base64). */
-const agentVC = (id: string, extra: Record<string, unknown> = {}) => ({
-  '@context': ['https://www.w3.org/ns/credentials/v2'],
-  id,
-  type: ['VerifiableCredential', 'HelixAgentCredential'],
-  issuer: 'did:web:platform.example',
-  credentialSubject: { id: AGENT, type: 'HelixAgent', privilegeScopes: ['orders:read'], agentName: 'a' },
-  proof: { type: 'Ed25519Signature2020', proofValue: 'AQIDBA==' },
-  ...extra,
 });
 
 describe('createHelixAuditReporter', () => {
@@ -265,7 +252,7 @@ describe('McpAuditTrail events', () => {
 });
 
 describe('McpAuditTrail.toolAuditSink', () => {
-  it('a HelixID caller allowed: proof.verified then authorization.approved from delegation', async () => {
+  it('a KYA-OS caller allowed: proof.verified at its level, then authorization.approved from delegation', async () => {
     const { trail, sink } = trailWithSink();
     await trail.toolAuditSink()(decision({ correlationId: 'call-7' }));
     expect(sink.eventTypes).toEqual(['proof.verified', 'authorization.approved']);
@@ -275,7 +262,7 @@ describe('McpAuditTrail.toolAuditSink', () => {
       correlationId: 'call-7',
       resource: { kind: 'public_did', did: SERVICE },
       outcome: 'succeeded',
-      details: { family: 'proof', phase: 'verified', verificationCode: 'VP_VERIFIED' },
+      details: { family: 'proof', phase: 'verified', verificationCode: 'KYAOS_PROOF_L2' },
     });
     expect(proof!.authorization).toBeUndefined();
     expect(authorization).toMatchObject({
@@ -289,24 +276,26 @@ describe('McpAuditTrail.toolAuditSink', () => {
     expect(authorization!.action.name).toBeUndefined();
   });
 
-  it('records delegation.verified when the decision carries the presented credential', async () => {
+  it('a request proof the local verifier refused: proof.rejected by its first reason, and no authorization event (story F-2)', async () => {
     const { trail, sink } = trailWithSink();
-    const delegation = { delegationRef: 'urn:uuid:1111-aaaa', delegationCredentialDigest: `sha256:${'6'.repeat(64)}`, delegationChainDigests: [`sha256:${'6'.repeat(64)}`, `sha256:${'d'.repeat(64)}`] };
-    await trail.toolAuditSink()(decision({ delegation, requiredScope: 'orders:read' }));
-    expect(sink.eventTypes).toEqual(['proof.verified', 'delegation.verified', 'authorization.approved']);
-    const evidence = { source: 'delegation', decision: 'allowed', ...delegation };
-    expect(sink.events[0]!.authorization).toEqual(evidence);
-    expect(sink.events[1]).toMatchObject({ authorization: evidence, details: { family: 'delegation', phase: 'verified', delegationRef: 'urn:uuid:1111-aaaa' } });
-    expect(sink.events[2]!.authorization).toEqual({ ...evidence, scopeId: 'orders:read' });
+    const sinkFn = trail.toolAuditSink();
+    await sinkFn(decision({ event: 'AUTHZ_DENIED', result: 'denied', effectiveScopes: [], reason: 'proof_expired,status_unavailable' }));
+    await sinkFn(decision({ event: 'AUTHZ_DENIED', result: 'denied', effectiveScopes: [], reason: ' ' }));
+    expect(sink.eventTypes).toEqual(['proof.rejected', 'proof.rejected']);
+    expect(sink.events[0]).toMatchObject({ outcome: 'denied', reason: { code: 'proof_expired' }, actor: { kind: 'pairwise_did', did: AGENT } });
+    expect(sink.events[1]).toMatchObject({ reason: { code: 'proof_invalid' } });
   });
 
-  it('names an id-less presented credential "unknown"', async () => {
+  it('names the level in the verification code, with _CACHED when a status was not read live, and none without a level', async () => {
     const { trail, sink } = trailWithSink();
-    await trail.toolAuditSink()(decision({ delegation: { delegationCredentialDigest: `sha256:${'6'.repeat(64)}` } }));
-    expect(sink.events[1]!.details).toEqual({ family: 'delegation', phase: 'verified', delegationRef: 'unknown' });
+    const sinkFn = trail.toolAuditSink();
+    await sinkFn(decision({ level: 'L3', fresh: false }));
+    await sinkFn(decision({ level: undefined, fresh: undefined }));
+    expect(sink.events[0]!.details).toMatchObject({ verificationCode: 'KYAOS_PROOF_L3_CACHED' });
+    expect(sink.events[2]!.details).toMatchObject({ verificationCode: 'KYAOS_PROOF' });
   });
 
-  it('a HelixID caller denied: insufficient_scope with the scope, else tool_not_permitted', async () => {
+  it('a KYA-OS caller denied: insufficient_scope with the scope, else tool_not_permitted', async () => {
     const { trail, sink } = trailWithSink();
     const sinkFn = trail.toolAuditSink();
     await sinkFn(decision({ event: 'AUTHZ_DENIED', result: 'denied', requiredScope: 'orders:admin', reason: 'insufficient scope' }));
@@ -318,12 +307,20 @@ describe('McpAuditTrail.toolAuditSink', () => {
     for (const event of sink.events) expect(JSON.stringify(event)).not.toContain('toolScopes');
   });
 
+  it('an L3-E needs_authorization challenge: authorization.denied keeps the reason needs_authorization', async () => {
+    const { trail, sink } = trailWithSink();
+    const layer = createNeedsAuthorization({ authorizationUrl: 'https://consent.example/authorize', auditSink: trail.toolAuditSink(), serviceDid: SERVICE });
+    await layer.challenge({ agentDid: AGENT, tool: 'delete_order', scopes: ['orders:admin'], effectiveScopes: ['orders:read'] });
+    expect(sink.eventTypes).toEqual(['proof.verified', 'authorization.denied']);
+    expect(sink.events[1]).toMatchObject({ outcome: 'denied', reason: { code: 'needs_authorization' }, authorization: { decision: 'denied', scopeId: 'orders:admin' } });
+  });
+
   it('an OAuth caller: only the authorization event, from policy, the subject as a keyed commitment', async () => {
     const key = Buffer.from('k'.repeat(32));
     const { trail, sink } = trailWithSink({ oauthSubjectKey: key });
     const sinkFn = trail.toolAuditSink();
-    await sinkFn(decision({ authMethod: 'oauth', agentDid: undefined, vpId: undefined, oauthSubject: 'user-9' }));
-    await sinkFn(decision({ authMethod: 'oauth', agentDid: undefined, vpId: undefined, oauthSubject: 'user-9', event: 'AUTHZ_DENIED', result: 'denied', requiredScope: 'orders:admin' }));
+    await sinkFn(decision({ authMethod: 'oauth', agentDid: undefined, level: undefined, fresh: undefined, oauthSubject: 'user-9' }));
+    await sinkFn(decision({ authMethod: 'oauth', agentDid: undefined, level: undefined, fresh: undefined, oauthSubject: 'user-9', event: 'AUTHZ_DENIED', result: 'denied', requiredScope: 'orders:admin' }));
     expect(sink.eventTypes).toEqual(['authorization.approved', 'authorization.denied']);
     expect(sink.events[0]).toMatchObject({
       actor: { kind: 'keyed_commitment', value: keyedCommitmentValue(key, 'user-9'), keyId: 'oauth-subject-v1' },
@@ -333,15 +330,15 @@ describe('McpAuditTrail.toolAuditSink', () => {
     for (const entry of sink.entries) expect(entry.canonical).not.toContain('user-9');
   });
 
-  it('handles a decision with no tool name, and a presented credential that shows only its reference', async () => {
+  it('handles a decision with no tool name', async () => {
     const { trail, sink } = trailWithSink({ includeToolNames: true });
     const sinkFn = trail.toolAuditSink();
-    await sinkFn(decision({ toolName: undefined, delegation: { delegationRef: 'urn:uuid:only-ref' } }));
+    await sinkFn(decision({ toolName: undefined }));
     await sinkFn(decision({ toolName: undefined, event: 'AUTHZ_DENIED', result: 'denied' }));
-    expect(sink.eventTypes).toEqual(['proof.verified', 'delegation.verified', 'authorization.approved', 'proof.verified', 'authorization.denied']);
-    expect(sink.events[0]!.authorization).toEqual({ source: 'delegation', decision: 'allowed', delegationRef: 'urn:uuid:only-ref' });
-    expect(sink.events[2]!.action).toEqual({ category: 'authorization' });
-    expect(sink.events[4]!.action).toEqual({ category: 'authorization' });
+    expect(sink.eventTypes).toEqual(['proof.verified', 'authorization.approved', 'proof.verified', 'authorization.denied']);
+    expect(sink.events[1]!.authorization).toEqual({ source: 'delegation', decision: 'allowed' });
+    expect(sink.events[1]!.action).toEqual({ category: 'authorization' });
+    expect(sink.events[3]!.action).toEqual({ category: 'authorization' });
   });
 
   it('records no actor for a decision that names no caller', async () => {
@@ -445,49 +442,4 @@ describe('McpAuditTrail.beginToolCall', () => {
     expect(ids.filter((id) => id === 'b')).toHaveLength(3);
   });
 
-  it('derives delegation evidence from a decoded HelixID VP and attaches it to proof and delegation events', async () => {
-    const root = agentVC('urn:uuid:root');
-    const presented = agentVC('urn:uuid:child', { delegationChain: [root] });
-    const vp = { id: 'vp:helix:1', holder: AGENT, verifiableCredential: [{ type: ['VerifiableCredential', 'DelegationGrantCredential'], id: 'vc:grant' }, presented] };
-    const expected = {
-      delegationRef: delegationRef(presented),
-      delegationCredentialDigest: credentialDigest(presented),
-      delegationChainDigests: delegationChainDigests([root, presented]),
-    };
-    expect(expected.delegationRef).toBe('urn:uuid:child');
-    expect(expected.delegationChainDigests).toHaveLength(2);
-    expect(delegationEvidenceOf(vp)).toEqual(expected);
-
-    const { trail, sink } = trailWithSink();
-    const call = trail.beginToolCall({ toolName: 'lookup_order', credential: vp });
-    expect(call.delegation).toEqual(expected);
-    await call.run(() => trail.toolAuditSink()(decision()));
-    expect(sink.eventTypes).toEqual(['session.established', 'proof.verified', 'delegation.verified', 'authorization.approved']);
-    expect(sink.events[1]!.authorization).toEqual({ source: 'delegation', decision: 'allowed', ...expected });
-    expect(sink.events[2]).toMatchObject({ details: { family: 'delegation', phase: 'verified', delegationRef: 'urn:uuid:child' } });
-    expect(sink.events[3]!.authorization).toEqual({ source: 'delegation', decision: 'allowed', ...expected });
-    for (const entry of sink.entries) {
-      expect(entry.canonical).not.toContain('AQIDBA');
-      expect(entry.canonical).not.toContain('did:web:platform.example');
-      expect(parseAuditEvent(JSON.parse(entry.canonical))).toEqual(entry.event);
-    }
-  });
-
-  it('delegationEvidenceOf: not a VP, no agent credential, an unsigned or id-less credential', () => {
-    expect(delegationEvidenceOf(undefined)).toBeUndefined();
-    expect(delegationEvidenceOf('vp')).toBeUndefined();
-    expect(delegationEvidenceOf({ verifiableCredential: 'x' })).toBeUndefined();
-    expect(delegationEvidenceOf({ verifiableCredential: [{ id: 'vc:grant', type: ['VerifiableCredential'] }, 'text', null] })).toBeUndefined();
-    // Recognized by the subject type as well as the credential type.
-    const bySubject = { id: 'urn:uuid:s', credentialSubject: { type: 'HelixAgent' } };
-    expect(delegationEvidenceOf({ verifiableCredential: [bySubject] })).toEqual({ delegationRef: 'urn:uuid:s' });
-    // No id, no signature: nothing to reference, yet the credential was presented.
-    expect(delegationEvidenceOf({ verifiableCredential: [{ type: ['HelixAgentCredential'] }] })).toEqual({});
-    // The last agent credential is the presented one; a chain member without a signature leaves the chain unlisted.
-    const unsignedRoot = { id: 'urn:uuid:root', type: ['HelixAgentCredential'] };
-    const evidence = delegationEvidenceOf({ verifiableCredential: [agentVC('urn:uuid:first'), agentVC('urn:uuid:last', { delegationChain: [unsignedRoot] })] });
-    expect(evidence!.delegationRef).toBe('urn:uuid:last');
-    expect(evidence!.delegationCredentialDigest).toMatch(/^sha256:/);
-    expect(evidence!.delegationChainDigests).toBeUndefined();
-  });
 });

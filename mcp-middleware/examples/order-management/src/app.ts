@@ -5,7 +5,6 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { decodeHelixVP, readHelixVPHeader, readHelixVPMeta, type SignedVP } from '@helixid/sdk-js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import {
   AuthorizationServerUnavailableError,
@@ -19,6 +18,7 @@ import {
   type KyaOsRuntime,
   type MCPMiddlewareOptions,
   type McpAuditTrail,
+  type WellKnownMcp,
 } from '@helixid/mcp-middleware';
 import { z } from 'zod';
 import { TOOL_SCOPES, createOrderStore, registerOrderTools, type OrderStore, type ToolWrapper } from './orders.js';
@@ -46,6 +46,11 @@ export interface OrderServerOptions {
    * Off when not given.
    */
   kyaos?: KyaOsRuntime;
+  /**
+   * The KYA-OS discovery document (story L1-D), served at `/.well-known/mcp`
+   * from `createWellKnownMcp()`; a disabled one answers 404. Off when not given.
+   */
+  wellKnown?: WellKnownMcp;
   store?: OrderStore;
   /** Called for errors that are not the caller's fault (they become a 500). */
   onServerError?: (error: unknown) => void;
@@ -82,13 +87,14 @@ function sendJson(res: ServerResponse, status: number, body: unknown, headers: R
 }
 
 interface ToolCallMessage {
+  id?: unknown;
   method: 'tools/call';
   params?: { name?: unknown; arguments?: unknown; _meta?: unknown };
 }
 
 type Finisher = (result: CallToolResult) => Promise<CallToolResult>;
 
-const isMissingCredential = (error: unknown): boolean => (error as { code?: unknown } | null)?.code === 'VP_MISSING';
+const isMissingCredential = (error: unknown): boolean => (error as { code?: unknown } | null)?.code === 'PROOF_MISSING';
 
 /** The handshake tool's input, as the KYA-OS handshake-request schema has it; unknown members are dropped by zod. */
 const HANDSHAKE_INPUT = {
@@ -108,23 +114,6 @@ function isToolCall(message: unknown): message is ToolCallMessage {
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 
-/**
- * The HelixID VP a tool call presents, decoded, so the audit trail can derive
- * the delegation evidence (SPEC section 7.8). Undefined when there is none or
- * it does not decode: the guard, not this, answers a bad credential.
- */
-function presentedVP(headers: IncomingMessage['headers'], meta: Record<string, unknown> | undefined): SignedVP | undefined {
-  try {
-    const fromMeta = readHelixVPMeta(meta) ?? readHelixVPHeader(headers);
-    if (fromMeta) return fromMeta;
-    const authorization = headers.authorization;
-    const match = typeof authorization === 'string' ? /^helixvp\s+(\S+)$/i.exec(authorization) : null;
-    return match ? decodeHelixVP(match[1]!) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /** The code a refused or failed call is audited with: the error's code (never its message), else `server_error`. */
 function auditCode(error: unknown): string {
   const code = (error as { code?: unknown } | null)?.code;
@@ -139,10 +128,9 @@ function auditCode(error: unknown): string {
  * invalid credential gets a real HTTP 401 with `WWW-Authenticate` pointing at
  * the RFC 9728 metadata (which is how OAuth clients discover the
  * authorization server), and a scope failure gets a 403. Only `tools/call` is
- * gated: `initialize` and `tools/list` stay open, so HelixID clients that send
- * their VP in `params._meta` (not a header) keep working, and a VP is
- * verified once per tool call, not once per request. (A VP is not single-use
- * in Phase 1; see the middleware README.)
+ * gated: `initialize` and `tools/list` stay open. A KYA-OS agent carries its
+ * request proof and delegation chain in `params._meta` (story F-2), verified
+ * in-process on every call, so the Helix API is never on the request path.
  *
  * With `kyaos` set, the same layer runs the KYA-OS session and proof flow:
  * the `_kyaos_handshake` tool opens a session (credentials, when present,
@@ -151,11 +139,17 @@ function auditCode(error: unknown): string {
  * stripped) and finished inside the tool handler, where the result is
  * hashed and the proof signed into `_meta["org.kya-os/response-proof"]`. A
  * refusal carries its `denied` proof in the 400/401/403 body.
+ *
+ * With `auth.needsAuthorization` set (story L3-E), a caller whose delegation
+ * does not cover the tool gets the signed `needs_authorization` challenge as
+ * the call's result, and a retry carrying `_kyaos_resume` and
+ * `_kyaos_delegation` is verified through that layer before the tool runs.
  */
 export function createOrderServer(options: OrderServerOptions): Server {
   const store = options.store ?? createOrderStore();
-  const guard = helixidMCPMiddleware({ ...options.auth, toolScopes: TOOL_SCOPES });
   const kyaos = options.kyaos;
+  // The handshake needs an identified caller, not a scope: it is listed with none (story F-2).
+  const guard = helixidMCPMiddleware({ ...options.auth, toolScopes: kyaos ? { ...TOOL_SCOPES, [kyaos.handshakeToolName]: [] } : TOOL_SCOPES });
   const mcpPath = new URL(options.resource).pathname;
   const metadataUrl = protectedResourceMetadataUrl(options.resource);
   const metadataPath = new URL(metadataUrl).pathname;
@@ -195,10 +189,7 @@ export function createOrderServer(options: OrderServerOptions): Server {
     const firstName = typeof first?.params?.name === 'string' ? first.params.name : undefined;
     const call =
       options.audit && first && !(kyaos && kyaos.isHandshake(firstName))
-        ? options.audit.beginToolCall({
-            ...(firstName !== undefined ? { toolName: firstName } : {}),
-            credential: presentedVP(req.headers, asRecord(first.params?._meta)),
-          })
+        ? options.audit.beginToolCall(firstName !== undefined ? { toolName: firstName } : {})
         : undefined;
 
     const serve = async (): Promise<void> => {
@@ -217,6 +208,8 @@ export function createOrderServer(options: OrderServerOptions): Server {
           ...(name !== undefined ? { name } : {}),
           ...(input ? { input } : {}),
           ...(meta ? { _meta: meta } : {}),
+          // The request as received: the KYA-OS proof's requestHash is recomputed over exactly this (story F-2).
+          request: { method: message.method, params: params as Record<string, unknown> },
           headers: req.headers,
         };
         // A refusal is audited by its code (never its message): denied when the
@@ -236,7 +229,7 @@ export function createOrderServer(options: OrderServerOptions): Server {
           // The handshake is open to anonymous agents; a credential, when sent,
           // must be good and makes the session an authenticated one.
           try {
-            authenticatedAgentDid = (await guard.authorize({ ...toolCall, name: 'lookup_order' })).agentDid;
+            authenticatedAgentDid = (await guard.authorize(toolCall)).agentDid;
           } catch (error) {
             if (!isMissingCredential(error)) {
               await refuse(error);
@@ -259,6 +252,13 @@ export function createOrderServer(options: OrderServerOptions): Server {
         const started = await kyaos.start({ name: name ?? '', arguments: input, _meta: meta }, { authorize: () => guard.authorize(toolCall) });
         if (started.outcome === 'denied') {
           await refuse(started.error, started.proof);
+          return;
+        }
+        if (started.outcome === 'needs_authorization') {
+          // KYA-OS story L3-E: the signed challenge is the call's result (a tool error result with the
+          // proof in _meta), answered here since the tool itself never runs: audited as a denied call.
+          await call?.denied(auditCode(started.error));
+          sendJson(res, 200, { jsonrpc: '2.0', id: message.id ?? null, result: started.result });
           return;
         }
         // Control arguments (`_kyaos*`) never reach the tool.
@@ -310,6 +310,7 @@ export function createOrderServer(options: OrderServerOptions): Server {
   };
 
   return createServer((req, res) => {
+    if (options.wellKnown?.handle(req, res)) return;
     const path = new URL(req.url ?? '/', 'http://localhost').pathname;
     if (path === metadataPath && req.method === 'GET') {
       sendJson(res, 200, metadata);

@@ -128,5 +128,5 @@ export { verifyJWT } from './core/jwt.js';
 
 // KYA-OS (stories rule 24): canonical JSON hashing, EdDSA JWS and the Signer,
 // the session handshake and the client side of the detached response proof.
-// `InvalidJWSError` and `ResponseProofError` come with the errors above.
+// `InvalidJWSError`, `ResponseProofError` and `NeedsAuthorizationError` come with the errors above.
 export * as kyaos from './core/kyaos/index.js';
