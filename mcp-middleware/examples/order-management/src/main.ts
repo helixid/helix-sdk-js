@@ -3,11 +3,12 @@
 
 /* eslint-disable no-console -- command-line entry point: startup and error output is the point */
 
-import { HelixClient, kyaos } from '@helixid/sdk-js';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
+import { kyaos } from '@helixid/sdk-js';
 import {
   createHelixAuditSink,
   createKyaOs,
+  createLocalVerifier,
   createNeedsAuthorization,
   type AuditSink,
   type AuthResult,
@@ -29,9 +30,20 @@ import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './we
  * Configuration (environment):
  *   PORT, HOST            listen address (default 3700 on 127.0.0.1)
  *   MCP_RESOURCE          public URL of the MCP endpoint (default http://localhost:$PORT/mcp); the OAuth audience
- *   HELIX_API_URL         HelixID API to verify VPs and write audit events. Required whenever
- *   HELIX_API_KEY         HELIX_API_KEY is set: there is deliberately no default URL.
- *   SERVICE_DID           this server's DID: VPs for other services are rejected
+ *   HELIX_API_URL         HelixID API the audit sink writes to. Required whenever HELIX_API_KEY is
+ *   HELIX_API_KEY         set: there is deliberately no default URL. Never on the request path.
+ *   SERVICE_DID           this server's DID: the KYA-OS door (story F-2). Every tool call that carries
+ *                         a request proof in _meta["org.kya-os/request-proof"] (and its delegation chain
+ *                         in _meta["org.kya-os/delegation-chain"]) is verified in-process against this
+ *                         DID as audience and resource, from public DID documents, status lists and the
+ *                         agent's Entity Card alone. Optional:
+ *   KYAOS_TRUSTED_ISSUERS   comma-separated attestation issuers, or * (default: allow all)
+ *   KYAOS_TRUSTED_ROOTS     comma-separated DIDs the root hop may be issued by (default: any)
+ *   KYAOS_MAX_CHAIN_LENGTH  longest carried chain read (default 10)
+ *   KYAOS_CARDS_FILE        JSON file mapping agent DIDs to their Entity Cards (local config, read before
+ *                           the card is fetched from the agent's DID document)
+ *   KYAOS_ALLOW_LOOPBACK_HTTP=1  development only: read DID documents, cards and status lists over
+ *                           http on loopback hosts
  *   OAUTH_ISSUER          OAuth door, one authorization server. The issuer alone is enough: its keys are
  *                         read from its metadata (aud must be MCP_RESOURCE). Optional:
  *   OAUTH_JWKS_URI          its jwks_uri, to skip discovery
@@ -106,7 +118,7 @@ const serviceDid = env['SERVICE_DID'];
 const demo = env['DEMO_MODE'] === '1';
 
 if (apiKey && !apiUrl) {
-  // HelixClient given only an API key talks to the hosted production API.
+  // An audit sink given only an API key would talk to the hosted production API.
   fail('HELIX_API_KEY is set but HELIX_API_URL is not; set HELIX_API_URL explicitly (e.g. a local server)');
 }
 if (demo && !['127.0.0.1', 'localhost', '::1'].includes(host)) {
@@ -270,11 +282,9 @@ const auth: Omit<MCPMiddlewareOptions, 'toolScopes' | 'requiredScopes'> = {
   ...(serviceDid ? { expectedTargetService: serviceDid, serviceDid } : {}),
   onAuditError: (error) => console.error('audit write failed:', error),
 };
-if (apiUrl) {
-  auth.client = new HelixClient(apiUrl, apiKey ? { apiKey } : {});
-  if (apiKey) {
-    auth.auditSink = createHelixAuditSink({ baseUrl: apiUrl, apiKey, ...(serviceDid ? { serviceDid } : {}) });
-  }
+if (apiUrl && apiKey) {
+  // The audit sink is the only thing that talks to the Helix API, and never on the request path.
+  auth.auditSink = createHelixAuditSink({ baseUrl: apiUrl, apiKey, ...(serviceDid ? { serviceDid } : {}) });
 }
 const auditLogFile = env['AUDIT_LOG_FILE'];
 if (auditLogFile) {
@@ -291,8 +301,8 @@ if (demo) {
 } else if (issuers.length > 0) {
   auth.oauth = issuers;
 }
-if (!auth.client && !auth.validateOAuthToken && !auth.oauth) {
-  fail('no way to authenticate callers: set HELIX_API_URL (HelixID VPs), OAUTH_ISSUER / OAUTH_ISSUERS, or DEMO_MODE=1');
+if (!serviceDid && !auth.validateOAuthToken && !auth.oauth) {
+  fail('no way to authenticate callers: set SERVICE_DID (KYA-OS request proofs), OAUTH_ISSUER / OAUTH_ISSUERS, or DEMO_MODE=1');
 }
 
 const publicOrigin = env['PUBLIC_ORIGIN'];
@@ -395,6 +405,45 @@ if (auth.needsAuthorization) {
   }
 }
 
+/** A comma-separated list of DIDs, or undefined when the variable is unset or `*`. */
+function didList(name: string): string[] | undefined {
+  const raw = env[name]?.trim();
+  if (!raw || raw === '*') return undefined;
+  const dids = raw.split(',').map((did) => did.trim()).filter((did) => did.length > 0);
+  if (dids.some((did) => !did.startsWith('did:'))) fail(`${name} must list DIDs`);
+  return dids;
+}
+
+// The KYA-OS door (story F-2): every request proof is verified here, in-process, with the Helix API never asked.
+if (serviceDid) {
+  const trustedIssuers = didList('KYAOS_TRUSTED_ISSUERS');
+  const trustedRootIssuers = didList('KYAOS_TRUSTED_ROOTS');
+  const maxChainLength = numberFromEnv('KYAOS_MAX_CHAIN_LENGTH', true);
+  let cards: Record<string, unknown> | undefined;
+  if (env['KYAOS_CARDS_FILE']) {
+    try {
+      cards = JSON.parse(readFileSync(env['KYAOS_CARDS_FILE'], 'utf8')) as Record<string, unknown>;
+    } catch (error) {
+      fail(`KYAOS_CARDS_FILE: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  auth.verifier = createLocalVerifier({
+    serviceDid,
+    ...(trustedIssuers === undefined ? {} : { trustedIssuers }),
+    ...(trustedRootIssuers === undefined ? {} : { trustedRootIssuers }),
+    ...(maxChainLength === undefined ? {} : { maxChainLength }),
+    ...(cards === undefined ? {} : { cards }),
+    allowLoopbackHttp: env['KYAOS_ALLOW_LOOPBACK_HTTP'] === '1',
+    catalog: [...new Set(Object.values(TOOL_SCOPES).flat())],
+    // One replay store for the handshake, the response proofs and the request proofs.
+    ...(kyaOs ? { nonceStore: kyaOs.nonceStore } : {}),
+    // Story A-1 connects the audit trail here; until then each verification is logged once as unrecorded.
+    log: (message) => console.warn(message),
+  });
+} else if (env['KYAOS_TRUSTED_ISSUERS'] || env['KYAOS_TRUSTED_ROOTS'] || env['KYAOS_MAX_CHAIN_LENGTH'] || env['KYAOS_CARDS_FILE']) {
+  fail('KYAOS_TRUSTED_ISSUERS / KYAOS_TRUSTED_ROOTS / KYAOS_MAX_CHAIN_LENGTH / KYAOS_CARDS_FILE need SERVICE_DID');
+}
+
 /** The discovery document (story L1-D): built once, validated against the schema, or the reason it is off. */
 let discovery: WellKnownFromEnv = { wellKnown: undefined, off: undefined };
 try {
@@ -420,7 +469,13 @@ server.listen(port, host, () => {
     return `${i.issuer} (${how}${discovered ? ', endpoints from its metadata' : ''})`;
   });
   console.log(`order-management MCP server on ${resource}`);
-  console.log(`  HelixID VPs: ${auth.client ? `verified via ${apiUrl}` : 'off (set HELIX_API_URL)'}`);
+  console.log(
+    `  KYA-OS proofs: ${
+      auth.verifier
+        ? `verified in-process for ${serviceDid}, trusted issuers ${env['KYAOS_TRUSTED_ISSUERS'] || '*'}, chain length <= ${env['KYAOS_MAX_CHAIN_LENGTH'] || 10}`
+        : 'off (set SERVICE_DID)'
+    }`,
+  );
   console.log(`  OAuth:       ${demo ? 'DEMO tokens demo-reader, demo-admin, demo-agent, demo-agent-2' : modes.length ? modes.join(', ') : 'off'}`);
   console.log(`  Audit:       ${[apiKey && apiUrl ? `${apiUrl}/v1/audit-log/events` : '', auditLogFile ? `file ${auditLogFile}` : ''].filter(Boolean).join(' + ') || 'off (set HELIX_API_URL + HELIX_API_KEY, or AUDIT_LOG_FILE)'}`);
   console.log(`  Identity:    ${identity ? `${identity.publicOrigin}${new URL(resource).pathname.replace(/\/$/, '')}/{did,card}.json` : 'off (set PUBLIC_ORIGIN)'}`);

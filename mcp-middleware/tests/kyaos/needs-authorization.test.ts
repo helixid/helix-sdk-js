@@ -1,7 +1,7 @@
 // Copyright 2026 DgVerse LLP
 // KYA-OS story L3-E: the signed needs_authorization challenge, the resume token and the retry seam (L3.25, L3.26).
 import { describe, expect, it } from 'vitest';
-import { kyaos, type HelixClient } from '@helixid/sdk-js';
+import { kyaos } from '@helixid/sdk-js';
 import * as middleware from '../../src/index.js';
 import {
   DEFAULT_RESUME_TTL_SECONDS,
@@ -63,7 +63,7 @@ describe('createNeedsAuthorization', () => {
 
   it('builds the SPEC §9.2 challenge with a token bound to the agent, tool and scopes, and audits it (L3.26)', async () => {
     const { na, events } = layer({ ttlSeconds: 300, display: { title: 'Orders', hint: ['link'] } });
-    const error = await na.challenge({ ...context, effectiveScopes: ['orders:read'], authMethod: 'oauth', oauthSubject: 'sub-1', vpId: 'vp-1' });
+    const error = await na.challenge({ ...context, effectiveScopes: ['orders:read'], authMethod: 'oauth', oauthSubject: 'sub-1', level: 'L2', fresh: true });
     expect(error).toBeInstanceOf(NeedsAuthorizationError);
     expect(isNeedsAuthorizationError(error)).toBe(true);
     expect(isNeedsAuthorizationError({ code: 'NEEDS_AUTHORIZATION' })).toBe(true);
@@ -90,7 +90,8 @@ describe('createNeedsAuthorization', () => {
         authMethod: 'oauth',
         agentDid: AGENT,
         oauthSubject: 'sub-1',
-        vpId: 'vp-1',
+        level: 'L2',
+        fresh: true,
         toolName: TOOL,
         requiredScope: 'orders:admin',
         effectiveScopes: ['orders:read'],
@@ -116,7 +117,7 @@ describe('createNeedsAuthorization', () => {
     expect(error.challenge.message).toBe('grant orders:read, orders:admin to did:key:z6Mkagent');
     expect(error.challenge.display).toEqual({ hint: ['qr'], qrUrl: 'https://consent.example/qr' });
     expect(error.challenge.scopes).toEqual(['orders:read', 'orders:admin']);
-    expect(events[0]).toMatchObject({ requiredScope: 'orders:admin', effectiveScopes: [], authMethod: 'helixvp' });
+    expect(events[0]).toMatchObject({ requiredScope: 'orders:admin', effectiveScopes: [], authMethod: 'kyaos' });
     expect(events[0]).not.toHaveProperty('oauthSubject');
     const plain = await na.challenge({ ...context, message: 'please', missing: [] });
     expect(plain.challenge.message).toBe('please');
@@ -267,10 +268,14 @@ describe('the guard with needsAuthorization', () => {
   });
 
   it('keeps the plain 403 for a caller with no identity to bind to, and when the layer is off', async () => {
-    const client = { verifyVP: async () => ({ valid: true, effectiveScopes: ['orders:read'], privilegeScopes: [], delegationChain: [] }) } as unknown as HelixClient;
+    // A verified proof whose principal the verifier did not name (a stub local verifier, story F-2): nothing to bind the token to.
+    const verifier = {
+      serviceDid: SERVER,
+      verifyCall: async () => ({ ok: true, effectiveScopes: ['orders:read'], level: 'L1', fresh: true, reasons: [], chainSummary: { depth: 0 } }),
+    } as never;
     const na = createNeedsAuthorization({ authorizationUrl: CONSENT, now: () => NOW });
-    const anonymous = helixidMCPMiddleware({ client, toolScopes: { refund_order: ['orders:admin'] }, needsAuthorization: na });
-    await expect(anonymous.authorize({ name: 'refund_order', headers: { authorization: 'HelixVP eyJpZCI6InZwIn0' } })).rejects.toMatchObject({ code: 'INSUFFICIENT_SCOPE' });
+    const anonymous = helixidMCPMiddleware({ verifier, toolScopes: { refund_order: ['orders:admin'] }, needsAuthorization: na });
+    await expect(anonymous.authorize({ name: 'refund_order', _meta: { 'org.kya-os/request-proof': {} } })).rejects.toMatchObject({ code: 'INSUFFICIENT_SCOPE' });
     // requiredScopes without a tool name: nothing to bind the token to either.
     const unnamed = helixidMCPMiddleware({ validateOAuthToken: async () => TOKENS['agent']!, requiredScopes: ['orders:admin'], needsAuthorization: na });
     await expect(unnamed.authorize({ headers: { authorization: 'Bearer agent' } })).rejects.toMatchObject({ code: 'INSUFFICIENT_SCOPE' });

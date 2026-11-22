@@ -7,12 +7,14 @@ export interface ToolAuditEvent {
   event: 'AUTHZ_GRANTED' | 'AUTHZ_DENIED';
   result: 'allowed' | 'denied';
   timestamp: string;
-  authMethod: 'helixvp' | 'oauth';
-  /** HelixID callers: the agent DID. */
+  authMethod: 'kyaos' | 'oauth';
+  /** KYA-OS callers: the agent DID the request proof verified as. */
   agentDid?: string;
+  /** KYA-OS callers: the level the local verifier derived (story F-2) and whether every status was read live. */
+  level?: 'L1' | 'L2' | 'L3';
+  fresh?: boolean;
   /** OAuth callers: the token's `sub`. */
   oauthSubject?: string;
-  vpId?: string;
   toolName?: string;
   /** The scope that was required (on denial, the one that was missing). */
   requiredScope?: string;
@@ -61,7 +63,8 @@ export function createHelixAuditSink(options: HelixAuditSinkOptions): AuditSink 
         timestamp: e.timestamp,
         ...(e.agentDid ? { agentDid: e.agentDid } : {}),
         ...(serviceDid ? { serviceDid } : {}),
-        ...(e.vpId ? { vpId: e.vpId } : {}),
+        ...(e.level ? { level: e.level } : {}),
+        ...(e.fresh !== undefined ? { fresh: e.fresh } : {}),
         ...(e.toolName ? { toolName: e.toolName } : {}),
         ...(e.requiredScope ? { requiredScope: e.requiredScope } : {}),
         effectiveScopes: e.effectiveScopes,

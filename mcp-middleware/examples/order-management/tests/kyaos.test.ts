@@ -5,13 +5,15 @@
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildDIDDocument, encodeHelixVP, generateKeyPair, kyaos, type HelixClient, type SignedVP } from '@helixid/sdk-js';
+import { buildDIDDocument, generateKeyPair, kyaos, publicKeyToMultibase } from '@helixid/sdk-js';
 import { MemoryNonceStore, createKyaOs, type KyaOsRuntime } from '@helixid/mcp-middleware';
 import { createOrderServer } from '../src/app.js';
 import { createOrderStore } from '../src/orders.js';
 
 const SERVICE = 'did:web:orders.example';
-const AGENT = 'did:key:z6Mkagent';
+const agentKeys = generateKeyPair();
+const AGENT = `did:key:${publicKeyToMultibase(agentKeys.publicKey)}`;
+const agentSigner = new kyaos.EnvSigner({ did: AGENT, kid: AGENT.slice('did:key:'.length), envVar: 'AGENT_KEY', env: { AGENT_KEY: agentKeys.privateKey } });
 const keys = generateKeyPair();
 const document = buildDIDDocument(SERVICE, keys.publicKey);
 const resolveDid = async (did: string) => (did === SERVICE ? document : null);
@@ -20,12 +22,10 @@ const signer = new kyaos.EnvSigner({ did: SERVICE, envVar: 'SAMPLE_SERVICE_KEY',
 const TOKENS: Record<string, { sub: string; scopes: string[] }> = {
   reader: { sub: 'user-reader', scopes: ['orders:read'] },
 };
-const fakeClient = {
-  verifyVP: async (vp: { id: string }) =>
-    vp.id.startsWith('vp:ok')
-      ? { valid: true, agentDid: AGENT, privilegeScopes: ['orders:read'], effectiveScopes: ['orders:read'], vpId: vp.id, delegationChain: [] }
-      : { valid: false, agentDid: '', privilegeScopes: [], effectiveScopes: [], vpId: '', delegationChain: [], error: 'bad signature' },
-} as unknown as HelixClient;
+/** A request proof the agent mints now; with no chain and no card it identifies the agent and delegates nothing (story F-2). */
+const proofMeta = async (name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> => ({
+  'org.kya-os/request-proof': await kyaos.verifier.signRequestProof({ method: 'tools/call', params: { name, arguments: args } }, agentSigner, { audience: SERVICE, now: time }),
+});
 
 let server: Server;
 let base: string;
@@ -39,8 +39,8 @@ beforeEach(async () => {
     resource: 'http://localhost/mcp',
     store: createOrderStore(),
     auth: {
-      client: fakeClient,
       serviceDid: SERVICE,
+      verifier: { clock: () => time, reportVerification: () => undefined },
       validateOAuthToken: async (token) => {
         const found = TOKENS[token];
         if (!found) throw new Error('unknown token');
@@ -70,7 +70,6 @@ async function rpc(method: string, params: Record<string, unknown>, headers: Rec
 const callTool = (name: string, args: Record<string, unknown>, headers?: Record<string, string>, _meta?: Record<string, unknown>) =>
   rpc('tools/call', { name, arguments: args, ...(_meta ? { _meta } : {}) }, headers);
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
-const vpHeader = (id: string) => ({ authorization: `HelixVP ${encodeHelixVP({ id } as unknown as SignedVP)}` });
 const handshakeArgs = (extra: Record<string, unknown> = {}) => ({ nonce: kyaos.generateNonce(), audience: SERVICE, timestamp: Math.floor(time / 1000), ...extra });
 const proofOf = (body: { result: { _meta: Record<string, unknown> } }) => body.result._meta['org.kya-os/response-proof'] as kyaos.DetachedProof;
 
@@ -118,13 +117,20 @@ describe('order-management sample with KYA-OS', () => {
     expect((await callTool('_kyaos_handshake', handshakeArgs({ audience: 'http://localhost' }))).body.result.isError).toBeUndefined();
   });
 
-  it('makes the session authenticated when the handshake carries a good credential, and refuses a bad one', async () => {
-    const res = await callTool('_kyaos_handshake', handshakeArgs(), vpHeader('vp:ok-1'));
+  it('makes the session authenticated when the handshake carries a good request proof, and refuses a bad one', async () => {
+    const first = handshakeArgs();
+    const res = await callTool('_kyaos_handshake', first, {}, await proofMeta('_kyaos_handshake', first));
+    expect(res.status).toBe(200);
     const session = await runtime.sessionStore.get(res.body.result.structuredContent.sessionId, time);
     expect(session).toMatchObject({ agentDid: AGENT, identityState: 'authenticated' });
-    const bad = await callTool('_kyaos_handshake', handshakeArgs(), vpHeader('vp:bad'));
+    // The same proof again is a replayed nonce: refused before the handshake runs.
+    const second = handshakeArgs();
+    const stale = await proofMeta('_kyaos_handshake', second);
+    expect((await callTool('_kyaos_handshake', second, {}, stale)).status).toBe(200);
+    const bad = await callTool('_kyaos_handshake', second, {}, stale);
     expect(bad.status).toBe(401);
-    const other = await callTool('_kyaos_handshake', handshakeArgs({ agentDid: 'did:key:z6Mkother' }), vpHeader('vp:ok-2'));
+    const third = handshakeArgs({ agentDid: 'did:key:z6Mkother' });
+    const other = await callTool('_kyaos_handshake', third, {}, await proofMeta('_kyaos_handshake', third));
     expect(other.body.result.structuredContent.error).toBe('agent_did_mismatch');
   });
 
@@ -132,13 +138,14 @@ describe('order-management sample with KYA-OS', () => {
     const handshake = await callTool('_kyaos_handshake', handshakeArgs({ agentDid: AGENT }));
     const sessionId = handshake.body.result.structuredContent.sessionId as string;
     const args = { orderId: 'ORD-1001', _kyaos_session: sessionId };
-    // Unknown and reserved _meta keys are ignored (x-helix-vp is not among them: the credential extractor, retired separately, still reads it).
-    const meta = { traceparent: '00-1-2-01', 'io.modelcontextprotocol/trace': 'x', 'org.example/other': { deep: true } };
-    const res = await callTool('lookup_order', args, vpHeader('vp:ok-3'), meta);
+    // Unknown _meta keys are ignored; the retired x-helix-vp is one of them now.
+    const meta = { traceparent: '00-1-2-01', 'io.modelcontextprotocol/trace': 'x', 'org.example/other': { deep: true }, 'x-helix-vp': 'ignored' };
+    const res = await callTool('lookup_order', args, bearer('reader'), meta);
     expect(res.status).toBe(200);
     expect(JSON.parse(res.body.result.content[0].text)).toMatchObject({ id: 'ORD-1001' });
     const proof = proofOf(res.body);
     expect(proof.meta).toMatchObject({ did: SERVICE, sessionId, outcome: 'allowed', clientDid: AGENT, prf: 'org.kya-os/response-proof.envelope' });
+    expect(proof.meta.clientDid).toBe(AGENT);
     const verified = await kyaos.verifyResponseProof(res.body.result, SERVICE, resolveDid as never, {
       request: { method: 'tools/call', params: { name: 'lookup_order', arguments: args, _meta: meta } },
       now: time,
@@ -186,7 +193,7 @@ describe('order-management sample with KYA-OS', () => {
     expect(verified.outcome).toBe('denied');
     const anonymous = await callTool('lookup_order', { orderId: 'ORD-1001' });
     expect(anonymous.status).toBe(401);
-    expect((anonymous.body._meta['org.kya-os/response-proof'] as kyaos.DetachedProof).meta.reason).toBe('VP_MISSING');
+    expect((anonymous.body._meta['org.kya-os/response-proof'] as kyaos.DetachedProof).meta.reason).toBe('PROOF_MISSING');
   });
 
   it('refuses an unknown, expired or malformed session id with 400 and a denied proof', async () => {

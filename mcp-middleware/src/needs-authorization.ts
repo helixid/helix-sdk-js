@@ -157,7 +157,9 @@ export interface ChallengeInput extends ChallengeContext {
   authMethod?: ToolAuditEvent['authMethod'] | undefined;
   effectiveScopes?: string[] | undefined;
   oauthSubject?: string | undefined;
-  vpId?: string | undefined;
+  /** KYA-OS callers: the level the local verifier derived (story F-2) and whether every status was read live. */
+  level?: ToolAuditEvent['level'] | undefined;
+  fresh?: boolean | undefined;
 }
 
 export interface NeedsAuthorizationOptions {
@@ -253,10 +255,11 @@ export function createNeedsAuthorization(options: NeedsAuthorizationOptions): Ne
       event: 'AUTHZ_DENIED',
       result: 'denied',
       timestamp: new Date(now()).toISOString(),
-      authMethod: input.authMethod ?? 'helixvp',
+      authMethod: input.authMethod ?? 'kyaos',
       agentDid: input.agentDid,
       ...(input.oauthSubject !== undefined ? { oauthSubject: input.oauthSubject } : {}),
-      ...(input.vpId !== undefined ? { vpId: input.vpId } : {}),
+      ...(input.level !== undefined ? { level: input.level } : {}),
+      ...(input.fresh !== undefined ? { fresh: input.fresh } : {}),
       toolName: input.tool,
       requiredScope,
       effectiveScopes: input.effectiveScopes ?? [],

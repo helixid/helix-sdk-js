@@ -52,6 +52,7 @@ export async function challengeFor(
     authMethod: caller.authMethod,
     effectiveScopes: caller.scopes,
     oauthSubject: caller.oauthSubject,
-    vpId: caller.vpId,
+    level: caller.level,
+    fresh: caller.fresh,
   });
 }
