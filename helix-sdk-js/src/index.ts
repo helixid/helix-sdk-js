@@ -177,12 +177,12 @@ export {
 
 // KYA-OS story F-3: custody preference. `helix init` (self-custody onboarding),
 // HelixCustodialSigner (custodial agents sign through the API), the Signer the
-// agent runtime takes (VPBuilder.signWith), and the custody API client.
+// agent runtime takes (a request proof: kyaos.verifier.signRequestProof), and the custody API client.
 export * as custody from './core/custody/index.js';
 export { EnvSigner, HelixCustodialSigner, HelixCustodyClient, helixInit, activateAgent, checkOwnHosting, changeToSelfCustody, rotationProof } from './core/custody/index.js';
 export type { Signer, HelixInitOptions, HelixInitResult, HelixCustodialSignerOptions, KeyCustodyMode, DidHostingMode, CustodyLabel } from './core/custody/index.js';
 
 // KYA-OS (stories rule 24): canonical JSON hashing, EdDSA JWS and the Signer,
 // the session handshake and the client side of the detached response proof.
-// `InvalidJWSError` and `ResponseProofError` come with the errors above.
+// `InvalidJWSError`, `ResponseProofError` and `NeedsAuthorizationError` come with the errors above.
 export * as kyaos from './core/kyaos/index.js';

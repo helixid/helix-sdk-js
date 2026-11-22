@@ -67,36 +67,6 @@ export class VPBuilder {
     };
   }
 
-  /**
-   * KYA-OS story F-3: the same proof made through any Signer, an
-   * `EnvSigner` for a self-custody agent or a `HelixCustodialSigner` for a
-   * custodial one, so the code that presents a VP is identical in both
-   * custody modes. The signer must be the holder's.
-   */
-  async signWith(
-    signer: { readonly did: string; readonly kid: string; sign(data: Uint8Array): Promise<Uint8Array> },
-    overrides?: VPBuilderSignOverrides,
-  ): Promise<SignedVP> {
-    if (signer.did !== this.options.holderDid) {
-      throw new VPInvalidStructureError(`signer ${signer.did} is not the VP holder ${this.options.holderDid}`);
-    }
-    const payload = this.payload(overrides);
-    const signature = await signer.sign(hashCanonicalPayload(payload));
-    if (!(signature instanceof Uint8Array) || signature.length !== 64) {
-      throw new VPInvalidStructureError('signer did not return a 64-byte Ed25519 signature');
-    }
-    return {
-      ...payload,
-      proof: {
-        type: 'Ed25519Signature2020',
-        created: (overrides?.proofCreatedAt ?? new Date()).toISOString(),
-        verificationMethod: `${signer.did}#${signer.kid.replace(/^#/, '')}`,
-        proofPurpose: 'assertionMethod',
-        proofValue: base58btcEncode(signature),
-      },
-    };
-  }
-
   private payload(overrides?: VPBuilderSignOverrides): Omit<SignedVP, 'proof'> {
     const expiresAt = overrides?.expiresAt ?? new Date(Date.now() + 5 * 60 * 1000);
     return {

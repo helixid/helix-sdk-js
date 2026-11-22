@@ -26,11 +26,8 @@ import {
   type FetchLike,
   type Signer,
 } from '../../src/core/custody/index.js';
-import { VPBuilder } from '../../src/vp-builder.js';
 import { toPublicKeyJwk } from '../../src/core/agent-key.js';
-import { publicKeyToMultibase } from '../../src/core/keys.js';
-import { verifyEd25519Proof } from '../../src/core/proof.js';
-import type { SignedVC } from '../../src/core/schemas/vc.js';
+import * as kyaos from '../../src/core/kyaos/index.js';
 
 const FIXTURES_DIR = process.env['HELIX_CORE_FIXTURES_DIR'] ?? fileURLToPath(new URL('../../../../helix-core/fixtures', import.meta.url));
 const CUSTODY_FIXTURE = join(FIXTURES_DIR, 'kya-os-helix', 'custody.json');
@@ -246,34 +243,25 @@ describe('HelixCustodialSigner', () => {
   });
 });
 
-describe('the agent runtime takes any Signer (VPBuilder.signWith)', () => {
-  const credential = { id: 'vc:1', type: ['VerifiableCredential', 'HelixAgentCredential'], credentialSubject: { id: DID } } as unknown as SignedVC;
-  const fixed = { id: 'vp:helix:fixed', nonce: 'ab'.repeat(32), expiresAt: new Date('2026-11-21T00:05:00Z'), proofCreatedAt: new Date('2026-11-21T00:00:00Z') };
+describe('the agent runtime takes any Signer (a KYA-OS request proof)', () => {
+  const request = { method: 'tools/call', params: { name: 'lookup_order', arguments: { orderId: 'o-1' } } };
+  const options = { audience: 'did:web:orders.example', nonce: 'n-1', now: Date.parse('2026-11-23T00:00:00Z') };
 
   /** The application code: the same whichever custody mode the signer stands for. */
-  async function present(signer: Signer) {
-    return new VPBuilder({ credentials: [credential], holderDid: signer.did, targetService: 'orders' }).signWith(signer, fixed);
+  async function prove(signer: Signer) {
+    return kyaos.verifier.signRequestProof(request, signer, options);
   }
 
-  it('makes exactly the proof sign() makes, for a self-custody and a custodial signer alike', async () => {
-    const legacy = await new VPBuilder({ credentials: [credential], holderDid: DID, targetService: 'orders' }).sign(SEED_HEX, `${DID}#key-1`, fixed);
-    const viaEnv = await present(new EnvSigner({ did: DID, env: { HELIX_SIGNING_KEY: SEED_HEX } }));
-    expect(viaEnv).toEqual(legacy);
+  it('makes the same request proof for a self-custody and a custodial signer, and it verifies against the public key', async () => {
+    const viaEnv = await prove(new EnvSigner({ did: DID, env: { HELIX_SIGNING_KEY: SEED_HEX } }));
     const custodialApi = fakeApi({
       [`POST /v1/agents/${DID}/sign`]: (body) => ({ body: { did: DID, kid: `${DID}#key-1`, alg: 'EdDSA', signature: base64UrlEncode(ed25519.sign(base64UrlDecode(body['payload'] as string)!, seed)) } }),
     });
-    const viaHelix = await present(new HelixCustodialSigner({ apiUrl: 'https://h', did: DID, fetch: custodialApi.fetch }));
-    expect(viaHelix).toEqual(legacy);
-    const document = { id: DID, verificationMethod: [{ id: `${DID}#key-1`, type: 'Ed25519VerificationKey2020', controller: DID, publicKeyMultibase: publicKeyToMultibase(publicKeyHex) }] };
-    const { proof, ...payload } = viaHelix;
-    expect(await verifyEd25519Proof(payload as Record<string, unknown>, proof, document as never)).toBe(true);
-  });
-
-  it('refuses a signer that is not the holder, or that returns no signature', async () => {
-    const builder = new VPBuilder({ credentials: [credential], holderDid: DID, targetService: 'orders' });
-    await expect(builder.signWith(new EnvSigner({ did: 'did:web:other', env: { HELIX_SIGNING_KEY: SEED_HEX } }))).rejects.toThrow(/not the VP holder/);
-    await expect(builder.signWith({ did: DID, kid: 'key-1', sign: async () => new Uint8Array(3) })).rejects.toThrow(/64-byte/);
-    expect((await builder.signWith(new EnvSigner({ did: DID, kid: '#key-1', env: { HELIX_SIGNING_KEY: SEED_HEX } }))).proof.verificationMethod).toBe(`${DID}#key-1`);
+    const viaHelix = await prove(new HelixCustodialSigner({ apiUrl: 'https://h', did: DID, fetch: custodialApi.fetch }));
+    expect(viaHelix).toEqual(viaEnv);
+    expect(viaHelix.kid).toBe(`${DID}#key-1`);
+    expect(custodialApi.calls.map((call) => call.url)).toEqual([`https://h/v1/agents/${encodeURIComponent(DID)}/sign`]);
+    expect(kyaos.verifier.verifyDetachedJws(viaHelix, Buffer.from(publicKeyHex, 'hex'))).toBe(true);
   });
 });
 

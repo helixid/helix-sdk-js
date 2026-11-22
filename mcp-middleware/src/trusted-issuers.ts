@@ -9,13 +9,16 @@
  * restrictive default is a phase 4 discussion.
  */
 
+import { kyaos } from '@helixid/sdk-js';
 import { DEFAULT_TRUSTED_ISSUERS, type TrustedIssuers } from './credentials.js';
 
-/** Whether `issuerDid` may back a capability under `setting`. Pure: no I/O, no defaults beyond `'*'`. */
+/**
+ * Whether `issuerDid` may back a capability under `setting`. Pure: no I/O, no
+ * defaults beyond `'*'`. The local verifier's rule (`kyaos.verifier.isTrustedIssuer`,
+ * story F-2), so the middleware and the verifier never disagree.
+ */
 export function isTrustedIssuer(issuerDid: string, setting: TrustedIssuers = DEFAULT_TRUSTED_ISSUERS): boolean {
-  if (setting === '*') return true;
-  if (!Array.isArray(setting)) return false;
-  return typeof issuerDid === 'string' && setting.includes(issuerDid);
+  return kyaos.verifier.isTrustedIssuer(issuerDid, setting);
 }
 
 /** How a verifier reports an attestation from `issuerDid`: `verified` only when the issuer is trusted. */

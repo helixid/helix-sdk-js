@@ -9,7 +9,8 @@ A small MCP server with two tools behind `@helixid/mcp-middleware`:
 
 Any other tool name is denied before it runs. Callers come through either door:
 
-- **HelixID agents**: a signed VP in `Authorization: HelixVP <vp>` (or legacy `X-Helix-VP`, or MCP `params._meta["x-helix-vp"]`).
+- **KYA-OS agents**: a request proof in MCP `params._meta["org.kya-os/request-proof"]` and its delegation chain in
+  `params._meta["org.kya-os/delegation-chain"]`, verified in-process (story F-2): the Helix API is never on the request path.
 - **Standard MCP OAuth 2.1 clients**: `Authorization: Bearer <token>`, discovered through the RFC 9728 metadata at
   `/.well-known/oauth-protected-resource/mcp`.
 
@@ -48,25 +49,25 @@ curl "${H[@]}" -H 'authorization: Bearer demo-admin' $MCP -d '{"jsonrpc":"2.0","
 
 Orders live in memory (`ORD-1001`, `ORD-1002`) and reset on restart.
 
-## With HelixID: verify agent VPs and write the audit log
+## With HelixID: KYA-OS agents, verified locally
 
-Point the server at a HelixID API **you run locally** (for example `helix-server-enterprise` on port 3580, the port the
-console's dev proxy expects) and give it an account API key (`hak_…`) from that instance:
+Set `SERVICE_DID` to this server's DID and every tool call that carries a request proof is verified in-process
+(`createLocalVerifier` from `@helixid/mcp-middleware`): the proof's signature, audience (`SERVICE_DID`), request hash,
+lifetime and nonce; the carried chain's length (bounded before any entry is parsed), each hop's `eddsa-jcs-2022` proof by
+its own issuer, attenuation and status; the agent's Entity Card and its capability attestations. Only public DID
+documents, status lists and cards are fetched (https only), so calls are authorised with the Helix API unreachable.
 
 ```bash
-HELIX_API_URL=http://localhost:3580 \
-HELIX_API_KEY=hak_... \
-SERVICE_DID=did:web:orders.example \
-DEMO_MODE=1 \
-pnpm --filter @helixid/example-mcp-order-management start
+SERVICE_DID=did:web:orders.example pnpm --filter @helixid/example-mcp-order-management start
 ```
 
-- VPs are verified by that API (`POST /v1/vp/verify`): signature, delegation chain, expiry, target service and revocation.
-  `SERVICE_DID` rejects VPs signed for any other service.
-- Each decision is posted to `POST /v1/audit-log/events` and shows up under **Audit** in the console, with the agent DID or
-  the OAuth subject, the tool, and the scope that was missing on a denial.
-- `HELIX_API_URL` is required whenever `HELIX_API_KEY` is set. The SDK's `HelixClient` given only a key talks to the hosted
-  production API, so this sample refuses to start rather than fall back to it.
+- A caller's scopes are its verified attestations, intersected with the leaf hop's `allowedAction` and the tool scopes
+  here (`orders:read`, `orders:admin`). A refused proof answers 401 with the verifier's reason codes.
+- `KYAOS_TRUSTED_ISSUERS` (default `*`), `KYAOS_TRUSTED_ROOTS`, `KYAOS_MAX_CHAIN_LENGTH` (default 10) and
+  `KYAOS_CARDS_FILE` (agent DID to Entity Card, read before the card is fetched) tune the verifier;
+  `KYAOS_ALLOW_LOOPBACK_HTTP=1` reads loopback documents over http in development.
+- `HELIX_API_URL` + `HELIX_API_KEY` turn on the audit sink (`POST /v1/audit-log/events`); nothing else talks to the API.
+  `HELIX_API_URL` is required whenever `HELIX_API_KEY` is set, so the sink never falls back to the hosted production API.
 
 ## With a real authorization server
 
@@ -115,8 +116,8 @@ The gate runs at the HTTP layer, in front of the MCP transport, and only for `to
    what makes an MCP OAuth client start discovery; a tool-level error would not.
 3. Otherwise hand the request to a stateless `StreamableHTTPServerTransport`.
 
-`initialize` and `tools/list` are not gated, so HelixID clients that carry the VP in `params._meta` keep working and a VP
-is verified once per tool call. The tools themselves (`src/orders.ts`) contain no auth code.
+`initialize` and `tools/list` are not gated. A KYA-OS proof is verified once per tool call, over the JSON-RPC request as
+received. The tools themselves (`src/orders.ts`) contain no auth code.
 
 ## Configuration
 
@@ -124,14 +125,19 @@ is verified once per tool call. The tools themselves (`src/orders.ts`) contain n
 |---|---|---|
 | `PORT`, `HOST` | `3700`, `127.0.0.1` | Listen address |
 | `MCP_RESOURCE` | `http://localhost:$PORT/mcp` | Public URL of the MCP endpoint; the OAuth audience |
-| `HELIX_API_URL` | none | HelixID API for VP verification and audit |
+| `HELIX_API_URL` | none | HelixID API the audit sink writes to |
 | `HELIX_API_KEY` | none | Account API key; enables the audit sink |
-| `SERVICE_DID` | none | This server's DID |
+| `SERVICE_DID` | none | This server's DID: turns on in-process KYA-OS verification (proof audience and chain resource) |
+| `KYAOS_TRUSTED_ISSUERS`, `KYAOS_TRUSTED_ROOTS` | `*`, any | Attestation issuers and root-hop issuers the verifier trusts (comma-separated DIDs) |
+| `KYAOS_MAX_CHAIN_LENGTH` | `10` | Longest carried chain read |
+| `KYAOS_CARDS_FILE` | none | JSON map of agent DID to Entity Card |
 | `OAUTH_ISSUER` | none | One authorization server; its keys are read from its metadata |
 | `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` | none | With `OAUTH_ISSUER`: check tokens by RFC 7662 introspection (opaque tokens) |
 | `OAUTH_JWKS_URI`, `OAUTH_INTROSPECTION_URL` | from metadata | Give the endpoints explicitly and skip discovery |
 | `OAUTH_ISSUERS` | none | JSON array of trusted tenants: provider presets (`entra`, `auth0`, `okta`, `keycloak`) or `{ issuer, ... }` |
 | `DEMO_MODE` | off | `1` accepts `demo-reader` / `demo-admin`; loopback only |
+| `WELL_KNOWN_MCP` | on | KYA-OS discovery at `/.well-known/mcp`; `0` answers 404, `1` makes an unusable `SERVICE_DID` a startup error |
+| `STATUS_LIST_CREDENTIAL` | none | URL of this server's status list credential, advertised in the discovery document |
 
 ## KYA-OS session and response proof (story L2-A)
 
@@ -144,3 +150,17 @@ curl -s localhost:3700/mcp -H 'content-type: application/json' -H 'accept: appli
 # a call in that session: the result carries the proof
 curl -s localhost:3700/mcp -H 'authorization: Bearer demo-reader' -H 'content-type: application/json' -H 'accept: application/json' -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"lookup_order","arguments":{"orderId":"ORD-1001","_kyaos_session":"kyaos_<from the handshake>"}}}'
 ```
+
+## KYA-OS `needs_authorization` and resume (story L3-E)
+
+Set `KYAOS_AUTHORIZATION_URL` (the consent page) and a caller whose scopes do not cover a tool gets the signed `needs_authorization` challenge as the call's result instead of a 403, with a resume token bound to the agent, tool and scopes (`KYAOS_RESUME_TTL_SECONDS`, default 600; the token store follows `KYAOS_NONCE_STORE`: Redis on `KYAOS_REDIS_URL` when the replay store is Redis, memory otherwise). The retry carries `_kyaos_resume` and the DelegationCredential as `_kyaos_delegation`. In `DEMO_MODE` the bearers `demo-agent` and `demo-agent-2` are agents with a DID and `orders:read` only, and the retry's credential is checked structurally by `src/demo-authorizer.ts` (invoker, invocationTarget, allowedAction, validUntil, a `proof` present; no signature verification, which stories F-2 and L3-H bring); outside demo mode every retry is refused until a verifier is wired in. `AUDIT_LOG_FILE` appends every audit event as a JSON line, which is how the e2e suite sees the challenges without a HelixID stack.
+
+## Discovery at `/.well-known/mcp` (story L1-D)
+
+Whenever `SERVICE_DID` is a `did:web` or `did:key`, the server answers `GET /.well-known/mcp` with the KYA-OS discovery document: the DID, `endpoints.tools` at `KYAOS_PUBLIC_ORIGIN` (default: the origin of `MCP_RESOURCE`), `endpoints.handshake` while the KYA-OS layer runs with sessions, `clockSkewSeconds` (the handshake's), `capabilities` (`proofs` true with `SERVICE_SIGNING_KEY`; the rest false, nothing else is on in this sample) and, with `STATUS_LIST_CREDENTIAL`, that URL. The document is validated against the schema at startup; `WELL_KNOWN_MCP=0` turns the route off (404). Behind a proxy, forward `/.well-known/mcp` at the origin root to this process and set `KYAOS_PUBLIC_ORIGIN` (see `mcp-middleware/docs/well-known.md`).
+
+```bash
+curl -s localhost:3700/.well-known/mcp | jq .
+```
+
+A `SERVICE_DID` of another method (a `did:hedera` from a Helix stack, say) cannot be the document's `serverDid`, so the route stays off and the startup line says why.
