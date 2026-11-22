@@ -29,7 +29,7 @@ Every proof is checked in the exact SPEC-ENTITY-CARD §11.2 order, stopping at t
 - **Level**: derived per §9.4 (`deriveConformanceLevel(check, proofFloor, revocationFresh)`) from the attested capabilities, the proof floor and whether every status was read live; the card's own `conformanceLevel` is never read.
 - **Minimum level**: `minimumLevel` (default `L3`) for every tool, `tools[name].minimumLevel` per tool, and `l3MinusSatisfiesL3` (default `true`). Scopes are checked first, the level after. A call below the tool's minimum is a `LevelError` (`PROOF_LEVEL_INSUFFICIENT`, 401 `insufficient_user_authentication`) carrying `derivedLevel` (`L1`, `L2`, `L3-minus`, `L3`) and `requiredLevel`. OAuth-only callers carry no level and are not checked.
 - **A chain without a proof** is verified in full (signatures, attenuation, revocation, card) with the leaf delegate as the unproven agent; the proof floor does not hold, so it comes to `L2` at most and is accepted only where a tool's minimum allows it.
-- **Audit**: each event records `level`, `fresh`, `proofAssurance`, `l3Minus`, any `cnfDiagnostics`, and on a level refusal `requiredLevel`; `reportVerification` gets `proofFloor`, `l3Minus` and `cnfDiagnostics` too.
+- **Audit**: the in-process `ToolAuditEvent` given to `auditSink` carries `level`, `fresh`, `proofAssurance`, `l3Minus`, any `cnfDiagnostics`, and on a level refusal `requiredLevel`; `reportVerification` gets `proofFloor`, `l3Minus` and `cnfDiagnostics` too. In the typed events (`McpAuditTrail.toolAuditSink()`) they enter only as the `proof.verified` verification code, `KYAOS_PROOF_<L1|L2|L3|L3_MINUS>[_CACHED][_CNF_UNFUSED]`, and a level refusal is `authorization.denied` with reason `proof_level_insufficient`.
 
 ```ts
 const requireHelix = helixidMCPMiddleware({
@@ -102,6 +102,31 @@ Introspection needs this server's own client credentials at the authorization se
 OAuth: a JWT is routed to its issuer by the (unverified) `iss` claim and verified there, so an issuer not in the list is refused with no network call; a token that is not a JWT is opaque and names no issuer, so it goes to the one issuer configured for introspection. Only one issuer may be (construction throws otherwise): with two, every opaque token would have to be shown to both. An issuer with both `jwksUri` and `introspection` verifies JWTs by its keys alone unless `introspectJwts: true`, which also asks the issuer, so a revoked JWT is refused before it expires. `requireAccessTokenType: true` on an issuer refuses JWTs whose header `typ` is not `at+jwt` (RFC 9068). An authorization server that cannot be reached throws `AuthorizationServerUnavailableError`, which `toHttpErrorResponse` leaves unmapped: answer 5xx, never 401, because the caller's token was not shown to be bad. A 403 for a missing scope names it in the challenge (`scope="orders:admin"`, RFC 6750) so a client can request that scope and retry.
 
 Audit: every decision about an identified caller (KYA-OS agent or OAuth subject) is passed to `auditSink` and awaited before the tool runs. Unidentified callers are not logged, and a failing sink never blocks a call. OAuth callers have no agent DID, so set `serviceDid`.
+
+Since KYA-OS story A-1 the audit log holds typed producer events (AAP-1 Recorded). `createHelixAuditSink` keeps its call shape and now records each decision as typed events: a KYA-OS caller (story F-2) as `proof.verified` (verification code `KYAOS_PROOF_<level>`, with `_CACHED` when a status was not read live) then `authorization.approved` / `authorization.denied`, a request proof the local verifier refused as `proof.rejected` by its first reason code, an OAuth caller as the authorization event alone; each strictly validated (an unknown member is refused), sequenced per source with `previousSourceEventDigest`, digested, and posted to `POST /v1/audit-log/events`. For the full lifecycle of a tool call (`session.established`, then `tool.call.started` / `completed` / `failed` / `denied` under one correlation id) build an `McpAuditTrail` with `createMcpAuditTrail({ reporter: createHelixAuditReporter({ baseUrl, apiKey }), serviceDid })`, pass `audit.toolAuditSink()` as `auditSink`, and wrap each call in `audit.beginToolCall({ toolName }).run(...)`, as `examples/order-management` does. No event ever holds tool arguments, a response, a bearer token or a credential; an OAuth subject is recorded as a keyed commitment; tool names are withheld unless `includeToolNames` is set.
+
+## Audit delivery to the recorder (KYA-OS A-2, AAP-2 Chained)
+
+Audit events go to the HelixID recorder (`POST /v1/audit/submissions`), which
+assigns sequence, epoch, predecessor and time and signs a receipt. The server
+never chooses any of those.
+
+```ts
+const audit = createMcpAuditTrail({
+  reporter: createHelixAuditDelivery({ baseUrl, apiKey, delivery: 'required' }),
+  serviceDid,
+});
+const call = audit.beginToolCall({ toolName });
+auditToolHandlers(server, call); // before the tools are registered
+```
+
+| `delivery` | What it means |
+|---|---|
+| `required` (default) | The intent's signed receipt is obtained before the handler runs; if it cannot be, the call answers `audit_delivery_failed` and the handler does not run. If the terminal append fails after the handler ran, the result is marked `_meta["org.kya-os/audit"] = { status: "degraded", reason }` with `isError`. |
+| `buffered` | Events go to a durable outbox (`outboxDir`) keyed by `(sourceId, eventId)` and are delivered in the background, in order per source; the outbox survives a restart. An ephemeral outbox is refused at startup. |
+| `best-effort` | Refused unless `acceptAap1: true`: delivery is attempted and failures are only reported (AAP-1, capture only). |
+
+The order-management sample reads `AUDIT_DELIVERY`, `AUDIT_OUTBOX_DIR` and `AUDIT_ACCEPT_AAP1`.
 
 ## KYA-OS session, replay store and response proof (story L2-A)
 

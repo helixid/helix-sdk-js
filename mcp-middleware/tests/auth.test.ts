@@ -310,7 +310,7 @@ describe('audit', () => {
     expect(onAuditError).toHaveBeenCalledTimes(1);
   });
 
-  it('createHelixAuditSink posts to /v1/audit-log/events with the account key', async () => {
+  it('createHelixAuditSink posts typed events to /v1/audit-log/events with the account key', async () => {
     const f = vi.fn(async () => new Response('{}', { status: 201 }));
     const sink = createHelixAuditSink({
       baseUrl: 'http://localhost:3680/',
@@ -322,49 +322,61 @@ describe('audit', () => {
       event: 'AUTHZ_DENIED', result: 'denied', timestamp: '2026-01-01T00:00:00.000Z', authMethod: 'oauth',
       oauthSubject: 'user-9', toolName: 't', requiredScope: 'read', effectiveScopes: [],
     });
+    expect(f).toHaveBeenCalledTimes(1);
     const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('http://localhost:3680/v1/audit-log/events');
     expect((init.headers as Record<string, string>)['authorization']).toBe('Bearer hak_test');
-    expect(JSON.parse(init.body as string)).toMatchObject({
-      event: 'AUTHZ_DENIED', serviceDid: 'did:web:svc', toolName: 't', requiredScope: 'read',
-      result: 'denied', oauthSubject: 'user-9', source: 'mcp-middleware',
+    const body = JSON.parse(init.body as string);
+    expect(body).toMatchObject({
+      eventType: 'authorization.denied',
+      binding: 'urn:kya-os:audit-binding:mcp:2025-11-25',
+      outcome: 'denied',
+      reason: { code: 'insufficient_scope' },
+      resource: { kind: 'public_did', did: 'did:web:svc' },
+      source: { producer: { kind: 'pairwise_did', did: 'did:web:svc' }, sourceId: 'mcp-middleware:did:web:svc' },
+      actor: { kind: 'keyed_commitment', keyId: 'oauth-subject-v1' },
+      authorization: { source: 'policy', decision: 'denied', scopeId: 'read' },
+      details: { family: 'authorization', phase: 'denied' },
     });
-    // The subject goes only in oauthSubject, never in a field every viewer sees.
-    expect(JSON.parse(init.body as string)).not.toHaveProperty('resultSummary');
+    // The subject never enters an event; the tool name is withheld by default.
+    expect(init.body as string).not.toContain('user-9');
+    expect(body.action).toEqual({ category: 'authorization' });
   });
 
-  it('createHelixAuditSink posts a KYA-OS caller with its agent DID, level and freshness, and refuses an error answer', async () => {
+  it('createHelixAuditSink needs the server DID to name a producer', () => {
+    expect(() => createHelixAuditSink({ baseUrl: 'http://localhost:1', apiKey: 'k', fetch: vi.fn() as unknown as typeof fetch })).toThrow(/serviceDid/);
+  });
+
+  it('createHelixAuditSink records a KYA-OS caller as proof.verified at its level, then the decision (story F-2)', async () => {
     const f = vi.fn(async () => new Response('{}', { status: 201 }));
-    const sink = createHelixAuditSink({ baseUrl: 'http://localhost:3680', apiKey: 'hak_test', fetch: f as unknown as typeof fetch });
+    const sink = createHelixAuditSink({ baseUrl: 'http://localhost:3680', apiKey: 'hak_test', serviceDid: 'did:web:svc', fetch: f as unknown as typeof fetch });
     await sink({
       event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: '2026-01-01T00:00:00.000Z', authMethod: 'kyaos',
-      agentDid: 'did:key:z6Mkagent', level: 'L3', fresh: false, effectiveScopes: ['orders:read'], reason: 'ok',
+      agentDid: 'did:key:z6Mkagent', level: 'L3', fresh: false, effectiveScopes: ['orders:read'],
     });
-    const body = JSON.parse((f.mock.calls[0] as unknown as [string, RequestInit])[1].body as string);
-    expect(body).toMatchObject({ agentDid: 'did:key:z6Mkagent', level: 'L3', fresh: false, effectiveScopes: ['orders:read'], reason: 'ok' });
-    expect(body).not.toHaveProperty('serviceDid');
-    const failing = createHelixAuditSink({ baseUrl: 'http://localhost:1', apiKey: 'k', fetch: (async () => new Response('', { status: 500 })) as unknown as typeof fetch });
-    await expect(failing({ event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: 't', authMethod: 'kyaos', agentDid: 'did:key:z6Mk', effectiveScopes: [] })).rejects.toThrow('500');
+    const bodies = f.mock.calls.map((call) => JSON.parse((call as unknown as [string, RequestInit])[1].body as string));
+    expect(bodies.map((b) => b.eventType)).toEqual(['proof.verified', 'authorization.approved']);
+    expect(bodies[0]).toMatchObject({ actor: { kind: 'pairwise_did', did: 'did:key:z6Mkagent' }, details: { verificationCode: 'KYAOS_PROOF_L3_CACHED' } });
+    expect(bodies[1]).toMatchObject({ authorization: { source: 'delegation', decision: 'allowed' } });
   });
 
-  it('createHelixAuditSink posts the story C-C level diagnostics: assurance, L3-minus, cnf diagnostics, required level', async () => {
+  it('createHelixAuditSink carries the story C-C L3-minus and cnf diagnostic in the verification code, and a level refusal as its own reason', async () => {
     const f = vi.fn(async () => new Response('{}', { status: 201 }));
-    const sink = createHelixAuditSink({ baseUrl: 'http://localhost:3680', apiKey: 'hak_test', fetch: f as unknown as typeof fetch });
+    const sink = createHelixAuditSink({ baseUrl: 'http://localhost:3680', apiKey: 'hak_test', serviceDid: 'did:web:svc', fetch: f as unknown as typeof fetch });
     await sink({
-      event: 'AUTHZ_DENIED', result: 'denied', timestamp: 't', authMethod: 'kyaos', agentDid: 'did:key:z6Mkagent', level: 'L3',
-      proofAssurance: 'L3-minus', l3Minus: true, cnfDiagnostics: ['cnf_present_but_token_unfused'], requiredLevel: 'L3', effectiveScopes: [],
+      event: 'AUTHZ_DENIED', result: 'denied', timestamp: 't', authMethod: 'kyaos', agentDid: 'did:key:z6Mkagent', level: 'L3', fresh: true,
+      proofAssurance: 'L3-minus', l3Minus: true, cnfDiagnostics: ['cnf_present_but_token_unfused'], requiredLevel: 'L3',
+      reason: 'level_insufficient: L3-minus < L3', effectiveScopes: [],
     });
-    await sink({ event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: 't', authMethod: 'kyaos', agentDid: 'did:key:z6Mkagent', cnfDiagnostics: [], effectiveScopes: [] });
-    const [first, second] = f.mock.calls.map((call) => JSON.parse((call as unknown as [string, RequestInit])[1].body as string));
-    expect(first).toMatchObject({ proofAssurance: 'L3-minus', l3Minus: true, cnfDiagnostics: ['cnf_present_but_token_unfused'], requiredLevel: 'L3' });
-    expect(second).not.toHaveProperty('cnfDiagnostics');
-    expect(second).not.toHaveProperty('proofAssurance');
-  });
-
-  it('createHelixAuditSink refuses an event with no agentDid and no serviceDid', async () => {
-    const sink = createHelixAuditSink({ baseUrl: 'http://localhost:1', apiKey: 'k', fetch: vi.fn() as unknown as typeof fetch });
-    await expect(
-      sink({ event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: 't', authMethod: 'oauth', effectiveScopes: [] }),
-    ).rejects.toThrow(/serviceDid/);
+    await sink({ event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: 't', authMethod: 'kyaos', agentDid: 'did:key:z6Mkagent', level: 'L3', proofAssurance: 'L3', cnfDiagnostics: [], effectiveScopes: [] });
+    await sink({ event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: 't', authMethod: 'kyaos', agentDid: 'did:key:z6Mkagent', level: 'L3', proofAssurance: 'L3-minus', fresh: false, effectiveScopes: [] });
+    const bodies = f.mock.calls.map((call) => JSON.parse((call as unknown as [string, RequestInit])[1].body as string));
+    expect(bodies.map((b) => b.eventType)).toEqual(['proof.verified', 'authorization.denied', 'proof.verified', 'authorization.approved', 'proof.verified', 'authorization.approved']);
+    expect(bodies[0].details.verificationCode).toBe('KYAOS_PROOF_L3_MINUS_CNF_UNFUSED');
+    expect(bodies[1]).toMatchObject({ reason: { code: 'proof_level_insufficient' }, authorization: { source: 'delegation', decision: 'denied' } });
+    expect(bodies[2].details.verificationCode).toBe('KYAOS_PROOF_L3');
+    expect(bodies[4].details.verificationCode).toBe('KYAOS_PROOF_L3_MINUS_CACHED');
+    // A-1's strict events hold no C-C member of their own.
+    for (const body of bodies) for (const key of ['proofAssurance', 'l3Minus', 'cnfDiagnostics', 'requiredLevel']) expect(JSON.stringify(body)).not.toContain(key);
   });
 });
