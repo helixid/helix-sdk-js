@@ -165,3 +165,23 @@ const result = await started.finish(await handler(started.arguments)); // the re
 - **Self-custody and cross-border**: the service `Signer` is the only thing that touches the private key (the middleware hands it bytes and takes back a signature); the verify path reads the nonce store and local config only, never a Helix database.
 
 The sample in `examples/order-management` wires all of this (`SERVICE_SIGNING_KEY`, `KYAOS_*` variables); its README has the details.
+
+## KYA-OS signed `needs_authorization` and resume (story L3-E)
+
+When a caller is identified but its delegation does not cover the tool's scopes, the guard answers with the SPEC §9.2 challenge instead of a plain 403: `{error: "needs_authorization", message, authorizationUrl, resumeToken, expiresAt, scopes, display?}`. Under the KYA-OS runtime the challenge is the call's tool result (`isError`, the challenge as text and as `structuredContent`) signed with `outcome: needs_authorization` and a `responseHash` over the whole result, so `authorizationUrl` is covered by the service signature; the SDK (`kyaos.handleNeedsAuthorization`) recomputes that hash before surfacing the URL and refuses a swapped one with `response_hash_mismatch`.
+
+```ts
+import { createNeedsAuthorization, helixidMCPMiddleware } from '@helixid/mcp-middleware';
+
+const needsAuthorization = createNeedsAuthorization({
+  authorizationUrl: (c) => `https://consent.example/authorize?agent=${c.agentDid}&tool=${c.tool}`,
+  ttlSeconds: 600,                                   // resume-token lifetime
+  // store: default follows KYAOS_NONCE_STORE (Redis on KYAOS_REDIS_URL when the replay store is Redis, else memory)
+  authorizer: verifyDelegation,                      // the seam stories F-2 and L3-H implement; default refuses every retry
+  auditSink,                                         // every challenge is an AUTHZ_DENIED event with reason "needs_authorization"
+});
+await needsAuthorization.ready();                   // a Redis store loads ioredis in the background, like the replay store
+const guard = helixidMCPMiddleware({ ...options, needsAuthorization });
+```
+
+`resumeToken` is opaque (32 random bytes), bound to the agent, the tool and the scopes asked for, single-use and gone at `expiresAt` (`ResumeTokenStore`: `MemoryResumeTokenStore`, `RedisResumeTokenStore` with `SET NX PX` / `GETDEL`; `resumeTokenStoreFromEnv` picks one from L2-A's `KYAOS_NONCE_STORE`, key prefix `KYAOS_RESUME_KEY_PREFIX`). A retry carries it as the `_kyaos_resume` control argument and the new DelegationCredential as `_kyaos_delegation` (both stripped before the tool, never hashed); the guard consumes the token, checks the binding (`resume_token_unknown`, `resume_token_agent_mismatch`, `resume_token_tool_mismatch`, `resume_token_scope_mismatch`, `delegation_missing`), hands the credential to the `authorizer`, and only then runs the usual scope check with what the credential grants. Completing consent alone never authorises the call. Without the KYA-OS runtime `toHttpErrorResponse` answers the challenge as an unsigned 403 whose body is the challenge. The store is local state next to the nonce store, never a Helix database (cross-border rule).

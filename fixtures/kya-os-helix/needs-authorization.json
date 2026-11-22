@@ -1,0 +1,941 @@
+{
+  "description": "KYA-OS story L3-E: signed needs_authorization challenges as the middleware answers them, verified with handleNeedsAuthorization at `now` against the service DID document; `retry` is withResume(call, resumeToken, hop).",
+  "service": {
+    "did": "did:web:orders.example",
+    "publicKeyHex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+    "didDocument": {
+      "@context": [
+        "https://www.w3.org/ns/did/v1",
+        "https://w3id.org/security/suites/ed25519-2020/v1"
+      ],
+      "id": "did:web:orders.example",
+      "controller": "did:web:orders.example",
+      "verificationMethod": [
+        {
+          "id": "did:web:orders.example#key-1",
+          "type": "Ed25519VerificationKey2020",
+          "controller": "did:web:orders.example",
+          "publicKeyMultibase": "z6Mkon3Necd6NkkyfoGoHxid2znGc59LU3K7mubaRcFbLfLX"
+        }
+      ],
+      "authentication": [
+        "did:web:orders.example#key-1"
+      ],
+      "assertionMethod": [
+        "did:web:orders.example#key-1"
+      ]
+    }
+  },
+  "now": 1750000000000,
+  "request": {
+    "method": "tools/call",
+    "params": {
+      "name": "refund_order",
+      "arguments": {
+        "orderId": "ORD-1001",
+        "reason": "damaged"
+      },
+      "_meta": {
+        "traceparent": "t"
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "valid",
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"needs_authorization\",\"message\":\"refund_order requires delegation with scope: orders:admin\",\"authorizationUrl\":\"https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin\",\"resumeToken\":\"uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw\",\"expiresAt\":1750000600,\"scopes\":[\"orders:admin\"],\"display\":{\"title\":\"Orders\",\"hint\":[\"link\"]}}"
+          }
+        ],
+        "structuredContent": {
+          "error": "needs_authorization",
+          "message": "refund_order requires delegation with scope: orders:admin",
+          "authorizationUrl": "https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin",
+          "resumeToken": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+          "expiresAt": 1750000600,
+          "scopes": [
+            "orders:admin"
+          ],
+          "display": {
+            "title": "Orders",
+            "hint": [
+              "link"
+            ]
+          }
+        },
+        "_meta": {
+          "org.kya-os/response-proof": {
+            "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUja2V5LTEifQ.eyJhdWQiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwiY2xpZW50RGlkIjoiZGlkOmtleTp6Nk1rYWdlbnQiLCJpc3MiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwibm9uY2UiOiJiNlZabW05aFhuLW90T0VUQmt2bHZRIiwib3V0Y29tZSI6Im5lZWRzX2F1dGhvcml6YXRpb24iLCJwcmYiOiJvcmcua3lhLW9zL3Jlc3BvbnNlLXByb29mLmVudmVsb3BlIiwicmVhc29uIjoicmVxdWlyZXMgZGVsZWdhdGlvbiB3aXRoIHNjb3BlOiBvcmRlcnM6YWRtaW4iLCJyZXF1ZXN0SGFzaCI6InNoYTI1NjphYWU3OTg2MjY3NGU0NzliOWVkMGY2Zjg0MTQ3MWVmNDg1YzhmMWM1ZTY2NzQzNjIyOTM5NGY0ZDYwMGUzNjMzIiwicmVzcG9uc2VIYXNoIjoic2hhMjU2OmVjNzQyZmYyNDhhMWY4OTk0ZWFhMDU2ZWEzZmNhZGUwN2U0NmJjNjU3MWMyYjEwYTEyMGNhMDE3M2VlYmFkOTEiLCJzZXNzaW9uSWQiOiJub25lIiwic3ViIjoiZGlkOndlYjpvcmRlcnMuZXhhbXBsZSIsInRzIjoxNzUwMDAwMDAwfQ.c4RmUxQkBiOeltqBFcZzEeLapC5vU6Fc980l27JO2eWTo4cKsGuMYYVDB8TETh7eBVRBQurwb5enj9O-GA5zBA",
+            "meta": {
+              "did": "did:web:orders.example",
+              "kid": "did:web:orders.example#key-1",
+              "ts": 1750000000,
+              "nonce": "b6VZmm9hXn-otOETBkvlvQ",
+              "audience": "did:web:orders.example",
+              "sessionId": "none",
+              "requestHash": "sha256:aae79862674e479b9ed0f6f841471ef485c8f1c5e667436229394f4d600e3633",
+              "responseHash": "sha256:ec742ff248a1f8994eaa056ea3fcade07e46bc6571c2b10a120ca0173eebad91",
+              "outcome": "needs_authorization",
+              "reason": "requires delegation with scope: orders:admin",
+              "clientDid": "did:key:z6Mkagent",
+              "prf": "org.kya-os/response-proof.envelope"
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": true,
+        "challenge": {
+          "error": "needs_authorization",
+          "message": "refund_order requires delegation with scope: orders:admin",
+          "authorizationUrl": "https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin",
+          "resumeToken": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+          "expiresAt": 1750000600,
+          "scopes": [
+            "orders:admin"
+          ],
+          "display": {
+            "title": "Orders",
+            "hint": [
+              "link"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "valid_top_level",
+      "response": {
+        "error": "needs_authorization",
+        "message": "refund_order requires delegation with scope: orders:admin",
+        "authorizationUrl": "https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin",
+        "resumeToken": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+        "expiresAt": 1750000600,
+        "scopes": [
+          "orders:admin"
+        ],
+        "display": {
+          "title": "Orders",
+          "hint": [
+            "link"
+          ]
+        },
+        "_meta": {
+          "org.kya-os/response-proof": {
+            "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUja2V5LTEifQ.eyJhdWQiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwiY2xpZW50RGlkIjoiZGlkOmtleTp6Nk1rYWdlbnQiLCJpc3MiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwibm9uY2UiOiJiNlZabW05aFhuLW90T0VUQmt2bHZRIiwib3V0Y29tZSI6Im5lZWRzX2F1dGhvcml6YXRpb24iLCJwcmYiOiJvcmcua3lhLW9zL3Jlc3BvbnNlLXByb29mLmVudmVsb3BlIiwicmVxdWVzdEhhc2giOiJzaGEyNTY6YWFlNzk4NjI2NzRlNDc5YjllZDBmNmY4NDE0NzFlZjQ4NWM4ZjFjNWU2Njc0MzYyMjkzOTRmNGQ2MDBlMzYzMyIsInJlc3BvbnNlSGFzaCI6InNoYTI1Njo2ZmJmMDQ5OTM3N2Y0M2YxY2VhMDViZmY3OTVjNDAwOGM1YjJkNjQ2YzUxMTcxOGYwMThlYjc3YWFiMjRmMGM0Iiwic2Vzc2lvbklkIjoibm9uZSIsInN1YiI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUiLCJ0cyI6MTc1MDAwMDAwMH0.k9wfIFHyLcj4mkDJTxeZrqBf5kCzr9VzHQr_JWf6OajNWcY0Tapi7KeCtzdG8jvPWjdtz8zRANeOVNrAkdqYAQ",
+            "meta": {
+              "did": "did:web:orders.example",
+              "kid": "did:web:orders.example#key-1",
+              "ts": 1750000000,
+              "nonce": "b6VZmm9hXn-otOETBkvlvQ",
+              "audience": "did:web:orders.example",
+              "sessionId": "none",
+              "requestHash": "sha256:aae79862674e479b9ed0f6f841471ef485c8f1c5e667436229394f4d600e3633",
+              "responseHash": "sha256:6fbf0499377f43f1cea05bff795c4008c5b2d646c511718f018eb77aab24f0c4",
+              "outcome": "needs_authorization",
+              "clientDid": "did:key:z6Mkagent",
+              "prf": "org.kya-os/response-proof.envelope"
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": true,
+        "challenge": {
+          "error": "needs_authorization",
+          "message": "refund_order requires delegation with scope: orders:admin",
+          "authorizationUrl": "https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin",
+          "resumeToken": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+          "expiresAt": 1750000600,
+          "scopes": [
+            "orders:admin"
+          ],
+          "display": {
+            "title": "Orders",
+            "hint": [
+              "link"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "tampered_authorization_url",
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"needs_authorization\",\"message\":\"refund_order requires delegation with scope: orders:admin\",\"authorizationUrl\":\"https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin\",\"resumeToken\":\"uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw\",\"expiresAt\":1750000600,\"scopes\":[\"orders:admin\"],\"display\":{\"title\":\"Orders\",\"hint\":[\"link\"]}}"
+          }
+        ],
+        "structuredContent": {
+          "error": "needs_authorization",
+          "message": "refund_order requires delegation with scope: orders:admin",
+          "authorizationUrl": "https://evil.example/authorize",
+          "resumeToken": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+          "expiresAt": 1750000600,
+          "scopes": [
+            "orders:admin"
+          ],
+          "display": {
+            "title": "Orders",
+            "hint": [
+              "link"
+            ]
+          }
+        },
+        "_meta": {
+          "org.kya-os/response-proof": {
+            "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUja2V5LTEifQ.eyJhdWQiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwiY2xpZW50RGlkIjoiZGlkOmtleTp6Nk1rYWdlbnQiLCJpc3MiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwibm9uY2UiOiJiNlZabW05aFhuLW90T0VUQmt2bHZRIiwib3V0Y29tZSI6Im5lZWRzX2F1dGhvcml6YXRpb24iLCJwcmYiOiJvcmcua3lhLW9zL3Jlc3BvbnNlLXByb29mLmVudmVsb3BlIiwicmVhc29uIjoicmVxdWlyZXMgZGVsZWdhdGlvbiB3aXRoIHNjb3BlOiBvcmRlcnM6YWRtaW4iLCJyZXF1ZXN0SGFzaCI6InNoYTI1NjphYWU3OTg2MjY3NGU0NzliOWVkMGY2Zjg0MTQ3MWVmNDg1YzhmMWM1ZTY2NzQzNjIyOTM5NGY0ZDYwMGUzNjMzIiwicmVzcG9uc2VIYXNoIjoic2hhMjU2OmVjNzQyZmYyNDhhMWY4OTk0ZWFhMDU2ZWEzZmNhZGUwN2U0NmJjNjU3MWMyYjEwYTEyMGNhMDE3M2VlYmFkOTEiLCJzZXNzaW9uSWQiOiJub25lIiwic3ViIjoiZGlkOndlYjpvcmRlcnMuZXhhbXBsZSIsInRzIjoxNzUwMDAwMDAwfQ.c4RmUxQkBiOeltqBFcZzEeLapC5vU6Fc980l27JO2eWTo4cKsGuMYYVDB8TETh7eBVRBQurwb5enj9O-GA5zBA",
+            "meta": {
+              "did": "did:web:orders.example",
+              "kid": "did:web:orders.example#key-1",
+              "ts": 1750000000,
+              "nonce": "b6VZmm9hXn-otOETBkvlvQ",
+              "audience": "did:web:orders.example",
+              "sessionId": "none",
+              "requestHash": "sha256:aae79862674e479b9ed0f6f841471ef485c8f1c5e667436229394f4d600e3633",
+              "responseHash": "sha256:ec742ff248a1f8994eaa056ea3fcade07e46bc6571c2b10a120ca0173eebad91",
+              "outcome": "needs_authorization",
+              "reason": "requires delegation with scope: orders:admin",
+              "clientDid": "did:key:z6Mkagent",
+              "prf": "org.kya-os/response-proof.envelope"
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": false,
+        "reason": "response_hash_mismatch"
+      }
+    },
+    {
+      "name": "tampered_text_only",
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"needs_authorization\",\"message\":\"refund_order requires delegation with scope: orders:admin\",\"authorizationUrl\":\"https://evil.example/\",\"resumeToken\":\"uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw\",\"expiresAt\":1750000600,\"scopes\":[\"orders:admin\"],\"display\":{\"title\":\"Orders\",\"hint\":[\"link\"]}}"
+          }
+        ],
+        "structuredContent": {
+          "error": "needs_authorization",
+          "message": "refund_order requires delegation with scope: orders:admin",
+          "authorizationUrl": "https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin",
+          "resumeToken": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+          "expiresAt": 1750000600,
+          "scopes": [
+            "orders:admin"
+          ],
+          "display": {
+            "title": "Orders",
+            "hint": [
+              "link"
+            ]
+          }
+        },
+        "_meta": {
+          "org.kya-os/response-proof": {
+            "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUja2V5LTEifQ.eyJhdWQiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwiY2xpZW50RGlkIjoiZGlkOmtleTp6Nk1rYWdlbnQiLCJpc3MiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwibm9uY2UiOiJiNlZabW05aFhuLW90T0VUQmt2bHZRIiwib3V0Y29tZSI6Im5lZWRzX2F1dGhvcml6YXRpb24iLCJwcmYiOiJvcmcua3lhLW9zL3Jlc3BvbnNlLXByb29mLmVudmVsb3BlIiwicmVhc29uIjoicmVxdWlyZXMgZGVsZWdhdGlvbiB3aXRoIHNjb3BlOiBvcmRlcnM6YWRtaW4iLCJyZXF1ZXN0SGFzaCI6InNoYTI1NjphYWU3OTg2MjY3NGU0NzliOWVkMGY2Zjg0MTQ3MWVmNDg1YzhmMWM1ZTY2NzQzNjIyOTM5NGY0ZDYwMGUzNjMzIiwicmVzcG9uc2VIYXNoIjoic2hhMjU2OmVjNzQyZmYyNDhhMWY4OTk0ZWFhMDU2ZWEzZmNhZGUwN2U0NmJjNjU3MWMyYjEwYTEyMGNhMDE3M2VlYmFkOTEiLCJzZXNzaW9uSWQiOiJub25lIiwic3ViIjoiZGlkOndlYjpvcmRlcnMuZXhhbXBsZSIsInRzIjoxNzUwMDAwMDAwfQ.c4RmUxQkBiOeltqBFcZzEeLapC5vU6Fc980l27JO2eWTo4cKsGuMYYVDB8TETh7eBVRBQurwb5enj9O-GA5zBA",
+            "meta": {
+              "did": "did:web:orders.example",
+              "kid": "did:web:orders.example#key-1",
+              "ts": 1750000000,
+              "nonce": "b6VZmm9hXn-otOETBkvlvQ",
+              "audience": "did:web:orders.example",
+              "sessionId": "none",
+              "requestHash": "sha256:aae79862674e479b9ed0f6f841471ef485c8f1c5e667436229394f4d600e3633",
+              "responseHash": "sha256:ec742ff248a1f8994eaa056ea3fcade07e46bc6571c2b10a120ca0173eebad91",
+              "outcome": "needs_authorization",
+              "reason": "requires delegation with scope: orders:admin",
+              "clientDid": "did:key:z6Mkagent",
+              "prf": "org.kya-os/response-proof.envelope"
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": false,
+        "reason": "response_hash_mismatch"
+      }
+    },
+    {
+      "name": "tampered_resume_token",
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"needs_authorization\",\"message\":\"refund_order requires delegation with scope: orders:admin\",\"authorizationUrl\":\"https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin\",\"resumeToken\":\"uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw\",\"expiresAt\":1750000600,\"scopes\":[\"orders:admin\"],\"display\":{\"title\":\"Orders\",\"hint\":[\"link\"]}}"
+          }
+        ],
+        "structuredContent": {
+          "error": "needs_authorization",
+          "message": "refund_order requires delegation with scope: orders:admin",
+          "authorizationUrl": "https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin",
+          "resumeToken": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "expiresAt": 1750000600,
+          "scopes": [
+            "orders:admin"
+          ],
+          "display": {
+            "title": "Orders",
+            "hint": [
+              "link"
+            ]
+          }
+        },
+        "_meta": {
+          "org.kya-os/response-proof": {
+            "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUja2V5LTEifQ.eyJhdWQiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwiY2xpZW50RGlkIjoiZGlkOmtleTp6Nk1rYWdlbnQiLCJpc3MiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwibm9uY2UiOiJiNlZabW05aFhuLW90T0VUQmt2bHZRIiwib3V0Y29tZSI6Im5lZWRzX2F1dGhvcml6YXRpb24iLCJwcmYiOiJvcmcua3lhLW9zL3Jlc3BvbnNlLXByb29mLmVudmVsb3BlIiwicmVhc29uIjoicmVxdWlyZXMgZGVsZWdhdGlvbiB3aXRoIHNjb3BlOiBvcmRlcnM6YWRtaW4iLCJyZXF1ZXN0SGFzaCI6InNoYTI1NjphYWU3OTg2MjY3NGU0NzliOWVkMGY2Zjg0MTQ3MWVmNDg1YzhmMWM1ZTY2NzQzNjIyOTM5NGY0ZDYwMGUzNjMzIiwicmVzcG9uc2VIYXNoIjoic2hhMjU2OmVjNzQyZmYyNDhhMWY4OTk0ZWFhMDU2ZWEzZmNhZGUwN2U0NmJjNjU3MWMyYjEwYTEyMGNhMDE3M2VlYmFkOTEiLCJzZXNzaW9uSWQiOiJub25lIiwic3ViIjoiZGlkOndlYjpvcmRlcnMuZXhhbXBsZSIsInRzIjoxNzUwMDAwMDAwfQ.c4RmUxQkBiOeltqBFcZzEeLapC5vU6Fc980l27JO2eWTo4cKsGuMYYVDB8TETh7eBVRBQurwb5enj9O-GA5zBA",
+            "meta": {
+              "did": "did:web:orders.example",
+              "kid": "did:web:orders.example#key-1",
+              "ts": 1750000000,
+              "nonce": "b6VZmm9hXn-otOETBkvlvQ",
+              "audience": "did:web:orders.example",
+              "sessionId": "none",
+              "requestHash": "sha256:aae79862674e479b9ed0f6f841471ef485c8f1c5e667436229394f4d600e3633",
+              "responseHash": "sha256:ec742ff248a1f8994eaa056ea3fcade07e46bc6571c2b10a120ca0173eebad91",
+              "outcome": "needs_authorization",
+              "reason": "requires delegation with scope: orders:admin",
+              "clientDid": "did:key:z6Mkagent",
+              "prf": "org.kya-os/response-proof.envelope"
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": false,
+        "reason": "response_hash_mismatch"
+      }
+    },
+    {
+      "name": "proof_missing",
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"needs_authorization\",\"message\":\"refund_order requires delegation with scope: orders:admin\",\"authorizationUrl\":\"https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin\",\"resumeToken\":\"uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw\",\"expiresAt\":1750000600,\"scopes\":[\"orders:admin\"],\"display\":{\"title\":\"Orders\",\"hint\":[\"link\"]}}"
+          }
+        ],
+        "structuredContent": {
+          "error": "needs_authorization",
+          "message": "refund_order requires delegation with scope: orders:admin",
+          "authorizationUrl": "https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin",
+          "resumeToken": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+          "expiresAt": 1750000600,
+          "scopes": [
+            "orders:admin"
+          ],
+          "display": {
+            "title": "Orders",
+            "hint": [
+              "link"
+            ]
+          }
+        }
+      },
+      "expected": {
+        "ok": false,
+        "reason": "proof_missing"
+      }
+    },
+    {
+      "name": "signed_by_another_key",
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"needs_authorization\",\"message\":\"refund_order requires delegation with scope: orders:admin\",\"authorizationUrl\":\"https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin\",\"resumeToken\":\"uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw\",\"expiresAt\":1750000600,\"scopes\":[\"orders:admin\"],\"display\":{\"title\":\"Orders\",\"hint\":[\"link\"]}}"
+          }
+        ],
+        "structuredContent": {
+          "error": "needs_authorization",
+          "message": "refund_order requires delegation with scope: orders:admin",
+          "authorizationUrl": "https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin",
+          "resumeToken": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+          "expiresAt": 1750000600,
+          "scopes": [
+            "orders:admin"
+          ],
+          "display": {
+            "title": "Orders",
+            "hint": [
+              "link"
+            ]
+          }
+        },
+        "_meta": {
+          "org.kya-os/response-proof": {
+            "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUja2V5LTEifQ.eyJhdWQiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwiY2xpZW50RGlkIjoiZGlkOmtleTp6Nk1rYWdlbnQiLCJpc3MiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwibm9uY2UiOiJiNlZabW05aFhuLW90T0VUQmt2bHZRIiwib3V0Y29tZSI6Im5lZWRzX2F1dGhvcml6YXRpb24iLCJwcmYiOiJvcmcua3lhLW9zL3Jlc3BvbnNlLXByb29mLmVudmVsb3BlIiwicmVxdWVzdEhhc2giOiJzaGEyNTY6YWFlNzk4NjI2NzRlNDc5YjllZDBmNmY4NDE0NzFlZjQ4NWM4ZjFjNWU2Njc0MzYyMjkzOTRmNGQ2MDBlMzYzMyIsInJlc3BvbnNlSGFzaCI6InNoYTI1NjplYzc0MmZmMjQ4YTFmODk5NGVhYTA1NmVhM2ZjYWRlMDdlNDZiYzY1NzFjMmIxMGExMjBjYTAxNzNlZWJhZDkxIiwic2Vzc2lvbklkIjoibm9uZSIsInN1YiI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUiLCJ0cyI6MTc1MDAwMDAwMH0.dtxalAEl4UPeVHe3ip5USlACWswlz7A0I6bJSGSpvoUULqY0ibe_VqjCTV9TTaNEfkNUboaq5oIX__EeDzi-Aw",
+            "meta": {
+              "did": "did:web:orders.example",
+              "kid": "did:web:orders.example#key-1",
+              "ts": 1750000000,
+              "nonce": "b6VZmm9hXn-otOETBkvlvQ",
+              "audience": "did:web:orders.example",
+              "sessionId": "none",
+              "requestHash": "sha256:aae79862674e479b9ed0f6f841471ef485c8f1c5e667436229394f4d600e3633",
+              "responseHash": "sha256:ec742ff248a1f8994eaa056ea3fcade07e46bc6571c2b10a120ca0173eebad91",
+              "outcome": "needs_authorization",
+              "clientDid": "did:key:z6Mkagent",
+              "prf": "org.kya-os/response-proof.envelope"
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": false,
+        "reason": "jws_signature_invalid"
+      }
+    },
+    {
+      "name": "proof_for_another_request",
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"needs_authorization\",\"message\":\"refund_order requires delegation with scope: orders:admin\",\"authorizationUrl\":\"https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin\",\"resumeToken\":\"uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw\",\"expiresAt\":1750000600,\"scopes\":[\"orders:admin\"],\"display\":{\"title\":\"Orders\",\"hint\":[\"link\"]}}"
+          }
+        ],
+        "structuredContent": {
+          "error": "needs_authorization",
+          "message": "refund_order requires delegation with scope: orders:admin",
+          "authorizationUrl": "https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin",
+          "resumeToken": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+          "expiresAt": 1750000600,
+          "scopes": [
+            "orders:admin"
+          ],
+          "display": {
+            "title": "Orders",
+            "hint": [
+              "link"
+            ]
+          }
+        },
+        "_meta": {
+          "org.kya-os/response-proof": {
+            "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUja2V5LTEifQ.eyJhdWQiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwiY2xpZW50RGlkIjoiZGlkOmtleTp6Nk1rYWdlbnQiLCJpc3MiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwibm9uY2UiOiJiNlZabW05aFhuLW90T0VUQmt2bHZRIiwib3V0Y29tZSI6Im5lZWRzX2F1dGhvcml6YXRpb24iLCJwcmYiOiJvcmcua3lhLW9zL3Jlc3BvbnNlLXByb29mLmVudmVsb3BlIiwicmVxdWVzdEhhc2giOiJzaGEyNTY6Nzk2Y2ZkZGYxN2ExMDgyN2U0YjQzMDg4MmQ1ZDYxZTYzZDg3OWU5YjVkNzk3NmY4MWFkOWUwZGFkMDU0OTE3ZCIsInJlc3BvbnNlSGFzaCI6InNoYTI1NjplYzc0MmZmMjQ4YTFmODk5NGVhYTA1NmVhM2ZjYWRlMDdlNDZiYzY1NzFjMmIxMGExMjBjYTAxNzNlZWJhZDkxIiwic2Vzc2lvbklkIjoibm9uZSIsInN1YiI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUiLCJ0cyI6MTc1MDAwMDAwMH0.CNBMv1XBpGr0f059PDNpQ3LmfZRXLZwRBPo85q7rnhb-iYXmSLh3hEKiMFWq46FC2LD2JdoO6DaSz0Lrj_MJDg",
+            "meta": {
+              "did": "did:web:orders.example",
+              "kid": "did:web:orders.example#key-1",
+              "ts": 1750000000,
+              "nonce": "b6VZmm9hXn-otOETBkvlvQ",
+              "audience": "did:web:orders.example",
+              "sessionId": "none",
+              "requestHash": "sha256:796cfddf17a10827e4b430882d5d61e63d879e9b5d7976f81ad9e0dad054917d",
+              "responseHash": "sha256:ec742ff248a1f8994eaa056ea3fcade07e46bc6571c2b10a120ca0173eebad91",
+              "outcome": "needs_authorization",
+              "clientDid": "did:key:z6Mkagent",
+              "prf": "org.kya-os/response-proof.envelope"
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": false,
+        "reason": "request_hash_mismatch"
+      }
+    },
+    {
+      "name": "outcome_allowed",
+      "response": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":\"ORD-1001\"}"
+          }
+        ],
+        "_meta": {
+          "org.kya-os/response-proof": {
+            "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUja2V5LTEifQ.eyJhdWQiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwiY2xpZW50RGlkIjoiZGlkOmtleTp6Nk1rYWdlbnQiLCJpc3MiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwibm9uY2UiOiJiNlZabW05aFhuLW90T0VUQmt2bHZRIiwib3V0Y29tZSI6ImFsbG93ZWQiLCJwcmYiOiJvcmcua3lhLW9zL3Jlc3BvbnNlLXByb29mLmVudmVsb3BlIiwicmVxdWVzdEhhc2giOiJzaGEyNTY6YWFlNzk4NjI2NzRlNDc5YjllZDBmNmY4NDE0NzFlZjQ4NWM4ZjFjNWU2Njc0MzYyMjkzOTRmNGQ2MDBlMzYzMyIsInJlc3BvbnNlSGFzaCI6InNoYTI1NjpiMTU3YjIxY2Q3ZmQ3Mzg0M2RkNDQ4N2VkNjJlM2M3Y2VhNzE0NDVlMjViYzQ1OTdlMjE2NGRhZGJlNGJkOGY3Iiwic2Vzc2lvbklkIjoibm9uZSIsInN1YiI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUiLCJ0cyI6MTc1MDAwMDAwMH0.6Vm_fw_dmIPJ2ll-IwPGmzSQnVoimQHztL4K3s6mU-ewqZ8-9j_vAYLhyuXyn-PGtmc-60rrl1AwZLInTQoxCw",
+            "meta": {
+              "did": "did:web:orders.example",
+              "kid": "did:web:orders.example#key-1",
+              "ts": 1750000000,
+              "nonce": "b6VZmm9hXn-otOETBkvlvQ",
+              "audience": "did:web:orders.example",
+              "sessionId": "none",
+              "requestHash": "sha256:aae79862674e479b9ed0f6f841471ef485c8f1c5e667436229394f4d600e3633",
+              "responseHash": "sha256:b157b21cd7fd73843dd4487ed62e3c7cea71445e25bc4597e2164dadbe4bd8f7",
+              "outcome": "allowed",
+              "clientDid": "did:key:z6Mkagent",
+              "prf": "org.kya-os/response-proof.envelope"
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": false,
+        "reason": "challenge_outcome_mismatch"
+      }
+    },
+    {
+      "name": "outcome_allowed_challenge_shaped",
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"needs_authorization\",\"message\":\"refund_order requires delegation with scope: orders:admin\",\"authorizationUrl\":\"https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin\",\"resumeToken\":\"uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw\",\"expiresAt\":1750000600,\"scopes\":[\"orders:admin\"],\"display\":{\"title\":\"Orders\",\"hint\":[\"link\"]}}"
+          }
+        ],
+        "structuredContent": {
+          "error": "needs_authorization",
+          "message": "refund_order requires delegation with scope: orders:admin",
+          "authorizationUrl": "https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin",
+          "resumeToken": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+          "expiresAt": 1750000600,
+          "scopes": [
+            "orders:admin"
+          ],
+          "display": {
+            "title": "Orders",
+            "hint": [
+              "link"
+            ]
+          }
+        },
+        "_meta": {
+          "org.kya-os/response-proof": {
+            "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUja2V5LTEifQ.eyJhdWQiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwiY2xpZW50RGlkIjoiZGlkOmtleTp6Nk1rYWdlbnQiLCJpc3MiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwibm9uY2UiOiJiNlZabW05aFhuLW90T0VUQmt2bHZRIiwib3V0Y29tZSI6ImFsbG93ZWQiLCJwcmYiOiJvcmcua3lhLW9zL3Jlc3BvbnNlLXByb29mLmVudmVsb3BlIiwicmVxdWVzdEhhc2giOiJzaGEyNTY6YWFlNzk4NjI2NzRlNDc5YjllZDBmNmY4NDE0NzFlZjQ4NWM4ZjFjNWU2Njc0MzYyMjkzOTRmNGQ2MDBlMzYzMyIsInJlc3BvbnNlSGFzaCI6InNoYTI1NjplYzc0MmZmMjQ4YTFmODk5NGVhYTA1NmVhM2ZjYWRlMDdlNDZiYzY1NzFjMmIxMGExMjBjYTAxNzNlZWJhZDkxIiwic2Vzc2lvbklkIjoibm9uZSIsInN1YiI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUiLCJ0cyI6MTc1MDAwMDAwMH0.IvFrYKSofTE9-dN3NQyK56EPYcSY3dajnflQQIwjU8lD_yWCJmguKuTNJ3un9VgdQZU9CuYvDF8CCqEhr9WcCg",
+            "meta": {
+              "did": "did:web:orders.example",
+              "kid": "did:web:orders.example#key-1",
+              "ts": 1750000000,
+              "nonce": "b6VZmm9hXn-otOETBkvlvQ",
+              "audience": "did:web:orders.example",
+              "sessionId": "none",
+              "requestHash": "sha256:aae79862674e479b9ed0f6f841471ef485c8f1c5e667436229394f4d600e3633",
+              "responseHash": "sha256:ec742ff248a1f8994eaa056ea3fcade07e46bc6571c2b10a120ca0173eebad91",
+              "outcome": "allowed",
+              "clientDid": "did:key:z6Mkagent",
+              "prf": "org.kya-os/response-proof.envelope"
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": false,
+        "reason": "challenge_outcome_mismatch"
+      }
+    },
+    {
+      "name": "expired",
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"needs_authorization\",\"message\":\"refund_order requires delegation with scope: orders:admin\",\"authorizationUrl\":\"https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin\",\"resumeToken\":\"uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw\",\"expiresAt\":1750000000,\"scopes\":[\"orders:admin\"],\"display\":{\"title\":\"Orders\",\"hint\":[\"link\"]}}"
+          }
+        ],
+        "structuredContent": {
+          "error": "needs_authorization",
+          "message": "refund_order requires delegation with scope: orders:admin",
+          "authorizationUrl": "https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin",
+          "resumeToken": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+          "expiresAt": 1750000000,
+          "scopes": [
+            "orders:admin"
+          ],
+          "display": {
+            "title": "Orders",
+            "hint": [
+              "link"
+            ]
+          }
+        },
+        "_meta": {
+          "org.kya-os/response-proof": {
+            "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUja2V5LTEifQ.eyJhdWQiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwiY2xpZW50RGlkIjoiZGlkOmtleTp6Nk1rYWdlbnQiLCJpc3MiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwibm9uY2UiOiJiNlZabW05aFhuLW90T0VUQmt2bHZRIiwib3V0Y29tZSI6Im5lZWRzX2F1dGhvcml6YXRpb24iLCJwcmYiOiJvcmcua3lhLW9zL3Jlc3BvbnNlLXByb29mLmVudmVsb3BlIiwicmVxdWVzdEhhc2giOiJzaGEyNTY6YWFlNzk4NjI2NzRlNDc5YjllZDBmNmY4NDE0NzFlZjQ4NWM4ZjFjNWU2Njc0MzYyMjkzOTRmNGQ2MDBlMzYzMyIsInJlc3BvbnNlSGFzaCI6InNoYTI1Njo5NTBlNzcwOWNkMzVjNTZjYmNjMWM2OTUxYzM2YjMxZDZhMDgzMTgxNzE4YjUwYzJhZTU2YTdjY2M1NjYwYzdkIiwic2Vzc2lvbklkIjoibm9uZSIsInN1YiI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUiLCJ0cyI6MTc1MDAwMDAwMH0.5IDIldAU-ZQ3ZrE_YRZkmODcTYLFHCYfre1HQRWYbYQ-K6nh_yYKb-jZBJv9A02CW-V4-of7KkJlCgcxW2kNCQ",
+            "meta": {
+              "did": "did:web:orders.example",
+              "kid": "did:web:orders.example#key-1",
+              "ts": 1750000000,
+              "nonce": "b6VZmm9hXn-otOETBkvlvQ",
+              "audience": "did:web:orders.example",
+              "sessionId": "none",
+              "requestHash": "sha256:aae79862674e479b9ed0f6f841471ef485c8f1c5e667436229394f4d600e3633",
+              "responseHash": "sha256:950e7709cd35c56cbcc1c6951c36b31d6a083181718b50c2ae56a7ccc5660c7d",
+              "outcome": "needs_authorization",
+              "clientDid": "did:key:z6Mkagent",
+              "prf": "org.kya-os/response-proof.envelope"
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": false,
+        "reason": "challenge_expired"
+      }
+    },
+    {
+      "name": "url_not_http",
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"needs_authorization\",\"message\":\"refund_order requires delegation with scope: orders:admin\",\"authorizationUrl\":\"javascript:alert(1)\",\"resumeToken\":\"uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw\",\"expiresAt\":1750000600,\"scopes\":[\"orders:admin\"],\"display\":{\"title\":\"Orders\",\"hint\":[\"link\"]}}"
+          }
+        ],
+        "structuredContent": {
+          "error": "needs_authorization",
+          "message": "refund_order requires delegation with scope: orders:admin",
+          "authorizationUrl": "javascript:alert(1)",
+          "resumeToken": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+          "expiresAt": 1750000600,
+          "scopes": [
+            "orders:admin"
+          ],
+          "display": {
+            "title": "Orders",
+            "hint": [
+              "link"
+            ]
+          }
+        },
+        "_meta": {
+          "org.kya-os/response-proof": {
+            "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUja2V5LTEifQ.eyJhdWQiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwiY2xpZW50RGlkIjoiZGlkOmtleTp6Nk1rYWdlbnQiLCJpc3MiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwibm9uY2UiOiJiNlZabW05aFhuLW90T0VUQmt2bHZRIiwib3V0Y29tZSI6Im5lZWRzX2F1dGhvcml6YXRpb24iLCJwcmYiOiJvcmcua3lhLW9zL3Jlc3BvbnNlLXByb29mLmVudmVsb3BlIiwicmVxdWVzdEhhc2giOiJzaGEyNTY6YWFlNzk4NjI2NzRlNDc5YjllZDBmNmY4NDE0NzFlZjQ4NWM4ZjFjNWU2Njc0MzYyMjkzOTRmNGQ2MDBlMzYzMyIsInJlc3BvbnNlSGFzaCI6InNoYTI1Njo1YzY3OGVhOWQ5ZjQ1OWNhODI1M2IyNTE3M2MzODM1ZDI0MmY3ZWZkYzBiMDAzMjFhMjczMTNhMTBkMzFmYTBmIiwic2Vzc2lvbklkIjoibm9uZSIsInN1YiI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUiLCJ0cyI6MTc1MDAwMDAwMH0.OKT3Wa4B675tgS3GgMQVf2X-vriID1Ua77sSsJbcXTdGDOg_x1FxaZu1CVf3xbaFdi6hl_kNWc2kZOvRpDx9BA",
+            "meta": {
+              "did": "did:web:orders.example",
+              "kid": "did:web:orders.example#key-1",
+              "ts": 1750000000,
+              "nonce": "b6VZmm9hXn-otOETBkvlvQ",
+              "audience": "did:web:orders.example",
+              "sessionId": "none",
+              "requestHash": "sha256:aae79862674e479b9ed0f6f841471ef485c8f1c5e667436229394f4d600e3633",
+              "responseHash": "sha256:5c678ea9d9f459ca8253b25173c3835d242f7efdc0b00321a27313a10d31fa0f",
+              "outcome": "needs_authorization",
+              "clientDid": "did:key:z6Mkagent",
+              "prf": "org.kya-os/response-proof.envelope"
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": false,
+        "reason": "authorization_url_invalid"
+      }
+    },
+    {
+      "name": "url_relative",
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"needs_authorization\",\"message\":\"refund_order requires delegation with scope: orders:admin\",\"authorizationUrl\":\"/authorize\",\"resumeToken\":\"uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw\",\"expiresAt\":1750000600,\"scopes\":[\"orders:admin\"],\"display\":{\"title\":\"Orders\",\"hint\":[\"link\"]}}"
+          }
+        ],
+        "structuredContent": {
+          "error": "needs_authorization",
+          "message": "refund_order requires delegation with scope: orders:admin",
+          "authorizationUrl": "/authorize",
+          "resumeToken": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+          "expiresAt": 1750000600,
+          "scopes": [
+            "orders:admin"
+          ],
+          "display": {
+            "title": "Orders",
+            "hint": [
+              "link"
+            ]
+          }
+        },
+        "_meta": {
+          "org.kya-os/response-proof": {
+            "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUja2V5LTEifQ.eyJhdWQiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwiY2xpZW50RGlkIjoiZGlkOmtleTp6Nk1rYWdlbnQiLCJpc3MiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwibm9uY2UiOiJiNlZabW05aFhuLW90T0VUQmt2bHZRIiwib3V0Y29tZSI6Im5lZWRzX2F1dGhvcml6YXRpb24iLCJwcmYiOiJvcmcua3lhLW9zL3Jlc3BvbnNlLXByb29mLmVudmVsb3BlIiwicmVxdWVzdEhhc2giOiJzaGEyNTY6YWFlNzk4NjI2NzRlNDc5YjllZDBmNmY4NDE0NzFlZjQ4NWM4ZjFjNWU2Njc0MzYyMjkzOTRmNGQ2MDBlMzYzMyIsInJlc3BvbnNlSGFzaCI6InNoYTI1NjowZWY0NTdiNWNmZjU1NWI3MzAzYjM1MDljNGNmOTM3Yjc2MWVkYjU0ODE1NWI2NzJjYzFkYjYzNzc1ZDE0NTVmIiwic2Vzc2lvbklkIjoibm9uZSIsInN1YiI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUiLCJ0cyI6MTc1MDAwMDAwMH0.fTcnlSIJJTB-QAlpxeqKxqAiQ8Uj9lwTTDy9omJYEvgU1GD4CmlAXHUOSMCc7wrBtQGC6RhN2Chm33u4YMFsDQ",
+            "meta": {
+              "did": "did:web:orders.example",
+              "kid": "did:web:orders.example#key-1",
+              "ts": 1750000000,
+              "nonce": "b6VZmm9hXn-otOETBkvlvQ",
+              "audience": "did:web:orders.example",
+              "sessionId": "none",
+              "requestHash": "sha256:aae79862674e479b9ed0f6f841471ef485c8f1c5e667436229394f4d600e3633",
+              "responseHash": "sha256:0ef457b5cff555b7303b3509c4cf937b761edb548155b672cc1db63775d1455f",
+              "outcome": "needs_authorization",
+              "clientDid": "did:key:z6Mkagent",
+              "prf": "org.kya-os/response-proof.envelope"
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": false,
+        "reason": "authorization_url_invalid"
+      }
+    },
+    {
+      "name": "scopes_not_strings",
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"needs_authorization\",\"message\":\"refund_order requires delegation with scope: orders:admin\",\"authorizationUrl\":\"https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin\",\"resumeToken\":\"uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw\",\"expiresAt\":1750000600,\"scopes\":[\"orders:admin\",1],\"display\":{\"title\":\"Orders\",\"hint\":[\"link\"]}}"
+          }
+        ],
+        "structuredContent": {
+          "error": "needs_authorization",
+          "message": "refund_order requires delegation with scope: orders:admin",
+          "authorizationUrl": "https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin",
+          "resumeToken": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+          "expiresAt": 1750000600,
+          "scopes": [
+            "orders:admin",
+            1
+          ],
+          "display": {
+            "title": "Orders",
+            "hint": [
+              "link"
+            ]
+          }
+        },
+        "_meta": {
+          "org.kya-os/response-proof": {
+            "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUja2V5LTEifQ.eyJhdWQiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwiY2xpZW50RGlkIjoiZGlkOmtleTp6Nk1rYWdlbnQiLCJpc3MiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwibm9uY2UiOiJiNlZabW05aFhuLW90T0VUQmt2bHZRIiwib3V0Y29tZSI6Im5lZWRzX2F1dGhvcml6YXRpb24iLCJwcmYiOiJvcmcua3lhLW9zL3Jlc3BvbnNlLXByb29mLmVudmVsb3BlIiwicmVxdWVzdEhhc2giOiJzaGEyNTY6YWFlNzk4NjI2NzRlNDc5YjllZDBmNmY4NDE0NzFlZjQ4NWM4ZjFjNWU2Njc0MzYyMjkzOTRmNGQ2MDBlMzYzMyIsInJlc3BvbnNlSGFzaCI6InNoYTI1NjplN2MxZmViYjU5NmMzZTQ2MjVmMjdjNTliNzMzOWJlMjFjYjNjZDI5OTQxMGVjY2Y4YTk5NjJhZDVlYWM5ZGVjIiwic2Vzc2lvbklkIjoibm9uZSIsInN1YiI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUiLCJ0cyI6MTc1MDAwMDAwMH0.hunJCBBoS1Dc-gvufVHw8QsFg_g5J-Y-77NE41QC1BitiOVKzSEGVhmP1U4-x9Za2A1SUs_-MsY6M6ZHkl7TAg",
+            "meta": {
+              "did": "did:web:orders.example",
+              "kid": "did:web:orders.example#key-1",
+              "ts": 1750000000,
+              "nonce": "b6VZmm9hXn-otOETBkvlvQ",
+              "audience": "did:web:orders.example",
+              "sessionId": "none",
+              "requestHash": "sha256:aae79862674e479b9ed0f6f841471ef485c8f1c5e667436229394f4d600e3633",
+              "responseHash": "sha256:e7c1febb596c3e4625f27c59b7339be21cb3cd299410eccf8a9962ad5eac9dec",
+              "outcome": "needs_authorization",
+              "clientDid": "did:key:z6Mkagent",
+              "prf": "org.kya-os/response-proof.envelope"
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": false,
+        "reason": "challenge_malformed"
+      }
+    },
+    {
+      "name": "resume_token_missing",
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"needs_authorization\",\"message\":\"refund_order requires delegation with scope: orders:admin\",\"authorizationUrl\":\"https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin\",\"resumeToken\":\"\",\"expiresAt\":1750000600,\"scopes\":[\"orders:admin\"],\"display\":{\"title\":\"Orders\",\"hint\":[\"link\"]}}"
+          }
+        ],
+        "structuredContent": {
+          "error": "needs_authorization",
+          "message": "refund_order requires delegation with scope: orders:admin",
+          "authorizationUrl": "https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin",
+          "resumeToken": "",
+          "expiresAt": 1750000600,
+          "scopes": [
+            "orders:admin"
+          ],
+          "display": {
+            "title": "Orders",
+            "hint": [
+              "link"
+            ]
+          }
+        },
+        "_meta": {
+          "org.kya-os/response-proof": {
+            "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUja2V5LTEifQ.eyJhdWQiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwiY2xpZW50RGlkIjoiZGlkOmtleTp6Nk1rYWdlbnQiLCJpc3MiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwibm9uY2UiOiJiNlZabW05aFhuLW90T0VUQmt2bHZRIiwib3V0Y29tZSI6Im5lZWRzX2F1dGhvcml6YXRpb24iLCJwcmYiOiJvcmcua3lhLW9zL3Jlc3BvbnNlLXByb29mLmVudmVsb3BlIiwicmVxdWVzdEhhc2giOiJzaGEyNTY6YWFlNzk4NjI2NzRlNDc5YjllZDBmNmY4NDE0NzFlZjQ4NWM4ZjFjNWU2Njc0MzYyMjkzOTRmNGQ2MDBlMzYzMyIsInJlc3BvbnNlSGFzaCI6InNoYTI1NjpiZjYwM2RiMTc2YWEwOWYzZWQ0YzQ3OWVhZDQ1NjdlMWY5OWVkNTA4ZmQ0ZGZiY2U4MDAwMWZhZTQ2M2UwNjNjIiwic2Vzc2lvbklkIjoibm9uZSIsInN1YiI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUiLCJ0cyI6MTc1MDAwMDAwMH0.LKv2Mzy48TxZvw4EBw_rcvP81kLed6ZMYCnMuu-zkgU7CHRGgeqxQEOLDoAmQok0f0XZABYb7jEk7HsYVypMCg",
+            "meta": {
+              "did": "did:web:orders.example",
+              "kid": "did:web:orders.example#key-1",
+              "ts": 1750000000,
+              "nonce": "b6VZmm9hXn-otOETBkvlvQ",
+              "audience": "did:web:orders.example",
+              "sessionId": "none",
+              "requestHash": "sha256:aae79862674e479b9ed0f6f841471ef485c8f1c5e667436229394f4d600e3633",
+              "responseHash": "sha256:bf603db176aa09f3ed4c479ead4567e1f99ed508fd4dfbce80001fae463e063c",
+              "outcome": "needs_authorization",
+              "clientDid": "did:key:z6Mkagent",
+              "prf": "org.kya-os/response-proof.envelope"
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": false,
+        "reason": "challenge_malformed"
+      }
+    },
+    {
+      "name": "display_hint_unknown",
+      "response": {
+        "isError": true,
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"error\":\"needs_authorization\",\"message\":\"refund_order requires delegation with scope: orders:admin\",\"authorizationUrl\":\"https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin\",\"resumeToken\":\"uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw\",\"expiresAt\":1750000600,\"scopes\":[\"orders:admin\"],\"display\":{\"hint\":[\"popup\"]}}"
+          }
+        ],
+        "structuredContent": {
+          "error": "needs_authorization",
+          "message": "refund_order requires delegation with scope: orders:admin",
+          "authorizationUrl": "https://consent.example/authorize?agent=did%3Akey%3Az6Mkagent&tool=refund_order&scope=orders%3Aadmin",
+          "resumeToken": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+          "expiresAt": 1750000600,
+          "scopes": [
+            "orders:admin"
+          ],
+          "display": {
+            "hint": [
+              "popup"
+            ]
+          }
+        },
+        "_meta": {
+          "org.kya-os/response-proof": {
+            "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUja2V5LTEifQ.eyJhdWQiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwiY2xpZW50RGlkIjoiZGlkOmtleTp6Nk1rYWdlbnQiLCJpc3MiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwibm9uY2UiOiJiNlZabW05aFhuLW90T0VUQmt2bHZRIiwib3V0Y29tZSI6Im5lZWRzX2F1dGhvcml6YXRpb24iLCJwcmYiOiJvcmcua3lhLW9zL3Jlc3BvbnNlLXByb29mLmVudmVsb3BlIiwicmVxdWVzdEhhc2giOiJzaGEyNTY6YWFlNzk4NjI2NzRlNDc5YjllZDBmNmY4NDE0NzFlZjQ4NWM4ZjFjNWU2Njc0MzYyMjkzOTRmNGQ2MDBlMzYzMyIsInJlc3BvbnNlSGFzaCI6InNoYTI1Njo4NDI1YmNiZDNhZDNhNDQxNjBiYmEyNjcyODg2YjdiZmM0NDUxZjAzZWIzNmJjNDNkZmM2NjhiYTQyMjcyNjA5Iiwic2Vzc2lvbklkIjoibm9uZSIsInN1YiI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUiLCJ0cyI6MTc1MDAwMDAwMH0.XXDV6SzpTozbi8P4JKtFqAfaO1B5twDCrTn4gZFNnnXenmxuPa9q9ZUNXeKVtqLJMZIYttTsnxhoZ8HUbf6gAA",
+            "meta": {
+              "did": "did:web:orders.example",
+              "kid": "did:web:orders.example#key-1",
+              "ts": 1750000000,
+              "nonce": "b6VZmm9hXn-otOETBkvlvQ",
+              "audience": "did:web:orders.example",
+              "sessionId": "none",
+              "requestHash": "sha256:aae79862674e479b9ed0f6f841471ef485c8f1c5e667436229394f4d600e3633",
+              "responseHash": "sha256:8425bcbd3ad3a44160bba2672886b7bfc4451f03eb36bc43dfc668ba42272609",
+              "outcome": "needs_authorization",
+              "clientDid": "did:key:z6Mkagent",
+              "prf": "org.kya-os/response-proof.envelope"
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": false,
+        "reason": "challenge_malformed"
+      }
+    },
+    {
+      "name": "not_a_challenge",
+      "response": {
+        "content": [
+          {
+            "type": "text",
+            "text": "ok"
+          }
+        ],
+        "structuredContent": {
+          "error": "other"
+        },
+        "_meta": {
+          "org.kya-os/response-proof": {
+            "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUja2V5LTEifQ.eyJhdWQiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwiY2xpZW50RGlkIjoiZGlkOmtleTp6Nk1rYWdlbnQiLCJpc3MiOiJkaWQ6d2ViOm9yZGVycy5leGFtcGxlIiwibm9uY2UiOiJiNlZabW05aFhuLW90T0VUQmt2bHZRIiwib3V0Y29tZSI6Im5lZWRzX2F1dGhvcml6YXRpb24iLCJwcmYiOiJvcmcua3lhLW9zL3Jlc3BvbnNlLXByb29mLmVudmVsb3BlIiwicmVxdWVzdEhhc2giOiJzaGEyNTY6YWFlNzk4NjI2NzRlNDc5YjllZDBmNmY4NDE0NzFlZjQ4NWM4ZjFjNWU2Njc0MzYyMjkzOTRmNGQ2MDBlMzYzMyIsInJlc3BvbnNlSGFzaCI6InNoYTI1Njo4Y2JkODM0MmFiNDI2ZmNhNmQ1MDFjMmQ2NDc1MGRhNGMzZWY2N2VkNzYyZGRkMTUyNjVkZjU2M2EwYmEwN2Q1Iiwic2Vzc2lvbklkIjoibm9uZSIsInN1YiI6ImRpZDp3ZWI6b3JkZXJzLmV4YW1wbGUiLCJ0cyI6MTc1MDAwMDAwMH0.VKn7AFwUFbx267HZFlIadIWdKOfUD_Tej-npsC410SGe4IomSBkC7fRUb49Gpkiu7nmFS7NIhXAPtoMmD9hOCw",
+            "meta": {
+              "did": "did:web:orders.example",
+              "kid": "did:web:orders.example#key-1",
+              "ts": 1750000000,
+              "nonce": "b6VZmm9hXn-otOETBkvlvQ",
+              "audience": "did:web:orders.example",
+              "sessionId": "none",
+              "requestHash": "sha256:aae79862674e479b9ed0f6f841471ef485c8f1c5e667436229394f4d600e3633",
+              "responseHash": "sha256:8cbd8342ab426fca6d501c2d64750da4c3ef67ed762ddd15265df563a0ba07d5",
+              "outcome": "needs_authorization",
+              "clientDid": "did:key:z6Mkagent",
+              "prf": "org.kya-os/response-proof.envelope"
+            }
+          }
+        }
+      },
+      "expected": {
+        "ok": false,
+        "reason": "challenge_missing"
+      }
+    }
+  ],
+  "retry": {
+    "call": {
+      "name": "refund_order",
+      "arguments": {
+        "orderId": "ORD-1001",
+        "reason": "damaged"
+      }
+    },
+    "resumeToken": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+    "hop": {
+      "@context": [
+        "https://www.w3.org/ns/credentials/v2",
+        "https://w3id.org/zcap/v1"
+      ],
+      "type": [
+        "VerifiableCredential",
+        "DelegationCredential"
+      ],
+      "issuer": "did:key:z6MkuserConsentKey",
+      "credentialSubject": {
+        "invoker": "did:key:z6Mkagent",
+        "invocationTarget": "did:web:orders.example",
+        "parentCapability": "did:web:orders.example",
+        "allowedAction": [
+          "orders:admin"
+        ]
+      },
+      "proof": {
+        "type": "DataIntegrityProof",
+        "cryptosuite": "eddsa-jcs-2022",
+        "proofPurpose": "assertionMethod",
+        "verificationMethod": "did:key:z6MkuserConsentKey#z6MkuserConsentKey",
+        "proofValue": "z-fixture"
+      }
+    },
+    "params": {
+      "name": "refund_order",
+      "arguments": {
+        "orderId": "ORD-1001",
+        "reason": "damaged",
+        "_kyaos_resume": "uGb3QKq4D1yXj0r9ZaN2Pw8vLcE5tHsM6nRkF7oJiAw",
+        "_kyaos_delegation": {
+          "@context": [
+            "https://www.w3.org/ns/credentials/v2",
+            "https://w3id.org/zcap/v1"
+          ],
+          "type": [
+            "VerifiableCredential",
+            "DelegationCredential"
+          ],
+          "issuer": "did:key:z6MkuserConsentKey",
+          "credentialSubject": {
+            "invoker": "did:key:z6Mkagent",
+            "invocationTarget": "did:web:orders.example",
+            "parentCapability": "did:web:orders.example",
+            "allowedAction": [
+              "orders:admin"
+            ]
+          },
+          "proof": {
+            "type": "DataIntegrityProof",
+            "cryptosuite": "eddsa-jcs-2022",
+            "proofPurpose": "assertionMethod",
+            "verificationMethod": "did:key:z6MkuserConsentKey#z6MkuserConsentKey",
+            "proofValue": "z-fixture"
+          }
+        }
+      }
+    }
+  }
+}
