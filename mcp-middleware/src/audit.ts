@@ -440,8 +440,9 @@ export class McpAuditTrail {
    * The middleware's `auditSink`: translates each authorization decision into
    * the typed events. A HelixID caller: `proof.verified`, then
    * `delegation.verified` when the presented credential is known, then
-   * `authorization.approved` or `authorization.denied`. An OAuth caller:
-   * only the authorization event, with the subject as a keyed commitment.
+   * `authorization.approved` or `authorization.denied` (reason
+   * `needs_authorization` for an L3-E challenge). An OAuth caller: only the
+   * authorization event, with the subject as a keyed commitment.
    */
   toolAuditSink(): AuditSink {
     return async (event: ToolAuditEvent): Promise<void> => {
@@ -482,7 +483,8 @@ export class McpAuditTrail {
       } else {
         await this.authorization('denied', {
           outcome: 'denied',
-          reasonCode: scopeId !== undefined ? 'insufficient_scope' : 'tool_not_permitted',
+          // KYA-OS story L3-E: a signed needs_authorization challenge keeps its reason.
+          reasonCode: event.reason === 'needs_authorization' ? 'needs_authorization' : scopeId !== undefined ? 'insufficient_scope' : 'tool_not_permitted',
           context,
           ...(toolName !== undefined ? { toolName } : {}),
         });

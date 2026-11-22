@@ -20,6 +20,7 @@ import {
   createHelixAuditReporter,
   createHelixAuditSink,
   createMcpAuditTrail,
+  createNeedsAuthorization,
   delegationEvidenceOf,
   type ToolAuditEvent,
 } from '../src/index.js';
@@ -316,6 +317,14 @@ describe('McpAuditTrail.toolAuditSink', () => {
     expect(sink.events[3]).toMatchObject({ outcome: 'denied', reason: { code: 'tool_not_permitted' }, authorization: { source: 'delegation', decision: 'denied' } });
     expect(sink.events[3]!.authorization!.scopeId).toBeUndefined();
     for (const event of sink.events) expect(JSON.stringify(event)).not.toContain('toolScopes');
+  });
+
+  it('an L3-E needs_authorization challenge: authorization.denied keeps the reason needs_authorization', async () => {
+    const { trail, sink } = trailWithSink();
+    const layer = createNeedsAuthorization({ authorizationUrl: 'https://consent.example/authorize', auditSink: trail.toolAuditSink(), serviceDid: SERVICE });
+    await layer.challenge({ agentDid: AGENT, tool: 'delete_order', scopes: ['orders:admin'], effectiveScopes: ['orders:read'], vpId: 'vp:helix:1' });
+    expect(sink.eventTypes).toEqual(['proof.verified', 'authorization.denied']);
+    expect(sink.events[1]).toMatchObject({ outcome: 'denied', reason: { code: 'needs_authorization' }, authorization: { decision: 'denied', scopeId: 'orders:admin' } });
   });
 
   it('an OAuth caller: only the authorization event, from policy, the subject as a keyed commitment', async () => {

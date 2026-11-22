@@ -4,10 +4,13 @@
 /* eslint-disable no-console -- command-line entry point: startup and error output is the point */
 
 import { HelixClient, kyaos } from '@helixid/sdk-js';
+import { appendFileSync } from 'node:fs';
 import {
   createHelixAuditReporter,
   createKyaOs,
   createMcpAuditTrail,
+  createNeedsAuthorization,
+  type AuditSink,
   type AuthResult,
   type KyaOsRuntime,
   type McpAuditTrail,
@@ -20,6 +23,7 @@ import {
   okta,
 } from '@helixid/mcp-middleware';
 import { createOrderServer } from './app.js';
+import { demoRetryAuthorizer } from './demo-authorizer.js';
 
 /**
  * Configuration (environment):
@@ -59,10 +63,24 @@ import { createOrderServer } from './app.js';
  *                           dynamo: KYAOS_DYNAMO_TABLE, KYAOS_DYNAMO_KEY_ATTRIBUTE, KYAOS_DYNAMO_TTL_ATTRIBUTE,
  *                                   KYAOS_DYNAMO_REGION, KYAOS_DYNAMO_ENDPOINT (AWS credentials: the SDK's chain)
  *                           See .env.example.
+ *   KYAOS_AUTHORIZATION_URL KYA-OS (story L3-E): the consent page a caller without the authority for a
+ *                         tool is sent to. Turns on the signed needs_authorization challenge and the
+ *                         resume flow; the resume-token store follows KYAOS_NONCE_STORE (Redis on
+ *                         KYAOS_REDIS_URL, key prefix KYAOS_RESUME_KEY_PREFIX, when the replay store is
+ *                         Redis; memory otherwise), chosen by @helixid/mcp-middleware itself. In
+ *                         DEMO_MODE the retry's DelegationCredential is checked structurally only (see
+ *                         demo-authorizer.ts); outside it every retry is refused until a verifier
+ *                         (stories F-2, L3-H) is wired in. Optional:
+ *   KYAOS_RESUME_TTL_SECONDS  resume-token lifetime (default 600)
+ *   AUDIT_LOG_FILE        append every audit event as one JSON line to this file, next to (or instead
+ *                         of) the HelixID audit sink; for local runs and the e2e suite
  */
 const DEMO_TOKENS: Record<string, AuthResult> = {
   'demo-reader': { sub: 'demo-reader', scopes: ['orders:read'] },
   'demo-admin': { sub: 'demo-admin', scopes: ['orders:read', 'orders:admin'] },
+  // Agents with a DID as subject, for the needs_authorization flow (story L3-E): read only until a delegation grants more.
+  'demo-agent': { sub: 'did:key:z6MkdemoAgentOrdersRead', scopes: ['orders:read'] },
+  'demo-agent-2': { sub: 'did:key:z6MkdemoAgentTwoOrdersRead', scopes: ['orders:read'] },
 };
 
 function fail(message: string): never {
@@ -258,6 +276,12 @@ if (apiUrl) {
     auth.auditSink = audit.toolAuditSink();
   }
 }
+const auditLogFile = env['AUDIT_LOG_FILE'];
+if (auditLogFile) {
+  const helixSink = auth.auditSink;
+  const fileSink: AuditSink = (event) => appendFileSync(auditLogFile, `${JSON.stringify(event)}\n`);
+  auth.auditSink = helixSink ? async (event): Promise<void> => (fileSink(event), helixSink(event)) : fileSink;
+}
 if (demo) {
   auth.validateOAuthToken = async (token): Promise<AuthResult> => {
     const result = Object.hasOwn(DEMO_TOKENS, token) ? DEMO_TOKENS[token] : undefined;
@@ -303,12 +327,47 @@ if (env['SERVICE_SIGNING_KEY']) {
   fail('KYAOS_* settings need SERVICE_SIGNING_KEY');
 }
 
+const authorizationUrl = env['KYAOS_AUTHORIZATION_URL'];
+if (authorizationUrl) {
+  if (!serviceDid) fail('KYAOS_AUTHORIZATION_URL needs SERVICE_DID (the challenge binds the token to this service)');
+  const ttlSeconds = numberFromEnv('KYAOS_RESUME_TTL_SECONDS', false);
+  try {
+    auth.needsAuthorization = createNeedsAuthorization({
+      // The consent page, with the binding in its query so the page knows what to show (the token stays out of the URL).
+      authorizationUrl: (c) => {
+        const url = new URL(authorizationUrl);
+        url.searchParams.set('agent', c.agentDid);
+        url.searchParams.set('tool', c.tool);
+        url.searchParams.set('scope', c.scopes.join(' '));
+        return url.toString();
+      },
+      ...(ttlSeconds !== undefined ? { ttlSeconds } : {}),
+      ...(demo ? { authorizer: demoRetryAuthorizer(serviceDid) } : {}),
+      ...(auth.auditSink ? { auditSink: auth.auditSink } : {}),
+      onAuditError: (error) => console.error('audit write failed:', error),
+      serviceDid,
+    });
+  } catch (error) {
+    fail(`KYA-OS needs_authorization: ${error instanceof Error ? error.message : String(error)}`);
+  }
+} else if (env['KYAOS_RESUME_TTL_SECONDS']) {
+  fail('KYAOS_RESUME_TTL_SECONDS needs KYAOS_AUTHORIZATION_URL');
+}
+
 if (kyaOs) {
   // redis and dynamo load their client package in the background: a missing one stops the server here, not at the first call.
   try {
     await kyaOs.ready();
   } catch (error) {
     fail(`KYA-OS: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+if (auth.needsAuthorization) {
+  // The resume-token store follows the replay store; a Redis one loads ioredis in the background, like it.
+  try {
+    await auth.needsAuthorization.ready();
+  } catch (error) {
+    fail(`KYA-OS needs_authorization: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -328,12 +387,22 @@ server.listen(port, host, () => {
   });
   console.log(`order-management MCP server on ${resource}`);
   console.log(`  HelixID VPs: ${auth.client ? `verified via ${apiUrl}` : 'off (set HELIX_API_URL)'}`);
-  console.log(`  OAuth:       ${demo ? 'DEMO tokens demo-reader, demo-admin' : modes.length ? modes.join(', ') : 'off'}`);
+  console.log(`  OAuth:       ${demo ? 'DEMO tokens demo-reader, demo-admin, demo-agent, demo-agent-2' : modes.length ? modes.join(', ') : 'off'}`);
   console.log(
     `  Audit:       ${
-      audit
-        ? `${apiUrl}/v1/audit-log/events (KYA-OS typed events; tool names ${audit.includeToolNames ? 'recorded' : 'withheld'})`
-        : 'off (set HELIX_API_URL + HELIX_API_KEY + SERVICE_DID)'
+      [
+        audit ? `${apiUrl}/v1/audit-log/events (KYA-OS typed events; tool names ${audit.includeToolNames ? 'recorded' : 'withheld'})` : '',
+        auditLogFile ? `file ${auditLogFile}` : '',
+      ]
+        .filter(Boolean)
+        .join(' + ') || 'off (set HELIX_API_URL + HELIX_API_KEY + SERVICE_DID, or AUDIT_LOG_FILE)'
+    }`,
+  );
+  console.log(
+    `  Consent:     ${
+      authorizationUrl
+        ? `needs_authorization challenges to ${authorizationUrl}, resume tokens ${env['KYAOS_NONCE_STORE']?.trim().toLowerCase() === 'redis' ? 'in redis (KYAOS_REDIS_URL)' : 'in memory'}, retries ${demo ? 'checked structurally (DEMO_MODE, no signature verification)' : 'refused until a verifier is wired in'}`
+        : 'off (set KYAOS_AUTHORIZATION_URL)'
     }`,
   );
   console.log(
