@@ -6,17 +6,22 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { decodeHelixVP, readHelixVPHeader, readHelixVPMeta, type SignedVP } from '@helixid/sdk-js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import {
   AuthorizationServerUnavailableError,
-  auditToolHandlers,
+  runAuditedTool,
+  type AuditedToolResult,
   buildProtectedResourceMetadata,
   helixidMCPMiddleware,
   protectedResourceMetadataUrl,
   toHttpErrorResponse,
+  type DetachedProof,
+  type KyaOsRuntime,
   type MCPMiddlewareOptions,
   type McpAuditTrail,
 } from '@helixid/mcp-middleware';
-import { TOOL_SCOPES, createOrderStore, registerOrderTools, type OrderStore } from './orders.js';
+import { z } from 'zod';
+import { TOOL_SCOPES, createOrderStore, registerOrderTools, type OrderStore, type ToolWrapper } from './orders.js';
 
 export interface OrderServerOptions {
   /** This server's MCP endpoint URL, e.g. `http://localhost:3700/mcp`. MCP is served at its path. */
@@ -35,6 +40,12 @@ export interface OrderServerOptions {
    * degraded (`_meta["org.kya-os/audit"]`).
    */
   audit?: McpAuditTrail;
+  /**
+   * The KYA-OS layer (story L2-A): the `_kyaos_handshake` tool, sessions,
+   * the replay store and a server-signed proof on every tool call outcome.
+   * Off when not given.
+   */
+  kyaos?: KyaOsRuntime;
   store?: OrderStore;
   /** Called for errors that are not the caller's fault (they become a 500). */
   onServerError?: (error: unknown) => void;
@@ -74,6 +85,21 @@ interface ToolCallMessage {
   method: 'tools/call';
   params?: { name?: unknown; arguments?: unknown; _meta?: unknown };
 }
+
+type Finisher = (result: CallToolResult) => Promise<CallToolResult>;
+
+const isMissingCredential = (error: unknown): boolean => (error as { code?: unknown } | null)?.code === 'VP_MISSING';
+
+/** The handshake tool's input, as the KYA-OS handshake-request schema has it; unknown members are dropped by zod. */
+const HANDSHAKE_INPUT = {
+  nonce: z.string().min(22),
+  audience: z.string().min(1),
+  timestamp: z.number().int().min(0),
+  agentDid: z.string().optional(),
+  clientInfo: z.object({ name: z.string() }).passthrough().optional(),
+  clientProtocolVersion: z.string().optional(),
+  clientCapabilities: z.record(z.unknown()).optional(),
+};
 
 function isToolCall(message: unknown): message is ToolCallMessage {
   return typeof message === 'object' && message !== null && (message as { method?: unknown }).method === 'tools/call';
@@ -117,10 +143,19 @@ function auditCode(error: unknown): string {
  * their VP in `params._meta` (not a header) keep working, and a VP is
  * verified once per tool call, not once per request. (A VP is not single-use
  * in Phase 1; see the middleware README.)
+ *
+ * With `kyaos` set, the same layer runs the KYA-OS session and proof flow:
+ * the `_kyaos_handshake` tool opens a session (credentials, when present,
+ * make it an authenticated one); every other tool call is started before
+ * the transport sees it (session lookup, authorization, control arguments
+ * stripped) and finished inside the tool handler, where the result is
+ * hashed and the proof signed into `_meta["org.kya-os/response-proof"]`. A
+ * refusal carries its `denied` proof in the 400/401/403 body.
  */
 export function createOrderServer(options: OrderServerOptions): Server {
   const store = options.store ?? createOrderStore();
   const guard = helixidMCPMiddleware({ ...options.auth, toolScopes: TOOL_SCOPES });
+  const kyaos = options.kyaos;
   const mcpPath = new URL(options.resource).pathname;
   const metadataUrl = protectedResourceMetadataUrl(options.resource);
   const metadataPath = new URL(metadataUrl).pathname;
@@ -155,29 +190,39 @@ export function createOrderServer(options: OrderServerOptions): Server {
 
     const toolCalls = (Array.isArray(body) ? body : [body]).filter(isToolCall);
     // One audited call per request: the gated tool call (a batch is audited as its first).
+    // The KYA-OS handshake is no gated tool call, so it is not audited as one.
     const first = toolCalls[0];
+    const firstName = typeof first?.params?.name === 'string' ? first.params.name : undefined;
     const call =
-      options.audit && first
+      options.audit && first && !(kyaos && kyaos.isHandshake(firstName))
         ? options.audit.beginToolCall({
-            ...(typeof first.params?.name === 'string' ? { toolName: first.params.name } : {}),
+            ...(firstName !== undefined ? { toolName: firstName } : {}),
             credential: presentedVP(req.headers, asRecord(first.params?._meta)),
           })
         : undefined;
 
     const serve = async (): Promise<void> => {
+      // KYA-OS: the proof of each allowed call is signed inside its tool handler
+      // (the result is only known there); a batch may call one tool twice.
+      const finishers = new Map<string, Finisher[]>();
+      // The agent the handshake call's credentials identified, if any.
+      let authenticatedAgentDid: string | undefined;
+
       for (const message of toolCalls) {
         const params = message.params ?? {};
+        const name = typeof params.name === 'string' ? params.name : undefined;
         const input = asRecord(params.arguments);
         const meta = asRecord(params._meta);
-        try {
-          await guard({
-            ...(typeof params.name === 'string' ? { name: params.name } : {}),
-            ...(input ? { input } : {}),
-            ...(meta ? { _meta: meta } : {}),
-            headers: req.headers,
-          });
-        } catch (error) {
-          const denial = toHttpErrorResponse(error, { resourceMetadataUrl: metadataUrl });
+        const toolCall = {
+          ...(name !== undefined ? { name } : {}),
+          ...(input ? { input } : {}),
+          ...(meta ? { _meta: meta } : {}),
+          headers: req.headers,
+        };
+        // A refusal is audited by its code (never its message): denied when the
+        // caller is answered 401/403, failed when it is a server fault.
+        const refuse = async (error: unknown, proof?: DetachedProof): Promise<void> => {
+          const denial = toHttpErrorResponse(error, { resourceMetadataUrl: metadataUrl, proof });
           if (!denial) {
             await call?.failed(auditCode(error));
             serverError(res, error);
@@ -185,16 +230,69 @@ export function createOrderServer(options: OrderServerOptions): Server {
           }
           await call?.denied(auditCode(error));
           sendJson(res, denial.status, denial.body, { 'www-authenticate': denial.headers['WWW-Authenticate'] });
+        };
+
+        if (kyaos && kyaos.isHandshake(name)) {
+          // The handshake is open to anonymous agents; a credential, when sent,
+          // must be good and makes the session an authenticated one.
+          try {
+            authenticatedAgentDid = (await guard.authorize({ ...toolCall, name: 'lookup_order' })).agentDid;
+          } catch (error) {
+            if (!isMissingCredential(error)) {
+              await refuse(error);
+              return;
+            }
+          }
+          continue;
+        }
+
+        if (!kyaos) {
+          try {
+            await guard(toolCall);
+          } catch (error) {
+            await refuse(error);
+            return;
+          }
+          continue;
+        }
+
+        const started = await kyaos.start({ name: name ?? '', arguments: input, _meta: meta }, { authorize: () => guard.authorize(toolCall) });
+        if (started.outcome === 'denied') {
+          await refuse(started.error, started.proof);
           return;
         }
+        // Control arguments (`_kyaos*`) never reach the tool.
+        message.params = { ...params, arguments: started.arguments };
+        const list = finishers.get(name ?? '') ?? [];
+        list.push((result) => started.finish(result) as Promise<CallToolResult>);
+        finishers.set(name ?? '', list);
       }
 
       // Stateless: a fresh server and transport per request. Leaving out
       // sessionIdGenerator is what makes the transport stateless.
       const server = new McpServer({ name: 'order-management', version: '0.0.0' });
-      // A-2: each tool runs audited; in required delivery the intent receipt comes before the handler.
-      if (call) auditToolHandlers(server, call);
-      registerOrderTools(server, store);
+      // A-2: each tool runs audited (runAuditedTool, as auditToolHandlers does),
+      // inside L2-A's proof wrapper: in required delivery the intent receipt comes
+      // before the handler, and the response proof is signed over the final
+      // result, a degraded marker included. The handshake is not a tool call
+      // and is not audited.
+      const wrap: ToolWrapper = (name, handler) => async (args, extra) => {
+        const result = call ? ((await runAuditedTool(call, async () => (await handler(args, extra)) as AuditedToolResult)) as CallToolResult) : await handler(args, extra);
+        const finish = finishers.get(name)?.shift();
+        return finish ? finish(result) : result;
+      };
+      registerOrderTools(server, store, wrap);
+      if (kyaos) {
+        server.registerTool(
+          kyaos.handshakeToolName,
+          {
+            title: 'KYA-OS handshake',
+            description: 'Opens a KYA-OS session: a fresh nonce, this server as audience, the current Unix time.',
+            inputSchema: HANDSHAKE_INPUT,
+          },
+          async (args) => (await kyaos.handshakeToolResult(args, { authenticatedAgentDid })) as CallToolResult,
+        );
+      }
       const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true });
       res.on('close', () => {
         void transport.close();
