@@ -6,13 +6,15 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import { kyaos } from '@helixid/sdk-js';
 import {
-  createHelixAuditSink,
+  createHelixAuditReporter,
   createKyaOs,
+  createMcpAuditTrail,
   createLocalVerifier,
   createNeedsAuthorization,
   type AuditSink,
   type AuthResult,
   type KyaOsRuntime,
+  type McpAuditTrail,
   type MCPMiddlewareOptions,
   type OAuthIntrospectionOptions,
   type OAuthIssuerOptions,
@@ -30,8 +32,12 @@ import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './we
  * Configuration (environment):
  *   PORT, HOST            listen address (default 3700 on 127.0.0.1)
  *   MCP_RESOURCE          public URL of the MCP endpoint (default http://localhost:$PORT/mcp); the OAuth audience
- *   HELIX_API_URL         HelixID API the audit sink writes to. Required whenever HELIX_API_KEY is
- *   HELIX_API_KEY         set: there is deliberately no default URL. Never on the request path.
+ *   HELIX_API_URL         HelixID API the audit trail writes to. Required whenever HELIX_API_KEY is
+ *   HELIX_API_KEY         set: there is deliberately no default URL. Never on the request path. The key
+ *                         turns on the audit trail (KYA-OS typed events to POST /v1/audit-log/events),
+ *                         which names this server as its producer, so it also needs SERVICE_DID.
+ *   AUDIT_INCLUDE_TOOL_NAMES=1
+ *                         record tool names in audit events (withheld by default: often sensitive)
  *   SERVICE_DID           this server's DID: the KYA-OS door (story F-2). Every tool call that carries
  *                         a request proof in _meta["org.kya-os/request-proof"] (and its delegation chain
  *                         in _meta["org.kya-os/delegation-chain"]) is verified in-process against this
@@ -276,9 +282,17 @@ const auth: Omit<MCPMiddlewareOptions, 'toolScopes' | 'requiredScopes'> = {
   ...(serviceDid ? { expectedTargetService: serviceDid, serviceDid } : {}),
   onAuditError: (error) => console.error('audit write failed:', error),
 };
+let audit: McpAuditTrail | undefined;
 if (apiUrl && apiKey) {
-  // The audit sink is the only thing that talks to the Helix API, and never on the request path.
-  auth.auditSink = createHelixAuditSink({ baseUrl: apiUrl, apiKey, ...(serviceDid ? { serviceDid } : {}) });
+  // The audit trail is the only thing that talks to the Helix API, and never on the request path.
+  if (!serviceDid) fail('HELIX_API_KEY turns on the audit trail, whose events name this server: set SERVICE_DID');
+  audit = createMcpAuditTrail({
+    reporter: createHelixAuditReporter({ baseUrl: apiUrl, apiKey }),
+    serviceDid,
+    includeToolNames: env['AUDIT_INCLUDE_TOOL_NAMES'] === '1',
+  });
+  // The guard's decisions and the call lifecycle share one trail (one source, one sequence).
+  auth.auditSink = audit.toolAuditSink();
 }
 const auditLogFile = env['AUDIT_LOG_FILE'];
 if (auditLogFile) {
@@ -427,6 +441,7 @@ const server = createOrderServer({
   resource,
   ...(issuers.length > 0 ? { authorizationServers: issuers.map((i) => i.issuer) } : {}),
   auth,
+  ...(audit ? { audit } : {}),
   ...(kyaOs ? { kyaos: kyaOs } : {}),
   ...(wellKnown ? { wellKnown } : {}),
   onServerError: (error) => console.error('server error:', error),
@@ -446,7 +461,16 @@ server.listen(port, host, () => {
     }`,
   );
   console.log(`  OAuth:       ${demo ? 'DEMO tokens demo-reader, demo-admin, demo-agent, demo-agent-2' : modes.length ? modes.join(', ') : 'off'}`);
-  console.log(`  Audit:       ${[apiKey && apiUrl ? `${apiUrl}/v1/audit-log/events` : '', auditLogFile ? `file ${auditLogFile}` : ''].filter(Boolean).join(' + ') || 'off (set HELIX_API_URL + HELIX_API_KEY, or AUDIT_LOG_FILE)'}`);
+  console.log(
+    `  Audit:       ${
+      [
+        audit ? `${apiUrl}/v1/audit-log/events (KYA-OS typed events; tool names ${audit.includeToolNames ? 'recorded' : 'withheld'})` : '',
+        auditLogFile ? `file ${auditLogFile}` : '',
+      ]
+        .filter(Boolean)
+        .join(' + ') || 'off (set HELIX_API_URL + HELIX_API_KEY + SERVICE_DID, or AUDIT_LOG_FILE)'
+    }`,
+  );
   console.log(
     `  Consent:     ${
       authorizationUrl

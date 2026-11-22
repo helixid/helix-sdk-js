@@ -1,7 +1,7 @@
 export { helixidMCPMiddleware } from './middleware.js';
 export type { MCPMiddleware, AuthorizedCaller as MiddlewareCaller } from './middleware.js';
 export { createJwtValidator, createIntrospectionValidator, createOAuthValidator } from './oauth.js';
-export { createHelixAuditSink } from './audit.js';
+export { createHelixAuditSink, createHelixAuditReporter, createMcpAuditTrail, McpAuditTrail, ToolCallAudit } from './audit.js';
 export { DEFAULT_TRUSTED_ISSUERS } from './credentials.js';
 export type { TrustedIssuers } from './credentials.js';
 export { isTrustedIssuer, attestationTrust } from './trusted-issuers.js';
@@ -19,7 +19,15 @@ export * from './resume-token-store.js';
 export * from './resume-token-store-env.js';
 export type { MCPMiddlewareOptions, MiddlewareVerifierOptions, MCPToolCall } from './types.js';
 export type { AuthResult, OAuthJwtOptions, OAuthIssuerOptions, OAuthIntrospectionOptions, OAuthOptions } from './oauth.js';
-export type { AuditSink, ToolAuditEvent, HelixAuditSinkOptions } from './audit.js';
+export type {
+  AuditSink,
+  ToolAuditEvent,
+  HelixAuditSinkOptions,
+  HelixAuditReporterOptions,
+  McpAuditTrailOptions,
+  McpAuditContext,
+  ToolCallAuditOptions,
+} from './audit.js';
 export type {
   ProtectedResourceMetadata,
   ProtectedResourceMetadataInput,
