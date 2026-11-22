@@ -17,7 +17,7 @@
  * validated, references bounded, sequenced per source, digested, and handed
  * to a reporter (`createHelixAuditReporter`: `POST /v1/audit-log/events`).
  *
- * No event ever holds tool arguments, a response, a bearer token or a VP. An
+ * No event ever holds tool arguments, a response, a bearer token or a credential. An
  * OAuth subject enters only as a keyed commitment under a key the trail
  * holds; a tool name is withheld unless `includeToolNames` is set.
  */
@@ -61,12 +61,14 @@ export interface ToolAuditEvent {
   event: 'AUTHZ_GRANTED' | 'AUTHZ_DENIED';
   result: 'allowed' | 'denied';
   timestamp: string;
-  authMethod: 'helixvp' | 'oauth';
-  /** HelixID callers: the agent DID. */
+  authMethod: 'kyaos' | 'oauth';
+  /** KYA-OS callers: the agent DID the request proof verified as. */
   agentDid?: string;
+  /** KYA-OS callers: the level the local verifier derived (story F-2) and whether every status was read live. */
+  level?: 'L1' | 'L2' | 'L3';
+  fresh?: boolean;
   /** OAuth callers: the token's `sub`. Never recorded as such; see `McpAuditTrail`. */
   oauthSubject?: string;
-  vpId?: string;
   toolName?: string;
   /** The scope that was required (on denial, the one that was missing). */
   requiredScope?: string;
@@ -221,6 +223,14 @@ function delegationAuthorization(delegation: DelegationEvidence, decision: Autho
     ...(delegation.delegationCredentialDigest !== undefined ? { delegationCredentialDigest: delegation.delegationCredentialDigest as Digest } : {}),
     ...(delegation.delegationChainDigests !== undefined ? { delegationChainDigests: delegation.delegationChainDigests as Digest[] } : {}),
   };
+}
+
+/** The guard's own denials of an identified caller; any other reason a KYA-OS caller is denied with is the local verifier's. */
+const GUARD_REASONS: ReadonlySet<string> = new Set(['tool is not in toolScopes', 'insufficient scope', 'needs_authorization']);
+
+/** `KYAOS_PROOF_<level>`, with `_CACHED` when the verifier did not read every status live (story F-2). */
+function kyaosVerificationCode(event: ToolAuditEvent): string {
+  return `KYAOS_PROOF${event.level !== undefined ? `_${event.level}` : ''}${event.fresh === false ? '_CACHED' : ''}`;
 }
 
 /** The lifecycle events of one tool call; see `McpAuditTrail.beginToolCall`. */
@@ -438,10 +448,13 @@ export class McpAuditTrail {
 
   /**
    * The middleware's `auditSink`: translates each authorization decision into
-   * the typed events. A HelixID caller: `proof.verified`, then
-   * `delegation.verified` when the presented credential is known, then
-   * `authorization.approved` or `authorization.denied` (reason
-   * `needs_authorization` for an L3-E challenge). An OAuth caller: only the
+   * the typed events. A KYA-OS caller (story F-2): `proof.verified`, its
+   * verification code naming the level the local verifier derived (and
+   * `_CACHED` when a status was not read live), then `delegation.verified`
+   * when the presented credential is known, then `authorization.approved` or
+   * `authorization.denied` (reason `needs_authorization` for an L3-E
+   * challenge); a request proof the verifier refused is `proof.rejected` by
+   * its first reason code, and nothing else. An OAuth caller: only the
    * authorization event, with the subject as a keyed commitment.
    */
   toolAuditSink(): AuditSink {
@@ -456,11 +469,17 @@ export class McpAuditTrail {
       };
       const toolName = event.toolName;
       const scopeId = event.requiredScope;
-      const helixvp = event.authMethod === 'helixvp';
-      if (helixvp) {
+      const allowed = event.result === 'allowed';
+      const kyaos = event.authMethod === 'kyaos';
+      if (kyaos && !allowed && scopeId === undefined && event.reason !== undefined && !GUARD_REASONS.has(event.reason)) {
+        // The local verifier refused the request proof: its reasons are codes, the first one names the refusal.
+        await this.proof('rejected', { outcome: 'denied', reasonCode: event.reason.split(',')[0]!.trim() || 'proof_invalid', context: base });
+        return;
+      }
+      if (kyaos) {
         await this.proof('verified', {
           outcome: 'succeeded',
-          verificationCode: 'VP_VERIFIED',
+          verificationCode: kyaosVerificationCode(event),
           context: { ...base, ...(delegation !== undefined ? { authorization: delegationAuthorization(delegation, 'allowed') } : {}) },
         });
         if (delegation !== undefined) {
@@ -471,12 +490,11 @@ export class McpAuditTrail {
           });
         }
       }
-      const allowed = event.result === 'allowed';
       const decision: AuthorizationEvidence['decision'] = allowed ? 'allowed' : 'denied';
       const authorization: AuthorizationEvidence =
-        helixvp && delegation !== undefined
+        kyaos && delegation !== undefined
           ? delegationAuthorization(delegation, decision, scopeId)
-          : { source: helixvp ? 'delegation' : 'policy', decision, ...(scopeId !== undefined ? { scopeId } : {}) };
+          : { source: kyaos ? 'delegation' : 'policy', decision, ...(scopeId !== undefined ? { scopeId } : {}) };
       const context: McpAuditContext = { ...base, authorization };
       if (allowed) {
         await this.authorization('approved', { outcome: 'succeeded', context, ...(toolName !== undefined ? { toolName } : {}) });

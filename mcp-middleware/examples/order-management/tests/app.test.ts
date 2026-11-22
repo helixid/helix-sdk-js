@@ -4,7 +4,7 @@
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { MemoryAuditSink, encodeHelixVP, parseAuditEvent, type HelixClient, type SignedVP } from '@helixid/sdk-js';
+import { MemoryAuditSink, generateKeyPair, kyaos, parseAuditEvent, publicKeyToMultibase } from '@helixid/sdk-js';
 import { createMcpAuditTrail, type McpAuditTrail } from '@helixid/mcp-middleware';
 import { createOrderServer, type OrderServerOptions } from '../src/app.js';
 import { createOrderStore } from '../src/orders.js';
@@ -15,13 +15,14 @@ const TOKENS: Record<string, { sub: string; scopes: string[] }> = {
 };
 const SERVICE_DID = 'did:web:orders.example';
 
-/** Stands in for the HelixID API: any VP whose id starts with "vp:ok" verifies, with read scope. */
-const fakeClient = {
-  verifyVP: async (vp: { id: string }) =>
-    vp.id.startsWith('vp:ok')
-      ? { valid: true, agentDid: 'did:key:agent', privilegeScopes: ['orders:read'], effectiveScopes: ['orders:read'], vpId: vp.id, delegationChain: [] }
-      : { valid: false, agentDid: '', privilegeScopes: [], effectiveScopes: [], vpId: '', delegationChain: [], error: 'bad signature' },
-} as unknown as HelixClient;
+/** A KYA-OS agent (did:key, resolved offline) that mints a request proof per call; nothing asks the Helix API (story F-2). */
+const agentKeys = generateKeyPair();
+const AGENT = `did:key:${publicKeyToMultibase(agentKeys.publicKey)}`;
+const agentSigner = new kyaos.EnvSigner({ did: AGENT, kid: AGENT.slice('did:key:'.length), envVar: 'AGENT_KEY', env: { AGENT_KEY: agentKeys.privateKey } });
+const SERVICE = 'did:web:orders.example';
+const proofMeta = async (name: string, args: Record<string, unknown>, audience = SERVICE): Promise<Record<string, unknown>> => ({
+  'org.kya-os/request-proof': await kyaos.verifier.signRequestProof({ method: 'tools/call', params: { name, arguments: args } }, agentSigner, { audience }),
+});
 
 let server: Server;
 let base: string;
@@ -34,8 +35,8 @@ async function listen(options: Partial<OrderServerOptions> = {}): Promise<{ serv
     authorizationServers: ['https://as.example.com'],
     store: createOrderStore(),
     auth: {
-      client: fakeClient,
       serviceDid: SERVICE_DID,
+      verifier: { reportVerification: () => undefined },
       validateOAuthToken: async (token) => {
         const found = TOKENS[token];
         if (!found) throw new Error('unknown token');
@@ -120,9 +121,9 @@ describe('order-management sample server', () => {
     expect(res.status).toBe(401);
     const challenge = res.headers.get('www-authenticate') ?? '';
     expect(challenge).toContain('Bearer resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp"');
-    expect(challenge).toContain('HelixVP resource_metadata=');
+    expect(challenge).toContain('KyaOS resource_metadata=');
     expect(sink.eventTypes).toEqual(['session.established', 'tool.call.denied']);
-    expect(sink.events[1]).toMatchObject({ outcome: 'denied', reason: { code: 'vp_missing' }, details: { family: 'tool', phase: 'denied', attempt: '1' } });
+    expect(sink.events[1]).toMatchObject({ outcome: 'denied', reason: { code: 'proof_missing' }, details: { family: 'tool', phase: 'denied', attempt: '1' } });
     expect(sink.events[1]!.actor).toBeUndefined();
   });
 
@@ -220,70 +221,48 @@ describe('order-management sample server', () => {
     expectNothingLeaked(['delete_order', 'toolScopes']);
   });
 
-  it('records exactly the typed lifecycle of a HelixID VP caller, attributed to the agent', async () => {
-    const vp = encodeHelixVP({ id: 'vp:ok:1' } as unknown as SignedVP);
+  it('records a KYA-OS request proof verified in-process by its level, attributed to the agent, and a refused one as proof.rejected (story F-2)', async () => {
+    const meta = await proofMeta('lookup_order', { orderId: 'ORD-1001' });
+    const first = await callTool('lookup_order', { orderId: 'ORD-1001' }, {}, meta);
+    // The agent presented no chain and no attested card: a valid proof with no delegated scope is refused by scope, never by the API.
+    expect(first.status).toBe(403);
+    expect(first.headers.get('www-authenticate')).toContain('scope="orders:read"');
+    expect(sink.eventTypes).toEqual(['session.established', 'proof.verified', 'authorization.denied', 'tool.call.denied']);
+    for (const event of sink.events.slice(1)) expect(event.actor).toEqual({ kind: 'pairwise_did', did: AGENT });
+    expect(sink.events[1]).toMatchObject({ outcome: 'succeeded', details: { family: 'proof', phase: 'verified', verificationCode: 'KYAOS_PROOF_L1' } });
+    expect(sink.events[2]).toMatchObject({ reason: { code: 'insufficient_scope' }, authorization: { source: 'delegation', decision: 'denied', scopeId: 'orders:read' } });
 
-    const viaHeader = await callTool('lookup_order', { orderId: 'ORD-1001' }, { authorization: `HelixVP ${vp}` });
-    expect(viaHeader.status).toBe(200);
-    const expected = ['session.established', 'proof.verified', 'authorization.approved', 'tool.call.started', 'tool.call.completed'];
-    expect(sink.eventTypes).toEqual(expected);
-    const viaMeta = await callTool('lookup_order', { orderId: 'ORD-1001' }, {}, { 'x-helix-vp': vp });
-    expect(viaMeta.status).toBe(200);
-    expect(typesFrom(5)).toEqual(expected);
+    const replay = await callTool('lookup_order', { orderId: 'ORD-1001' }, {}, meta);
+    expect(replay.status).toBe(401);
+    expect(replay.body.error_description).toContain('nonce_replayed');
+    expect(typesFrom(4)).toEqual(['session.established', 'proof.rejected', 'tool.call.denied']);
+    expect(eventsFrom(4)[1]).toMatchObject({ outcome: 'denied', reason: { code: 'nonce_replayed' }, actor: { kind: 'pairwise_did', did: AGENT } });
+    expect(eventsFrom(4)[2]!.reason).toEqual({ code: 'proof_invalid' });
 
-    for (const event of [...eventsFrom(0).slice(1, 5), ...eventsFrom(5).slice(1)]) {
-      expect(event.actor).toEqual({ kind: 'pairwise_did', did: 'did:key:agent' });
-    }
-    expect(sink.events[1]).toMatchObject({ outcome: 'succeeded', details: { family: 'proof', phase: 'verified', verificationCode: 'VP_VERIFIED' } });
-    expect(sink.events[2]).toMatchObject({ authorization: { source: 'delegation', decision: 'allowed' } });
-    expectNothingLeaked([vp, 'vp:ok:1', 'ORD-1001', 'lookup_order']);
+    const tampered = await callTool('lookup_order', { orderId: 'ORD-1002' }, {}, await proofMeta('lookup_order', { orderId: 'ORD-1001' }));
+    expect(tampered.status).toBe(401);
+    expect(tampered.body.error_description).toContain('request_hash_mismatch');
+    // A proof that names no verified DID is never attributed: only the call is recorded, denied by its code.
+    expect(typesFrom(7)).toEqual(['session.established', 'tool.call.denied']);
+    expect(eventsFrom(7)[1]).toMatchObject({ reason: { code: 'proof_invalid' } });
+    expect(eventsFrom(7)[1]!.actor).toBeUndefined();
+    const elsewhere = await callTool('lookup_order', { orderId: 'ORD-1001' }, {}, await proofMeta('lookup_order', { orderId: 'ORD-1001' }, 'did:web:other.example'));
+    expect(elsewhere.status).toBe(401);
+    expect(elsewhere.body.error_description).toContain('audience_mismatch');
+    expectNothingLeaked(['ORD-1001', 'ORD-1002', 'lookup_order', JSON.stringify(meta)]);
   });
 
-  it('attaches delegation evidence when the VP carries a signed agent credential', async () => {
-    const agentVC = {
-      id: 'urn:uuid:agent-vc',
-      type: ['VerifiableCredential', 'HelixAgentCredential'],
-      credentialSubject: { id: 'did:key:agent', type: 'HelixAgent' },
-      proof: { type: 'Ed25519Signature2020', proofValue: 'AQIDBA==' },
-    };
-    const vp = encodeHelixVP({ id: 'vp:ok:2', verifiableCredential: [agentVC] } as unknown as SignedVP);
-    const res = await callTool('lookup_order', { orderId: 'ORD-1001' }, {}, { 'x-helix-vp': vp });
-    expect(res.status).toBe(200);
-    expect(sink.eventTypes).toEqual(['session.established', 'proof.verified', 'delegation.verified', 'authorization.approved', 'tool.call.started', 'tool.call.completed']);
-    const evidence = { source: 'delegation', decision: 'allowed', delegationRef: 'urn:uuid:agent-vc', delegationCredentialDigest: expect.stringMatching(/^sha256:/), delegationChainDigests: [expect.stringMatching(/^sha256:/)] };
-    expect(sink.events[1]!.authorization).toEqual(evidence);
-    expect(sink.events[2]).toMatchObject({ authorization: evidence, details: { family: 'delegation', phase: 'verified', delegationRef: 'urn:uuid:agent-vc' } });
-    expect(sink.events[3]!.authorization).toEqual(evidence);
-    expectNothingLeaked([vp, 'AQIDBA']);
-  });
-
-  it('rejects a VP that fails verification with 401, audited as vp_verification_failed', async () => {
-    const vp = encodeHelixVP({ id: 'vp:bad' } as unknown as SignedVP);
-    const res = await callTool('lookup_order', { orderId: 'ORD-1001' }, { authorization: `HelixVP ${vp}` });
-    expect(res.status).toBe(401);
-    expect(sink.eventTypes).toEqual(['session.established', 'tool.call.denied']);
-    expect(sink.events[1]!.reason).toEqual({ code: 'vp_verification_failed' });
-    expectNothingLeaked([vp, 'bad signature']);
-  });
-
-  it('rejects a VP and a bearer token together with 400, audited as credential_conflict', async () => {
-    const vp = encodeHelixVP({ id: 'vp:ok:1' } as unknown as SignedVP);
-    const res = await callTool('lookup_order', { orderId: 'ORD-1001' }, { ...bearer('reader'), 'x-helix-vp': vp });
+  it('rejects a proof and a bearer token together with 400, audited as credential_conflict', async () => {
+    const res = await callTool('lookup_order', { orderId: 'ORD-1001' }, bearer('reader'), await proofMeta('lookup_order', { orderId: 'ORD-1001' }));
     expect(res.status).toBe(400);
     expect(sink.eventTypes).toEqual(['session.established', 'tool.call.denied']);
     expect(sink.events[1]!.reason).toEqual({ code: 'credential_conflict' });
   });
 
-  it('tolerates a VP that does not decode: the guard answers it, the call is audited as denied', async () => {
-    const res = await callTool('lookup_order', { orderId: 'ORD-1001' }, {}, { 'x-helix-vp': 'not-base64url-json' });
-    expect(res.status).toBe(401);
-    expect(sink.eventTypes).toEqual(['session.established', 'tool.call.denied']);
-  });
-
   it('records tool names only when the trail is told to', async () => {
     const named = new MemoryAuditSink();
     const namedTrail = createMcpAuditTrail({ reporter: named, serviceDid: SERVICE_DID, includeToolNames: true });
-    const other = await listen({ audit: namedTrail, auth: { client: fakeClient, serviceDid: SERVICE_DID, validateOAuthToken: async () => TOKENS['reader']!, auditSink: namedTrail.toolAuditSink() } });
+    const other = await listen({ audit: namedTrail, auth: { verifier: { reportVerification: () => undefined }, serviceDid: SERVICE_DID, validateOAuthToken: async () => TOKENS['reader']!, auditSink: namedTrail.toolAuditSink() } });
     try {
       await callTool('lookup_order', { orderId: 'ORD-1001' }, bearer('reader'), undefined, other.base);
     } finally {
@@ -298,7 +277,7 @@ describe('order-management sample server', () => {
     const quiet = createOrderServer({
       resource: 'http://localhost/mcp',
       store: createOrderStore(),
-      auth: { client: fakeClient, serviceDid: SERVICE_DID, validateOAuthToken: async () => TOKENS['reader']! },
+      auth: { verifier: { reportVerification: () => undefined }, serviceDid: SERVICE_DID, validateOAuthToken: async () => TOKENS['reader']! },
     });
     await new Promise<void>((resolve) => quiet.listen(0, '127.0.0.1', resolve));
     try {

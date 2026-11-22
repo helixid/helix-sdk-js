@@ -5,7 +5,7 @@
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import { generateKeyPair, kyaos, type HelixClient } from '@helixid/sdk-js';
+import { generateKeyPair, kyaos } from '@helixid/sdk-js';
 import { createKyaOs, createWellKnownMcp, validateWellKnownMcp, type KyaOsRuntime, type WellKnownMcp } from '@helixid/mcp-middleware';
 import { createOrderServer } from '../src/app.js';
 import { describeWellKnown, wellKnownFromEnv } from '../src/well-known-env.js';
@@ -14,14 +14,14 @@ const SERVICE = 'did:web:orders.example';
 const PUBLIC_ORIGIN = 'https://orders.example';
 const keys = generateKeyPair();
 const signer = new kyaos.EnvSigner({ did: SERVICE, envVar: 'SAMPLE_SERVICE_KEY', env: { SAMPLE_SERVICE_KEY: keys.privateKey } });
-const fakeClient = { verifyVP: async () => ({ valid: false, error: 'unused' }) } as unknown as HelixClient;
 
 let server: Server | undefined;
 
 async function start(options: { kyaos?: KyaOsRuntime; wellKnown?: WellKnownMcp }): Promise<string> {
   server = createOrderServer({
     resource: 'http://127.0.0.1:3700/orders/mcp',
-    auth: { client: fakeClient, serviceDid: SERVICE, validateOAuthToken: async () => ({ sub: 'x', scopes: [] }) },
+    // The discovery route needs no verifier; story F-2 retired the VP client the middleware took.
+    auth: { serviceDid: SERVICE, validateOAuthToken: async () => ({ sub: 'x', scopes: [] }) },
     ...options,
   });
   await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));

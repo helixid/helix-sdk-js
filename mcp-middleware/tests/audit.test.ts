@@ -38,9 +38,10 @@ const decision = (overrides: Partial<ToolAuditEvent> = {}): ToolAuditEvent => ({
   event: 'AUTHZ_GRANTED',
   result: 'allowed',
   timestamp: '2026-01-01T00:00:00.000Z',
-  authMethod: 'helixvp',
+  authMethod: 'kyaos',
   agentDid: AGENT,
-  vpId: 'vp:helix:1',
+  level: 'L2',
+  fresh: true,
   toolName: 'lookup_order',
   effectiveScopes: ['orders:read'],
   serviceDid: SERVICE,
@@ -266,7 +267,7 @@ describe('McpAuditTrail events', () => {
 });
 
 describe('McpAuditTrail.toolAuditSink', () => {
-  it('a HelixID caller allowed: proof.verified then authorization.approved from delegation', async () => {
+  it('a KYA-OS caller allowed: proof.verified at its level, then authorization.approved from delegation', async () => {
     const { trail, sink } = trailWithSink();
     await trail.toolAuditSink()(decision({ correlationId: 'call-7' }));
     expect(sink.eventTypes).toEqual(['proof.verified', 'authorization.approved']);
@@ -276,7 +277,7 @@ describe('McpAuditTrail.toolAuditSink', () => {
       correlationId: 'call-7',
       resource: { kind: 'public_did', did: SERVICE },
       outcome: 'succeeded',
-      details: { family: 'proof', phase: 'verified', verificationCode: 'VP_VERIFIED' },
+      details: { family: 'proof', phase: 'verified', verificationCode: 'KYAOS_PROOF_L2' },
     });
     expect(proof!.authorization).toBeUndefined();
     expect(authorization).toMatchObject({
@@ -307,7 +308,26 @@ describe('McpAuditTrail.toolAuditSink', () => {
     expect(sink.events[1]!.details).toEqual({ family: 'delegation', phase: 'verified', delegationRef: 'unknown' });
   });
 
-  it('a HelixID caller denied: insufficient_scope with the scope, else tool_not_permitted', async () => {
+  it('a request proof the local verifier refused: proof.rejected by its first reason, and no authorization event (story F-2)', async () => {
+    const { trail, sink } = trailWithSink();
+    const sinkFn = trail.toolAuditSink();
+    await sinkFn(decision({ event: 'AUTHZ_DENIED', result: 'denied', effectiveScopes: [], reason: 'proof_expired,status_unavailable' }));
+    await sinkFn(decision({ event: 'AUTHZ_DENIED', result: 'denied', effectiveScopes: [], reason: ' ' }));
+    expect(sink.eventTypes).toEqual(['proof.rejected', 'proof.rejected']);
+    expect(sink.events[0]).toMatchObject({ outcome: 'denied', reason: { code: 'proof_expired' }, actor: { kind: 'pairwise_did', did: AGENT } });
+    expect(sink.events[1]).toMatchObject({ reason: { code: 'proof_invalid' } });
+  });
+
+  it('names the level in the verification code, with _CACHED when a status was not read live, and none without a level', async () => {
+    const { trail, sink } = trailWithSink();
+    const sinkFn = trail.toolAuditSink();
+    await sinkFn(decision({ level: 'L3', fresh: false }));
+    await sinkFn(decision({ level: undefined, fresh: undefined }));
+    expect(sink.events[0]!.details).toMatchObject({ verificationCode: 'KYAOS_PROOF_L3_CACHED' });
+    expect(sink.events[2]!.details).toMatchObject({ verificationCode: 'KYAOS_PROOF' });
+  });
+
+  it('a KYA-OS caller denied: insufficient_scope with the scope, else tool_not_permitted', async () => {
     const { trail, sink } = trailWithSink();
     const sinkFn = trail.toolAuditSink();
     await sinkFn(decision({ event: 'AUTHZ_DENIED', result: 'denied', requiredScope: 'orders:admin', reason: 'insufficient scope' }));
@@ -322,7 +342,7 @@ describe('McpAuditTrail.toolAuditSink', () => {
   it('an L3-E needs_authorization challenge: authorization.denied keeps the reason needs_authorization', async () => {
     const { trail, sink } = trailWithSink();
     const layer = createNeedsAuthorization({ authorizationUrl: 'https://consent.example/authorize', auditSink: trail.toolAuditSink(), serviceDid: SERVICE });
-    await layer.challenge({ agentDid: AGENT, tool: 'delete_order', scopes: ['orders:admin'], effectiveScopes: ['orders:read'], vpId: 'vp:helix:1' });
+    await layer.challenge({ agentDid: AGENT, tool: 'delete_order', scopes: ['orders:admin'], effectiveScopes: ['orders:read'] });
     expect(sink.eventTypes).toEqual(['proof.verified', 'authorization.denied']);
     expect(sink.events[1]).toMatchObject({ outcome: 'denied', reason: { code: 'needs_authorization' }, authorization: { decision: 'denied', scopeId: 'orders:admin' } });
   });
@@ -331,8 +351,8 @@ describe('McpAuditTrail.toolAuditSink', () => {
     const key = Buffer.from('k'.repeat(32));
     const { trail, sink } = trailWithSink({ oauthSubjectKey: key });
     const sinkFn = trail.toolAuditSink();
-    await sinkFn(decision({ authMethod: 'oauth', agentDid: undefined, vpId: undefined, oauthSubject: 'user-9' }));
-    await sinkFn(decision({ authMethod: 'oauth', agentDid: undefined, vpId: undefined, oauthSubject: 'user-9', event: 'AUTHZ_DENIED', result: 'denied', requiredScope: 'orders:admin' }));
+    await sinkFn(decision({ authMethod: 'oauth', agentDid: undefined, level: undefined, fresh: undefined, oauthSubject: 'user-9' }));
+    await sinkFn(decision({ authMethod: 'oauth', agentDid: undefined, level: undefined, fresh: undefined, oauthSubject: 'user-9', event: 'AUTHZ_DENIED', result: 'denied', requiredScope: 'orders:admin' }));
     expect(sink.eventTypes).toEqual(['authorization.approved', 'authorization.denied']);
     expect(sink.events[0]).toMatchObject({
       actor: { kind: 'keyed_commitment', value: keyedCommitmentValue(key, 'user-9'), keyId: 'oauth-subject-v1' },

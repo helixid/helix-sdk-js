@@ -1,26 +1,31 @@
 // Copyright 2026 DgVerse LLP
 // Licensed under the Apache License, Version 2.0
 
-import { HELIX_VP_META_KEY, VPInvalidStructureError } from '@helixid/sdk-js';
-import type { HeadersLike } from '@helixid/sdk-js';
+import { kyaos, type HeadersLike } from '@helixid/sdk-js';
 import { MCPAuthError } from './errors.js';
 
+/**
+ * What a tool call carries to identify its caller: a KYA-OS request proof
+ * (and, with it, the chain the request carries) in `params._meta`, or an
+ * OAuth bearer token in the `Authorization` header. Story F-2 retired the
+ * Helix VP (`X-Helix-VP`, `_meta["x-helix-vp"]`) with no backward
+ * compatibility: those are no longer read.
+ */
 export type ExtractedCredential =
-  | { kind: 'vp'; encoded: string }
+  | { kind: 'proof'; proof: unknown; chain: unknown }
   | { kind: 'oauth'; token: string };
 
 /**
  * KYA-OS story C-B: which issuers' capability attestations a verifier counts.
  * `'*'` trusts every issuer; a list trusts exactly those DIDs. Shipped as
  * allow-all (stories rule 9); the setting stays so a service can set a list.
- * See `isTrustedIssuer` in ./trusted-issuers.ts.
+ * The one definition is the local verifier's (`kyaos.verifier.TrustedIssuers`,
+ * story F-2); see `isTrustedIssuer` in ./trusted-issuers.ts.
  */
-export type TrustedIssuers = '*' | readonly string[];
+export type TrustedIssuers = kyaos.verifier.TrustedIssuers;
 export const DEFAULT_TRUSTED_ISSUERS: TrustedIssuers = '*';
 
-const VP_SCHEME = 'helixvp';
 const BEARER_SCHEME = 'bearer';
-const VP_HEADER = 'x-helix-vp';
 
 /** All values of a header, case-insensitively; empty values are dropped. */
 function readHeaderValues(headers: HeadersLike | undefined, name: string): string[] {
@@ -39,19 +44,20 @@ function readHeaderValues(headers: HeadersLike | undefined, name: string): strin
 }
 
 /**
- * Finds the caller's credential: `Authorization: HelixVP <vp>`, the legacy
- * `X-Helix-VP` header, or MCP `_meta["x-helix-vp"]` (stdio) for a HelixID VP,
- * or `Authorization: Bearer <token>` for OAuth. Tool arguments are never read.
+ * Finds the caller's credential: the request proof at
+ * `_meta["org.kya-os/request-proof"]` (or the legacy `org.kya-os/proof@1`
+ * key, the canonical one winning when both are present), with the carried
+ * chain at `_meta["org.kya-os/delegation-chain"]`; or `Authorization:
+ * Bearer <token>` for OAuth. Tool arguments are never read.
  *
- * Ambiguity is rejected, never resolved by picking one: two different VPs,
- * two Authorization headers, or a VP together with a bearer token all throw
- * CREDENTIAL_CONFLICT. The same VP repeated in several places is accepted.
+ * Ambiguity is rejected, never resolved by picking one: two Authorization
+ * headers, or a proof together with a bearer token, throw
+ * CREDENTIAL_CONFLICT.
  */
 export function extractCredential(input: {
   headers?: HeadersLike | undefined;
   _meta?: Record<string, unknown> | undefined;
 }): ExtractedCredential | undefined {
-  const vps = new Set<string>();
   let bearer: string | undefined;
 
   const authorization = readHeaderValues(input.headers, 'authorization');
@@ -64,34 +70,15 @@ export function extractCredential(input: {
     if (!match) {
       throw new MCPAuthError('CREDENTIAL_CONFLICT', 'Malformed Authorization header');
     }
-    const scheme = (match[1] as string).toLowerCase();
-    const credential = match[2] as string;
-    if (scheme === VP_SCHEME) vps.add(credential);
-    else if (scheme === BEARER_SCHEME) bearer = credential;
+    if ((match[1] as string).toLowerCase() === BEARER_SCHEME) bearer = match[2] as string;
     // Any other scheme is not ours; treated as no credential.
   }
 
-  for (const value of readHeaderValues(input.headers, VP_HEADER)) vps.add(value);
-
-  const raw = input._meta?.[HELIX_VP_META_KEY];
-  if (raw !== undefined && raw !== null && raw !== '') {
-    if (typeof raw !== 'string') {
-      throw new VPInvalidStructureError(`_meta["${HELIX_VP_META_KEY}"] must be a base64url-encoded string`);
-    }
-    vps.add(raw.trim());
+  const proof = kyaos.verifier.readRequestProof(input._meta);
+  if (proof !== undefined && bearer !== undefined) {
+    throw new MCPAuthError('CREDENTIAL_CONFLICT', 'Both a KYA-OS request proof and an OAuth bearer token were provided; send exactly one');
   }
-
-  if (vps.size > 1) {
-    throw new MCPAuthError('CREDENTIAL_CONFLICT', 'Conflicting VPs were provided in more than one location');
-  }
-  if (vps.size === 1 && bearer !== undefined) {
-    throw new MCPAuthError(
-      'CREDENTIAL_CONFLICT',
-      'Both a HelixID VP and an OAuth bearer token were provided; send exactly one',
-    );
-  }
-  const [encoded] = vps;
-  if (encoded !== undefined) return { kind: 'vp', encoded };
+  if (proof !== undefined) return { kind: 'proof', proof, chain: kyaos.verifier.readCarriedChain(input._meta) };
   if (bearer !== undefined) return { kind: 'oauth', token: bearer };
   return undefined;
 }
