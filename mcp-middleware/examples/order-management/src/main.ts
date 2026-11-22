@@ -24,6 +24,7 @@ import {
 import { createOrderServer } from './app.js';
 import { demoRetryAuthorizer } from './demo-authorizer.js';
 import { TOOL_SCOPES } from './orders.js';
+import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './well-known-env.js';
 
 /**
  * Configuration (environment):
@@ -81,6 +82,12 @@ import { TOOL_SCOPES } from './orders.js';
  *   KYAOS_RESUME_TTL_SECONDS  resume-token lifetime (default 600)
  *   AUDIT_LOG_FILE        append every audit event as one JSON line to this file, next to (or instead
  *                         of) the HelixID audit sink; for local runs and the e2e suite
+ *   WELL_KNOWN_MCP        KYA-OS discovery (story L1-D): GET /.well-known/mcp is served whenever SERVICE_DID
+ *                         is a did:web or did:key (the document's serverDid), with endpoints at
+ *                         KYAOS_PUBLIC_ORIGIN (default: the origin of MCP_RESOURCE) and the KYA-OS values
+ *                         above. 0 turns the route off (404); 1 makes a SERVICE_DID the document cannot
+ *                         carry a startup error instead of a notice. Optional:
+ *   STATUS_LIST_CREDENTIAL  URL of this server's status list credential, advertised in the document
  */
 const DEMO_TOKENS: Record<string, AuthResult> = {
   'demo-reader': { sub: 'demo-reader', scopes: ['orders:read'] },
@@ -407,11 +414,21 @@ if (serviceDid) {
   fail('KYAOS_TRUSTED_ISSUERS / KYAOS_TRUSTED_ROOTS / KYAOS_MAX_CHAIN_LENGTH / KYAOS_CARDS_FILE need SERVICE_DID');
 }
 
+/** The discovery document (story L1-D): built once, validated against the schema, or the reason it is off. */
+let discovery: WellKnownFromEnv = { wellKnown: undefined, off: undefined };
+try {
+  discovery = wellKnownFromEnv(env, resource, serviceDid, kyaOs);
+} catch (error) {
+  fail(`/.well-known/mcp: ${error instanceof Error ? error.message : String(error)}`);
+}
+const wellKnown = discovery.wellKnown;
+
 const server = createOrderServer({
   resource,
   ...(issuers.length > 0 ? { authorizationServers: issuers.map((i) => i.issuer) } : {}),
   auth,
   ...(kyaOs ? { kyaos: kyaOs } : {}),
+  ...(wellKnown ? { wellKnown } : {}),
   onServerError: (error) => console.error('server error:', error),
 });
 server.listen(port, host, () => {
@@ -444,4 +461,5 @@ server.listen(port, host, () => {
         : 'off (set SERVICE_SIGNING_KEY)'
     }`,
   );
+  console.log(`  Discovery:   ${describeWellKnown(discovery)}`);
 });
