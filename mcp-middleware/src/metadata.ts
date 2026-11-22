@@ -46,12 +46,14 @@ export function buildProtectedResourceMetadata(input: ProtectedResourceMetadataI
 export interface HttpErrorResponse {
   status: number;
   headers: { 'WWW-Authenticate': string };
-  body: { error: string; error_description: string };
+  body: { error: string; error_description: string; _meta?: Record<string, unknown> };
 }
 
 export interface HttpErrorOptions {
   /** URL from `protectedResourceMetadataUrl()`; advertised in every challenge. */
   resourceMetadataUrl: string;
+  /** The KYA-OS `denied` proof of this refusal (story L2-A), carried in the body as `_meta["org.kya-os/response-proof"]`. */
+  proof?: { jws: string; meta: object } | undefined;
 }
 
 // RFC 6750 §3: error_description and scope are limited to %x20-21 / %x23-5B / %x5D-7E.
@@ -72,6 +74,8 @@ const MAPPED: Record<string, { status: number; error: string }> = {
   CREDENTIAL_CONFLICT: { status: 400, error: 'invalid_request' },
   INSUFFICIENT_SCOPE: { status: 403, error: 'insufficient_scope' },
   TOOL_NOT_PERMITTED: { status: 403, error: 'insufficient_scope' },
+  // KYA-OS session layer (story L2-A): a session id that is unknown, expired, malformed or another agent's.
+  KYAOS_REJECTED: { status: 400, error: 'invalid_request' },
 };
 
 /**
@@ -104,6 +108,10 @@ export function toHttpErrorResponse(error: unknown, options: HttpErrorOptions): 
   return {
     status: mapped.status,
     headers: { 'WWW-Authenticate': `${challenge('Bearer', params)}, ${challenge('HelixVP', params)}` },
-    body: { error: mapped.error || 'unauthorized', error_description: message },
+    body: {
+      error: mapped.error || 'unauthorized',
+      error_description: message,
+      ...(options.proof ? { _meta: { 'org.kya-os/response-proof': options.proof } } : {}),
+    },
   };
 }

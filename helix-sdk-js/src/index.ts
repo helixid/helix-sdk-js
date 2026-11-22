@@ -54,6 +54,24 @@ export type { DelegationLink, VerifyVPOptions, VerifyVPResult } from './core/ver
 export type { SignedVC } from './core/schemas/vc.js';
 export type { SignedVP } from './core/schemas/vp.js';
 export type { VPBuilderOptions } from './core/vp-builder-impl.js';
+// KYA-OS story L1-A: the agent's own Ed25519 key, generated client side; only
+// its public half (JWK, did:key) ever leaves the process.
+export {
+  generateAgentKey,
+  agentPublicKey,
+  toPublicKeyJwk,
+  toDidKey,
+  publicKeyFromDidKey,
+  publicKeyJwkBytes,
+  agentKeyRegistration,
+  assertNoPrivateMaterial,
+  encodeBase58btc,
+  decodeBase58btc,
+  DEFAULT_AGENT_KEY_ID,
+  type AgentKey,
+  type AgentPublicKeyJwk,
+  type AgentKeyRegistration,
+} from './core/agent-key.js';
 export {
   generateKeyPair,
   publicKeyToMultibase,
@@ -88,3 +106,8 @@ export type { SessionClaims, SessionIssueInput, SessionManagerOptions } from './
 // (session-bridge tokens come from POST /v1/vp/verify with session: true), so only
 // verification -- given the API's published session public key -- belongs here.
 export { verifyJWT } from './core/jwt.js';
+
+// KYA-OS (stories rule 24): canonical JSON hashing, EdDSA JWS and the Signer,
+// the session handshake and the client side of the detached response proof.
+// `InvalidJWSError` and `ResponseProofError` come with the errors above.
+export * as kyaos from './core/kyaos/index.js';
