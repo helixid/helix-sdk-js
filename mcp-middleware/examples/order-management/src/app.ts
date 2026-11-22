@@ -68,6 +68,7 @@ function sendJson(res: ServerResponse, status: number, body: unknown, headers: R
 }
 
 interface ToolCallMessage {
+  id?: unknown;
   method: 'tools/call';
   params?: { name?: unknown; arguments?: unknown; _meta?: unknown };
 }
@@ -113,6 +114,11 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined =>
  * stripped) and finished inside the tool handler, where the result is
  * hashed and the proof signed into `_meta["org.kya-os/response-proof"]`. A
  * refusal carries its `denied` proof in the 400/401/403 body.
+ *
+ * With `auth.needsAuthorization` set (story L3-E), a caller whose delegation
+ * does not cover the tool gets the signed `needs_authorization` challenge as
+ * the call's result, and a retry carrying `_kyaos_resume` and
+ * `_kyaos_delegation` is verified through that layer before the tool runs.
  */
 export function createOrderServer(options: OrderServerOptions): Server {
   const store = options.store ?? createOrderStore();
@@ -207,6 +213,12 @@ export function createOrderServer(options: OrderServerOptions): Server {
       const started = await kyaos.start({ name: name ?? '', arguments: input, _meta: meta }, { authorize: () => guard.authorize(toolCall) });
       if (started.outcome === 'denied') {
         refuse(started.error, started.proof);
+        return;
+      }
+      if (started.outcome === 'needs_authorization') {
+        // KYA-OS story L3-E: the signed challenge is the call's result (a tool error result with the
+        // proof in _meta), answered here since the tool itself never runs.
+        sendJson(res, 200, { jsonrpc: '2.0', id: message.id ?? null, result: started.result });
         return;
       }
       // Control arguments (`_kyaos*`) never reach the tool.
