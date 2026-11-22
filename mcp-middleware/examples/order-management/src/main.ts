@@ -6,8 +6,8 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import { kyaos } from '@helixid/sdk-js';
 import {
-  RedisNonceStore,
   RedisStatusCacheStore,
+  type RedisStatusCacheClient,
   createHelixAuditSink,
   createRevocationSignalClient,
   type RevocationSignalClient,
@@ -25,7 +25,6 @@ import {
 } from '@helixid/mcp-middleware';
 import { createOrderServer } from './app.js';
 import { TOOL_SCOPES } from './orders.js';
-import { createRedisClient } from './redis-client.js';
 
 /**
  * Configuration (environment):
@@ -80,8 +79,14 @@ import { createRedisClient } from './redis-client.js';
  *   KYAOS_CLOCK_SKEW_SECONDS  30 to 600 (default 120)
  *   KYAOS_SESSIONS=0        no sessions: the handshake is refused, calls are proven without one
  *   KYAOS_SESSION_TTL_MINUTES idle TTL (default 30; fractions allowed)
- *   KYAOS_REDIS_URL         redis://host:port: a replay store and status cache shared by every
- *                           instance; without it both are in memory and cover this instance only
+ *   KYAOS_NONCE_STORE       the replay store: memory (default, this instance only), redis or dynamo,
+ *                           read by @helixid/mcp-middleware itself (nonceStoreFromEnv); with it:
+ *                           redis: KYAOS_REDIS_URL, KYAOS_NONCE_KEY_PREFIX
+ *                           dynamo: KYAOS_DYNAMO_TABLE, KYAOS_DYNAMO_KEY_ATTRIBUTE, KYAOS_DYNAMO_TTL_ATTRIBUTE,
+ *                                   KYAOS_DYNAMO_REGION, KYAOS_DYNAMO_ENDPOINT (AWS credentials: the SDK's chain)
+ *                           See .env.example.
+ *   KYAOS_REDIS_URL         also the status cache's Redis (story L3-C), whatever KYAOS_NONCE_STORE says: lists
+ *                           and verdicts shared by every instance; without it the cache is in memory
  */
 const DEMO_TOKENS: Record<string, AuthResult> = {
   'demo-reader': { sub: 'demo-reader', scopes: ['orders:read'] },
@@ -298,8 +303,15 @@ function numberFromEnv(name: string, integer: boolean): number | undefined {
 let kyaOs: KyaOsRuntime | undefined;
 const redisUrl = env['KYAOS_REDIS_URL'];
 if (redisUrl && !serviceDid) fail('KYAOS_REDIS_URL needs SERVICE_DID');
-// One connection for the replay store and the status cache.
-const redis = redisUrl ? createRedisClient(redisUrl) : undefined;
+// The status cache's Redis (story L3-C): an ioredis client of its own. The replay store's comes from nonceStoreFromEnv (story L2-A).
+let statusCacheRedis: (RedisStatusCacheClient & { quit(): Promise<unknown> }) | undefined;
+if (redisUrl) {
+  const { Redis } = await import('ioredis');
+  const client = new Redis(redisUrl);
+  // Without a listener ioredis prints its own unhandled-error line; ours carries no URL.
+  client.on('error', (error: Error) => console.warn(`status cache: redis error: ${error.message}`));
+  statusCacheRedis = client as unknown as RedisStatusCacheClient & { quit(): Promise<unknown> };
+}
 if (env['SERVICE_SIGNING_KEY']) {
   if (!serviceDid) fail('SERVICE_SIGNING_KEY needs SERVICE_DID (the DID whose document lists the key)');
   const skew = numberFromEnv('KYAOS_CLOCK_SKEW_SECONDS', true);
@@ -311,14 +323,22 @@ if (env['SERVICE_SIGNING_KEY']) {
       publicOrigin: env['KYAOS_PUBLIC_ORIGIN'] || new URL(resource).origin,
       ...(skew !== undefined ? { clockSkewSeconds: skew } : {}),
       session: { enabled: env['KYAOS_SESSIONS'] !== '0', ...(ttlMinutes !== undefined ? { ttlMinutes } : {}) },
-      ...(redis ? { nonceStore: new RedisNonceStore({ client: redis }) } : {}),
       toolsEndpoint: resource,
     });
   } catch (error) {
     fail(`KYA-OS: ${error instanceof Error ? error.message : String(error)}`);
   }
-} else if (env['KYAOS_PUBLIC_ORIGIN'] || env['KYAOS_CLOCK_SKEW_SECONDS'] || env['KYAOS_SESSIONS'] || env['KYAOS_SESSION_TTL_MINUTES']) {
+} else if (env['KYAOS_NONCE_STORE'] || env['KYAOS_PUBLIC_ORIGIN'] || env['KYAOS_CLOCK_SKEW_SECONDS'] || env['KYAOS_SESSIONS'] || env['KYAOS_SESSION_TTL_MINUTES']) {
   fail('KYAOS_* settings need SERVICE_SIGNING_KEY');
+}
+
+if (kyaOs) {
+  // redis and dynamo load their client package in the background: a missing one stops the server here, not at the first call.
+  try {
+    await kyaOs.ready();
+  } catch (error) {
+    fail(`KYA-OS: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /** A comma-separated list of DIDs, or undefined when the variable is unset or `*`. */
@@ -398,7 +418,7 @@ if (serviceDid) {
       ...(highPrivilegeScopes === undefined ? {} : { highPrivilegeScopes }),
       ...(maxStaleSeconds === undefined ? {} : { maxStaleSeconds }),
       // Shared by every instance next to the replay store: one signal's delete is seen by all.
-      ...(redis ? { store: new RedisStatusCacheStore({ client: redis }) } : {}),
+      ...(statusCacheRedis ? { store: new RedisStatusCacheStore({ client: statusCacheRedis }) } : {}),
     });
   } catch (error) {
     fail(`status cache: ${error instanceof Error ? error.message : String(error)}`);
@@ -458,6 +478,7 @@ const server = createOrderServer({
 });
 process.once('SIGTERM', () => {
   void revocationSignals?.stop();
+  void statusCacheRedis?.quit();
   server.close();
 });
 server.listen(port, host, () => {
@@ -486,7 +507,7 @@ server.listen(port, host, () => {
   console.log(
     `  KYA-OS:      ${
       kyaOs
-        ? `proofs by ${kyaOs.serverDid}, sessions ${kyaOs.sessionsEnabled ? 'on' : 'off'}, skew ${kyaOs.clockSkewSeconds} s, replay store ${redisUrl ? `redis ${redisUrl}` : 'in memory (this instance only)'}`
+        ? `proofs by ${kyaOs.serverDid}, sessions ${kyaOs.sessionsEnabled ? 'on' : 'off'}, skew ${kyaOs.clockSkewSeconds} s (replay store: the line above)`
         : 'off (set SERVICE_SIGNING_KEY)'
     }`,
   );

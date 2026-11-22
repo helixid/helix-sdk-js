@@ -142,7 +142,7 @@ received. The tools themselves (`src/orders.ts`) contain no auth code.
 | `KYAOS_SIGNAL_ISSUERS` | none | DIDs whose revocation SETs are honoured (the Helix issuer) |
 | `KYAOS_REVOCATION_EVENTS_URL` | none | Helix's `/v1/events/revocations`: one SSE connection, reconnecting |
 | `KYAOS_REVOCATION_WEBHOOK_PATH` | none | A path here that receives pushed SETs (RFC 8935) |
-| `KYAOS_REDIS_URL` | none | Status cache (and replay store) shared by every instance |
+| `KYAOS_REDIS_URL` | none | The status cache's Redis, shared by every instance (and the replay store's when `KYAOS_NONCE_STORE=redis`) |
 | `KYAOS_VERIFICATION_LOG` | off | `1`: each verification and signal as one JSON line on stdout; a path: appended there |
 | `OAUTH_ISSUER` | none | One authorization server; its keys are read from its metadata |
 | `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` | none | With `OAUTH_ISSUER`: check tokens by RFC 7662 introspection (opaque tokens) |
@@ -152,7 +152,7 @@ received. The tools themselves (`src/orders.ts`) contain no auth code.
 
 ## KYA-OS session and response proof (story L2-A)
 
-Set `SERVICE_SIGNING_KEY` (the Ed25519 private key, hex, that `SERVICE_DID`'s document lists as `key-1`) and the server registers the `_kyaos_handshake` tool, opens sessions and signs a detached proof into `_meta["org.kya-os/response-proof"]` on every tool call outcome (a refusal carries its `denied` proof in the 400/401/403 body). Optional: `KYAOS_PUBLIC_ORIGIN` (default: the origin of `MCP_RESOURCE`), `KYAOS_CLOCK_SKEW_SECONDS` (30 to 600, default 120), `KYAOS_SESSIONS=0`, `KYAOS_SESSION_TTL_MINUTES` (default 30), and `KYAOS_REDIS_URL=redis://host:port` for a replay store shared by every instance (without it the store is in memory and covers this instance only; `src/redis-client.ts` is a minimal `SET NX PX` client, a production server would hand the store an ioredis client).
+Set `SERVICE_SIGNING_KEY` (the Ed25519 private key, hex, that `SERVICE_DID`'s document lists as `key-1`) and the server registers the `_kyaos_handshake` tool, opens sessions and signs a detached proof into `_meta["org.kya-os/response-proof"]` on every tool call outcome (a refusal carries its `denied` proof in the 400/401/403 body). Optional: `KYAOS_PUBLIC_ORIGIN` (default: the origin of `MCP_RESOURCE`), `KYAOS_CLOCK_SKEW_SECONDS` (30 to 600, default 120), `KYAOS_SESSIONS=0`, and `KYAOS_SESSION_TTL_MINUTES` (default 30). The replay store is chosen by `KYAOS_NONCE_STORE` (`memory`, the default, covers this instance only; `redis` or `dynamo` is shared by every instance), which `@helixid/mcp-middleware` reads itself: see `.env.example` and the middleware README. `redis` needs the `ioredis` package, `dynamo` needs `@aws-sdk/client-dynamodb` and `@aws-sdk/lib-dynamodb`; a missing one stops the server at startup.
 
 ```bash
 SERVICE_DID=did:web:orders.example SERVICE_SIGNING_KEY=<hex> DEMO_MODE=1 pnpm start

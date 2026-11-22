@@ -4,7 +4,8 @@
 import { kyaos } from '@helixid/sdk-js';
 import { describeKyaOs, type KyaOsDescription } from './describe.js';
 import { KyaOsError } from './errors.js';
-import { MemoryNonceStore, type NonceStore } from './nonce-store.js';
+import { type NonceStore } from './nonce-store.js';
+import { deferredNonceStoreFromEnv, type NonceStoreLog } from './nonce-store-env.js';
 import { attachResponseProof, buildResponseProof, type DetachedProof, type ProofMeta } from './response-proof.js';
 import { MemorySessionStore, type KyaOsSession, type SessionStore } from './session-store.js';
 
@@ -44,8 +45,15 @@ export interface KyaOsOptions {
   publicOrigin?: string | undefined;
   /** Default 120; 30 to 600. */
   clockSkewSeconds?: number | undefined;
-  /** Default `MemoryNonceStore` (one instance). Share a `RedisNonceStore` or `DynamoNonceStore` across instances. */
+  /**
+   * Default: the store `KYAOS_NONCE_STORE` names (nonceStoreFromEnv: memory, redis or dynamo; memory when unset).
+   * An explicit store wins. Share a `RedisNonceStore` or `DynamoNonceStore` across instances.
+   */
   nonceStore?: NonceStore | undefined;
+  /** Where the default nonce store reads its settings; default `process.env`. */
+  env?: Readonly<Record<string, string | undefined>> | undefined;
+  /** Where the default nonce store logs its startup line and warnings; default `console`. */
+  log?: NonceStoreLog | undefined;
   session?: KyaOsSessionOptions | undefined;
   /** The MCP endpoint, for `describe()`. */
   toolsEndpoint?: string | undefined;
@@ -104,6 +112,8 @@ export interface KyaOsRuntime {
   readonly clockSkewSeconds: number;
   readonly sessionsEnabled: boolean;
   readonly nonceStore: NonceStore;
+  /** Settles when the nonce store is ready: at once for an explicit or memory store; once its client package is loaded for redis or dynamo, rejecting when it is missing. Await it at startup. */
+  ready(): Promise<void>;
   readonly sessionStore: SessionStore;
   readonly handshakeToolName: typeof kyaos.HANDSHAKE_TOOL_NAME;
   describe(): KyaOsDescription;
@@ -161,7 +171,8 @@ export function createKyaOs(options: KyaOsOptions): KyaOsRuntime {
   if (!kyaos.isDid(serverDid)) throw new Error('createKyaOs: serverDid must be a DID');
   const skew = kyaos.clockSkewSeconds(options.clockSkewSeconds);
   const sessionsEnabled = options.session?.enabled ?? true;
-  const nonceStore = options.nonceStore ?? new MemoryNonceStore({ now: options.now ?? Date.now });
+  const nonceStore: NonceStore & { ready?: Promise<void> } =
+    options.nonceStore ?? deferredNonceStoreFromEnv(options.env ?? process.env, { now: options.now ?? Date.now, log: options.log });
   const sessionStore =
     options.session?.store ??
     new MemorySessionStore(options.session?.ttlMinutes !== undefined ? { ttlMinutes: options.session.ttlMinutes } : {});
@@ -301,6 +312,7 @@ export function createKyaOs(options: KyaOsOptions): KyaOsRuntime {
     clockSkewSeconds: skew,
     sessionsEnabled,
     nonceStore,
+    ready: () => nonceStore.ready ?? Promise.resolve(),
     sessionStore,
     handshakeToolName: kyaos.HANDSHAKE_TOOL_NAME,
     describe: (): KyaOsDescription =>
