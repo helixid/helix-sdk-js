@@ -6,20 +6,17 @@ export type {
   StoredWalletData,
   PgQueryable,
 } from './wallet/AgentWallet.js';
-export { VPBuilder } from './vp-builder.js';
 
-
-// Verifier
-export { verifyVP } from './verify.js';
-// The X-Helix-VP carrier is gone (KYA-OS story C-C): an agent's call carries its
-// request proof and delegation chain in params._meta (kyaos.withRequestProof).
+// The Helix VP is gone (KYA-OS story C-C): no VPBuilder, signVP or verifyVP.
+// An agent's call carries its request proof and delegation chain in
+// params._meta (kyaos.withRequestProof); a service verifies it in-process
+// (kyaos.verifier.verify, or @helixid/mcp-middleware).
 export type { HeadersLike } from './http/headers.js';
 // Local Ed25519 linked-data proof create/verify -- signing stays client-side
 // (see the SDK-API-only design); needed by issuers that aren't
 // registered with helix-api (e.g. independent did:web Service Providers)
 // to sign their own credentials directly.
 export { createEd25519Proof, verifyEd25519Proof, type LinkedDataProof } from './core/proof.js';
-export { checkScope, requireScope } from './scope.js';
 export { SessionManager } from './session/index.js';
 
 // Enrollment only / issuer API operations
@@ -30,7 +27,6 @@ export type {
   IssueServiceDelegationGrantInput,
   GetAgentScopesInput,
   AgentScopesResult,
-  VerifyVPApiResult,
 } from './client/HelixClient.js';
 
 export * from './errors/index.js';
@@ -43,10 +39,8 @@ export type {
   VerificationMethod,
 } from './core/did.js';
 export { buildDIDDocument } from './core/did.js';
-export type { DelegationLink, VerifyVPOptions, VerifyVPResult } from './core/verification-types.js';
+export type { DelegationLink } from './core/verification-types.js';
 export type { SignedVC } from './core/schemas/vc.js';
-export type { SignedVP } from './core/schemas/vp.js';
-export type { VPBuilderOptions } from './core/vp-builder-impl.js';
 export {
   generateKeyPair,
   publicKeyToMultibase,

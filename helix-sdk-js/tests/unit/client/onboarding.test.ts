@@ -40,44 +40,10 @@ describe('HelixClient onboarding', () => {
   });
 });
 
-describe('HelixClient signVP', () => {
-  it('signs a VP server-side and returns it', async () => {
+describe('HelixClient without the Helix VP (KYA-OS story C-C)', () => {
+  it('has no signVP or verifyVP: an agent signs each request itself (kyaos.withRequestProof)', () => {
     const client = new HelixClient('http://localhost:3000');
-    let requestedPath: string | undefined;
-    let signPayload: Record<string, unknown> | undefined;
-    const fakeSignedVP = { id: 'vp:test:1', holder: 'did:key:zAgent', proof: {} };
-    client.__setTestHttpAdapter({
-      post: async (path: string, payload: Record<string, unknown>) => {
-        requestedPath = path;
-        signPayload = payload;
-        return { signedVP: fakeSignedVP };
-      },
-    } as any);
-
-    const result = await client.signVP('did:key:zAgent', 'https://svc.example.com', {
-      userDid: 'did:key:zUser',
-    });
-
-    expect(requestedPath).toBe('/v1/agents/did%3Akey%3AzAgent/vp');
-    expect(signPayload).toEqual({
-      targetService: 'https://svc.example.com',
-      userDid: 'did:key:zUser',
-    });
-    expect(result).toEqual(fakeSignedVP);
-  });
-
-  it('omits optional fields entirely when not provided', async () => {
-    const client = new HelixClient('http://localhost:3000');
-    let signPayload: Record<string, unknown> | undefined;
-    client.__setTestHttpAdapter({
-      post: async (_path: string, payload: Record<string, unknown>) => {
-        signPayload = payload;
-        return { signedVP: {} };
-      },
-    } as any);
-
-    await client.signVP('did:key:zAgent', 'https://svc.example.com');
-
-    expect(signPayload).toEqual({ targetService: 'https://svc.example.com' });
+    expect('signVP' in client).toBe(false);
+    expect('verifyVP' in client).toBe(false);
   });
 });

@@ -149,16 +149,6 @@ describe('HelixClient Branch Coverage', () => {
       expect(((c2 as any).http as HttpAdapter).hasAdminApiKey()).toBe(false);
     });
 
-    it('signVP goes through the adapter to the custodial route', async () => {
-      mockHttp.post.mockResolvedValue({ signedVP: { id: 'vp-1' } });
-      const vp = await enterprise.signVP(DID, 'orders');
-      expect(vp).toEqual({ id: 'vp-1' });
-      expect(mockHttp.post).toHaveBeenCalledWith(
-        `/v1/custodial-agents/${encodeURIComponent(DID)}/vp`,
-        { targetService: 'orders' },
-      );
-    });
-
     it('delegateAuthority goes through the adapter to the custodial route', async () => {
       mockHttp.post.mockResolvedValue({ delegatedVC: { id: 'vc-child' } });
       const vc = await enterprise.delegateAuthority(DID, 'did:key:z6Mkchild', ['read:orders'], 3600);
@@ -170,9 +160,9 @@ describe('HelixClient Branch Coverage', () => {
     });
 
     it('core mode keeps the admin-gated agent routes', async () => {
-      mockHttp.post.mockResolvedValue({ signedVP: { id: 'vp-1' } });
-      await client.signVP(DID, 'orders');
-      expect(mockHttp.post).toHaveBeenCalledWith(`/v1/agents/${encodeURIComponent(DID)}/vp`, { targetService: 'orders' });
+      mockHttp.post.mockResolvedValue({ delegatedVC: { id: 'vc-child' } });
+      await client.delegateAuthority(DID, 'did:key:z6Mkchild', ['read:orders'], 3600);
+      expect(mockHttp.post).toHaveBeenCalledWith(`/v1/agents/${encodeURIComponent(DID)}/delegate`, { to: 'did:key:z6Mkchild', scopes: ['read:orders'], expiresIn: 3600 });
     });
 
     it('issueServiceDelegationGrant uses the same adapter (and so the same credential)', async () => {

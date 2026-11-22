@@ -1,7 +1,6 @@
 export {
   HelixIDToolWrapper,
   signCurrentRequest,
-  encodeBase64UrlJson,
   type HelixIDToolWrapperOptions,
   type LangChainMiddlewareOptions,
   type RequestSigner,
