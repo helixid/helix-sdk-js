@@ -5,14 +5,17 @@
 
 import { appendFileSync, readFileSync } from 'node:fs';
 import { kyaos } from '@helixid/sdk-js';
+import type { AuditDeliverySink } from '@helixid/sdk-js';
 import {
-  createHelixAuditSink,
+  createHelixAuditDelivery,
   createKyaOs,
+  createMcpAuditTrail,
   createLocalVerifier,
   createNeedsAuthorization,
   type AuditSink,
   type AuthResult,
   type KyaOsRuntime,
+  type McpAuditTrail,
   type MCPMiddlewareOptions,
   type OAuthIntrospectionOptions,
   type OAuthIssuerOptions,
@@ -30,8 +33,17 @@ import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './we
  * Configuration (environment):
  *   PORT, HOST            listen address (default 3700 on 127.0.0.1)
  *   MCP_RESOURCE          public URL of the MCP endpoint (default http://localhost:$PORT/mcp); the OAuth audience
- *   HELIX_API_URL         HelixID API the audit sink writes to. Required whenever HELIX_API_KEY is
- *   HELIX_API_KEY         set: there is deliberately no default URL. Never on the request path.
+ *   HELIX_API_URL         HelixID API the audit trail writes to. Required whenever HELIX_API_KEY is
+ *   HELIX_API_KEY         set: there is deliberately no default URL. Never on the request path. The key
+ *                         turns on the audit trail (KYA-OS typed events to the recorder, POST /v1/audit/submissions),
+ *                         which names this server as its producer, so it also needs SERVICE_DID.
+ *   AUDIT_INCLUDE_TOOL_NAMES=1
+ *                         record tool names in audit events (withheld by default: often sensitive)
+ *   AUDIT_DELIVERY        required (default): each event's recorder receipt is obtained before the call
+ *                         goes on; buffered: events go to a durable outbox (AUDIT_OUTBOX_DIR) and are
+ *                         delivered in the background; best-effort: only with AUDIT_ACCEPT_AAP1=1
+ *   AUDIT_OUTBOX_DIR      buffered delivery's durable outbox directory (AUDIT_OUTBOX=memory asks for the
+ *                         ephemeral one, which buffered delivery refuses at startup)
  *   SERVICE_DID           this server's DID: the KYA-OS door (story F-2). Every tool call that carries
  *                         a request proof in _meta["org.kya-os/request-proof"] (and its delegation chain
  *                         in _meta["org.kya-os/delegation-chain"]) is verified in-process against this
@@ -282,9 +294,32 @@ const auth: Omit<MCPMiddlewareOptions, 'toolScopes' | 'requiredScopes'> = {
   ...(serviceDid ? { expectedTargetService: serviceDid, serviceDid } : {}),
   onAuditError: (error) => console.error('audit write failed:', error),
 };
+let audit: McpAuditTrail | undefined;
 if (apiUrl && apiKey) {
-  // The audit sink is the only thing that talks to the Helix API, and never on the request path.
-  auth.auditSink = createHelixAuditSink({ baseUrl: apiUrl, apiKey, ...(serviceDid ? { serviceDid } : {}) });
+  // The audit trail is the only thing that talks to the Helix API, and never on the request path.
+  if (!serviceDid) fail('HELIX_API_KEY turns on the audit trail, whose events name this server: set SERVICE_DID');
+  // A-2: delivery to the HelixID recorder (POST /v1/audit/submissions).
+  const delivery = env['AUDIT_DELIVERY'] || 'required';
+  if (delivery !== 'required' && delivery !== 'buffered' && delivery !== 'best-effort') {
+    fail(`AUDIT_DELIVERY must be required, buffered or best-effort (got ${delivery})`);
+  }
+  let reporter: AuditDeliverySink;
+  try {
+    reporter = createHelixAuditDelivery({
+      baseUrl: apiUrl,
+      apiKey,
+      delivery,
+      ...(env['AUDIT_OUTBOX'] === 'memory' ? { outbox: 'memory' as const } : {}),
+      ...(env['AUDIT_OUTBOX_DIR'] ? { outboxDir: env['AUDIT_OUTBOX_DIR'] } : {}),
+      acceptAap1: env['AUDIT_ACCEPT_AAP1'] === '1',
+      onDeliveryFailure: (error) => console.error('audit delivery failed:', error instanceof Error ? error.message : error),
+    });
+  } catch (error) {
+    fail(`audit delivery refused: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  audit = createMcpAuditTrail({ reporter, serviceDid, includeToolNames: env['AUDIT_INCLUDE_TOOL_NAMES'] === '1' });
+  // The guard's decisions and the call lifecycle share one trail (one source, one sequence).
+  auth.auditSink = audit.toolAuditSink();
 }
 const auditLogFile = env['AUDIT_LOG_FILE'];
 if (auditLogFile) {
@@ -458,6 +493,7 @@ const server = createOrderServer({
   ...(identity ? { identity } : {}),
   ...(issuers.length > 0 ? { authorizationServers: issuers.map((i) => i.issuer) } : {}),
   auth,
+  ...(audit ? { audit } : {}),
   ...(kyaOs ? { kyaos: kyaOs } : {}),
   ...(wellKnown ? { wellKnown } : {}),
   onServerError: (error) => console.error('server error:', error),
@@ -477,7 +513,18 @@ server.listen(port, host, () => {
     }`,
   );
   console.log(`  OAuth:       ${demo ? 'DEMO tokens demo-reader, demo-admin, demo-agent, demo-agent-2' : modes.length ? modes.join(', ') : 'off'}`);
-  console.log(`  Audit:       ${[apiKey && apiUrl ? `${apiUrl}/v1/audit-log/events` : '', auditLogFile ? `file ${auditLogFile}` : ''].filter(Boolean).join(' + ') || 'off (set HELIX_API_URL + HELIX_API_KEY, or AUDIT_LOG_FILE)'}`);
+  console.log(
+    `  Audit:       ${
+      [
+        audit
+          ? `${apiUrl}/v1/audit/submissions (KYA-OS recorder, ${env['AUDIT_DELIVERY'] || 'required'} delivery; tool names ${audit.includeToolNames ? 'recorded' : 'withheld'})`
+          : '',
+        auditLogFile ? `file ${auditLogFile}` : '',
+      ]
+        .filter(Boolean)
+        .join(' + ') || 'off (set HELIX_API_URL + HELIX_API_KEY + SERVICE_DID, or AUDIT_LOG_FILE)'
+    }`,
+  );
   console.log(`  Identity:    ${identity ? `${identity.publicOrigin}${new URL(resource).pathname.replace(/\/$/, '')}/{did,card}.json` : 'off (set PUBLIC_ORIGIN)'}`);
   console.log(
     `  Consent:     ${

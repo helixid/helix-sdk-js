@@ -6,8 +6,8 @@
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildDIDDocument, generateKeyPair, kyaos } from '@helixid/sdk-js';
-import { createKyaOs, createNeedsAuthorization, type NeedsAuthorization, type ToolAuditEvent } from '@helixid/mcp-middleware';
+import { MemoryAuditSink, buildDIDDocument, generateKeyPair, kyaos } from '@helixid/sdk-js';
+import { createKyaOs, createMcpAuditTrail, createNeedsAuthorization, type NeedsAuthorization, type ToolAuditEvent } from '@helixid/mcp-middleware';
 import { createOrderServer } from '../src/app.js';
 import { createOrderStore } from '../src/orders.js';
 import { demoRetryAuthorizer } from '../src/demo-authorizer.js';
@@ -186,4 +186,57 @@ describe('order-management sample with needs_authorization (KYA-OS off)', () => 
     expect(ok.status).toBe(200);
     expect(JSON.parse(ok.body.result.content[0].text).status).toBe('refunded');
   });
+});
+
+describe('order-management sample with needs_authorization and the typed audit trail (KYA-OS story A-1)', () => {
+  let sink: MemoryAuditSink;
+
+  async function startAudited(withKyaOs: boolean): Promise<void> {
+    time = Date.now();
+    sink = new MemoryAuditSink();
+    const audit = createMcpAuditTrail({ reporter: sink, serviceDid: SERVICE });
+    layer = createNeedsAuthorization({
+      authorizationUrl: CONSENT,
+      authorizer: demoRetryAuthorizer(SERVICE, () => time),
+      auditSink: audit.toolAuditSink(),
+      now: () => time,
+      serviceDid: SERVICE,
+    });
+    server = createOrderServer({
+      resource: 'http://localhost/mcp',
+      store: createOrderStore(),
+      auth: {
+        serviceDid: SERVICE,
+        validateOAuthToken: async (token) => TOKENS[token] ?? Promise.reject(new Error('unknown token')),
+        auditSink: audit.toolAuditSink(),
+        needsAuthorization: layer,
+      },
+      audit,
+      ...(withKyaOs ? { kyaos: createKyaOs({ signer, publicOrigin: 'http://localhost', now: () => time }) } : {}),
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  }
+
+  for (const withKyaOs of [true, false]) {
+    it(`records the challenge as a denied call by reason needs_authorization, then the retry as a completed one (KYA-OS ${withKyaOs ? 'on' : 'off'})`, async () => {
+      await startAudited(withKyaOs);
+      const first = await callTool('refund_order', REFUND, 'agent');
+      expect(first.status).toBe(withKyaOs ? 200 : 403);
+      const challenge = withKyaOs ? first.body.result.structuredContent : first.body;
+      expect(challenge).toMatchObject({ error: 'needs_authorization', scopes: ['orders:admin'] });
+      expect(sink.eventTypes).toEqual(['session.established', 'authorization.denied', 'tool.call.denied']);
+      expect(sink.events[1]).toMatchObject({ reason: { code: 'needs_authorization' }, authorization: { decision: 'denied', scopeId: 'orders:admin' } });
+      expect(sink.events[2]).toMatchObject({ outcome: 'denied', reason: { code: 'needs_authorization' } });
+      const callId = sink.events[0]!.correlationId;
+      for (const event of sink.events) expect(event.correlationId).toBe(callId);
+
+      sink.entries.length = 0;
+      const ok = await callTool('refund_order', { ...REFUND, _kyaos_resume: challenge.resumeToken, _kyaos_delegation: hopFor(AGENT) }, 'agent');
+      expect(ok.status).toBe(200);
+      expect(JSON.parse(ok.body.result.content[0].text).status).toBe('refunded');
+      expect(sink.eventTypes).toEqual(['session.established', 'authorization.approved', 'tool.call.started', 'tool.call.completed']);
+      for (const entry of sink.entries) expect(entry.canonical).not.toContain(challenge.resumeToken);
+    });
+  }
 });
