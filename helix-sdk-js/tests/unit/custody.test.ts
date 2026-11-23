@@ -266,7 +266,7 @@ describe('the agent runtime takes any Signer (a KYA-OS request proof)', () => {
 });
 
 describe('helix init (self-custody onboarding)', () => {
-  function initApi(did: string, didHosting: 'helix' | 'own', origin: string, status: 'active' | 'pending_resolution') {
+  function initApi(did: string, didHosting: 'helix' | 'own', origin: string, status: 'active' | 'pending_resolution', activatedCard?: Record<string, unknown>) {
     const kid = `${did}#key-1`;
     return fakeApi({
       'POST /v1/agents/enroll/challenge': () => ({ body: { did, kid, nonce: 'cd'.repeat(32), keyCustody: 'self', didHosting, name: 'Bot', didDocumentUrl: `${origin}/did.json`, cardUrl: `${origin}/card.json` } }),
@@ -276,7 +276,10 @@ describe('helix init (self-custody onboarding)', () => {
         if (!ok) return { status: 400, body: { error: { code: 'ENROLLMENT_PROOF_INVALID', message: 'bad proof' } } };
         return { status: 201, body: { did, keyCustody: 'self', didHosting, label: 'custody: self', status, kid, documents: documentsFor(did, kid, jwk.x, origin), ...(status === 'active' ? { vcId: 'vc:1' } : {}) } };
       },
-      [`POST /v1/agents/${did}/activate`]: (body) => (body['enrollmentToken'] === 'enroll:t' ? { body: { did, status: 'active', vcId: 'vc:2' } } : { status: 403, body: { error: { code: 'ADMIN_AUTH_REQUIRED', message: 'no' } } }),
+      [`POST /v1/agents/${did}/activate`]: (body) =>
+        body['enrollmentToken'] === 'enroll:t'
+          ? { body: { did, status: 'active', vcId: 'vc:2', ...(activatedCard ? { documents: { card: activatedCard, didDocumentUrl: `${origin}/did.json`, cardUrl: `${origin}/card.json` } } : {}) } }
+          : { status: 403, body: { error: { code: 'ADMIN_AUTH_REQUIRED', message: 'no' } } },
     });
   }
 
@@ -320,6 +323,23 @@ describe('helix init (self-custody onboarding)', () => {
     const again = await helixInit({ apiUrl: 'https://helix.example', enrollmentToken: 'enroll:t', outDir: await tempDir(), did, fetch: initApi(did, 'own', origin, 'pending_resolution').fetch, resolveFetch, activate: false });
     expect(again.status).toBe('pending_resolution');
     expect(again.resolution).toBeUndefined();
+  });
+
+  it('own hosting: on activation card.json is rewritten with what the credentials put on the card, to republish (F-3 parity)', async () => {
+    const out = await tempDir();
+    const did = 'did:web:owner.example:agents:carded';
+    const origin = 'https://owner.example/agents/carded';
+    const carded = { id: did, entityType: 'agent', name: 'Bot', capabilities: [{ name: 'orders:read', attestations: [{ vc: { id: 'att:1' } }] }], responsibleParty: 'did:web:helix.example' };
+    const api = initApi(did, 'own', origin, 'pending_resolution', carded);
+    const served = new Map<string, unknown>();
+    const resolveFetch = async (url: string) => (served.has(url) ? { ok: true, status: 200, json: async () => served.get(url) } : { ok: false, status: 404, json: async () => ({}) });
+    const pending = await helixInit({ apiUrl: 'https://helix.example', enrollmentToken: 'enroll:t', outDir: out, did, fetch: api.fetch, resolveFetch, generateKey: agentKeyFrom(SEED_HEX) });
+    expect(pending.cardUpdated).toBeUndefined();
+    served.set(`${origin}/did.json`, JSON.parse(await readFile(join(out, 'did.json'), 'utf8')));
+    served.set(`${origin}/card.json`, JSON.parse(await readFile(join(out, 'card.json'), 'utf8')));
+    const active = await activateAgent({ apiUrl: 'https://helix.example', enrollmentToken: 'enroll:t', outDir: out, fetch: api.fetch, resolveFetch });
+    expect(active).toMatchObject({ status: 'active', cardUpdated: true });
+    expect(JSON.parse(await readFile(join(out, 'card.json'), 'utf8'))).toEqual(carded);
   });
 
   it('checks resolution against the registered key', async () => {

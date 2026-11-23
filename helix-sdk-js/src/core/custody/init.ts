@@ -86,6 +86,12 @@ export interface HelixInitResult {
   /** Own hosting: what the resolution check found. */
   resolution?: ResolutionCheck | undefined;
   vcId?: string | undefined;
+  /**
+   * Own hosting, on activation: `card.json` was rewritten with what the
+   * agent's credentials put on its card (attestations, responsible party,
+   * revocation entry; F-3 parity). Republish it at `cardUrl`.
+   */
+  cardUpdated?: boolean | undefined;
 }
 
 interface Summary {
@@ -208,7 +214,10 @@ async function activateOwnHosted(
   const resolution = await checkOwnHosting(result.did, { kid: result.kid, publicKeyJwk: result.publicKeyJwk }, resolveFetch ? { fetch: resolveFetch } : {});
   if (!resolution.ok) return { ...result, resolution };
   const active = await client.activate(result.did, { enrollmentToken });
-  return { ...result, status: active.status, resolution, ...(active.vcId ? { vcId: active.vcId } : {}) };
+  // The card now carries the agent's attestations; the owner republishes it.
+  const card = active.documents?.card;
+  if (card !== undefined) await writeJson(result.files.card, card);
+  return { ...result, status: active.status, resolution, ...(active.vcId ? { vcId: active.vcId } : {}), ...(card !== undefined ? { cardUpdated: true } : {}) };
 }
 
 export interface ActivateOptions {

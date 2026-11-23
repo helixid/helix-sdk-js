@@ -47,7 +47,10 @@ beforeAll(async () => {
         const status = mode.didHosting === 'helix' ? 'active' : 'pending_resolution';
         return send(201, { did, kid, keyCustody: 'self', didHosting: mode.didHosting, label: 'custody: self', status, documents: documents(did, kid, parsed.publicKeyJwk.x, base), ...(mode.vcId ? { vcId: 'vc:init' } : {}) });
       }
-      if (path === `/v1/agents/${did}/activate`) return send(200, { did, status: 'active', vcId: 'vc:cli' });
+      if (path === `/v1/agents/${did}/activate`) {
+        // F-3 parity: the card comes back with the agent's attestations, for the owner to republish.
+        return send(200, { did, status: 'active', vcId: 'vc:cli', documents: { card: { id: did, entityType: 'agent', name: 'Bot', capabilities: [{ name: 'orders:read', attestations: [{ vc: { id: 'att:cli' } }] }] }, didDocumentUrl: `${base}/did.json`, cardUrl: `${base}/card.json` } });
+      }
       if (path === `/v1/agents/${did}/custody` || path === `/v1/services/${did}/custody`) {
         const parsed = JSON.parse(body) as { kid: string; publicKeyJwk: { x: string } };
         return send(200, { did, keyCustody: 'self', didHosting: 'helix', label: 'custody: self', kid: `${did}#${parsed.kid}`, previousKid: kid, previousKeyShredded: !mode.hopsDone, retiresAt: '2026-11-22T00:00:00.000Z', hopReissue: mode.hopsDone ? { reissued: 1, pending: false } : { reissued: 0, pending: true, ...(mode.vcId ? {} : { note: 'story C-E' }) }, publishRequired: mode.didHosting === 'own', documents: documents(did, `${did}#${parsed.kid}`, parsed.publicKeyJwk.x, base) });
@@ -114,6 +117,8 @@ describe('helix init', () => {
     await run('activate', '--token', 'enroll:t', '--out', out, '--api-url', origin);
     expect(requests.some((request) => request.path.endsWith('/activate'))).toBe(true);
     expect(stdout.join('\n')).toMatch(/Agent active/);
+    expect(stdout.join('\n')).toMatch(/card\.json now carries the attestations Helix issued; republish it/);
+    expect(JSON.parse(await readFile(join(out, 'card.json'), 'utf8')).capabilities).toEqual([{ name: 'orders:read', attestations: [{ vc: { id: 'att:cli' } }] }]);
   });
 
   it('own hosting with --no-activate, and activate while still unpublished', async () => {

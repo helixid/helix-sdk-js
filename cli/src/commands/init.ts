@@ -52,6 +52,7 @@ export async function runInit(options: InitOptions): Promise<HelixInitResult> {
     warn(`Agent enrolled, waiting for its documents on your domain: ${result.did}`);
   }
   report(result);
+  republishNotice(result);
   if (result.status === 'pending_resolution') {
     console.log('');
     console.log('Publish the two documents, then activate:');
@@ -77,7 +78,16 @@ export async function runActivate(options: ActivateCommandOptions): Promise<Heli
   } else {
     warn(`Not active yet: ${result.resolution?.reason ?? 'the documents do not resolve from your domain'}`);
   }
+  republishNotice(result);
   return result;
+}
+
+/** On activation Helix returns the card with the agent's attestations: say where to republish it. */
+function republishNotice(result: HelixInitResult): void {
+  if (!result.cardUpdated) return;
+  console.log('');
+  console.log('card.json now carries the attestations Helix issued; republish it:');
+  console.log(`  ${result.files.card}  ->  ${result.cardUrl}`);
 }
 
 export interface CustodyTakeOptions {
