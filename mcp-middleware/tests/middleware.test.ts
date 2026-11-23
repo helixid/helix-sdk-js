@@ -128,7 +128,8 @@ describe.skipIf(!haveVerifierFixtures)('helixidMCPMiddleware over the shared fix
       Object.keys(c.options).length === 2 &&
       c.options['resource'] === service &&
       c.seams['fetchStatusList'] === 'lists' &&
-      !['root_not_responsible_party', 'card_malformed', 'card_subject_mismatch', 'card_unresolvable'].includes(c.name);
+      // Cases about the case's own card are left out: this gate always presents the configured attested card.
+      !['root_not_responsible_party', 'card_malformed', 'card_subject_mismatch', 'card_unresolvable', 'revoked_card', 'card_list_not_kept_by_card'].includes(c.name);
     const cases = [...loadCases('chain'), ...loadCases('status')].filter((c) => !c.expected.ok && c.input.proof !== undefined && plain(c));
     expect(cases.length).toBeGreaterThan(20);
     for (const fixture of cases) {
