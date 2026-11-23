@@ -225,10 +225,10 @@ export function createOrderServer(options: OrderServerOptions): Server {
       const finishers = new Map<string, Finisher[]>();
       // Story L3-D: the delegation each allowed call carries, which its handler may forward downstream.
       const delegations = new Map<string, Array<DelegationContext | undefined>>();
-      const allowed = (name: string | undefined, caller: MiddlewareCaller, sessionId?: string): void => {
-        const list = delegations.get(name ?? '') ?? [];
+      const allowed = (tool: string, caller: MiddlewareCaller, sessionId?: string): void => {
+        const list = delegations.get(tool) ?? [];
         list.push(delegationContextOf(caller, { ...(sessionId === undefined ? {} : { sessionId }), ...(call ? { correlationId: call.correlationId } : {}) }));
-        delegations.set(name ?? '', list);
+        delegations.set(tool, list);
       };
       // The agent the handshake call's credentials identified, if any.
       let authenticatedAgentDid: string | undefined;
@@ -236,6 +236,7 @@ export function createOrderServer(options: OrderServerOptions): Server {
       for (const message of toolCalls) {
         const params = message.params ?? {};
         const name = typeof params.name === 'string' ? params.name : undefined;
+        const tool = name ?? '';
         const input = asRecord(params.arguments);
         const meta = asRecord(params._meta);
         const toolCall = {
@@ -275,7 +276,7 @@ export function createOrderServer(options: OrderServerOptions): Server {
 
         if (!kyaos) {
           try {
-            allowed(name, await guard.authorize(toolCall));
+            allowed(tool, await guard.authorize(toolCall));
           } catch (error) {
             await refuse(error);
             return;
@@ -301,10 +302,11 @@ export function createOrderServer(options: OrderServerOptions): Server {
         }
         // Control arguments (`_kyaos*`) never reach the tool.
         message.params = { ...params, arguments: started.arguments };
-        if (caller !== undefined) allowed(name, caller, started.session?.id);
-        const list = finishers.get(name ?? '') ?? [];
+        // `start` authorized the call before allowing it, so the caller is known here.
+        allowed(tool, caller!, started.session?.id);
+        const list = finishers.get(tool) ?? [];
         list.push((result) => started.finish(result) as Promise<CallToolResult>);
-        finishers.set(name ?? '', list);
+        finishers.set(tool, list);
       }
 
       // Stateless: a fresh server and transport per request. Leaving out

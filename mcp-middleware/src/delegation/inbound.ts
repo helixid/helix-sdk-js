@@ -267,7 +267,8 @@ export async function verifyInboundDelegationHeaders(headers: HeadersLike | unde
   }
   partial = { ...partial, verification };
   if (!verification.ok) {
-    return { ...refuse(verification.reasons[0] ?? 'chain_invalid', verification.messages[0] ?? 'the chain was refused'), reasons: [...verification.reasons], messages: [...verification.messages] };
+    // A refused verification always names its reasons: they are the refusal.
+    return { ...refuse('chain_invalid', 'the chain was refused'), reasons: [...verification.reasons], messages: [...verification.messages] };
   }
 
   // 7. Scopes from the signed artifacts only; the proof's scope can narrow them, never widen them.

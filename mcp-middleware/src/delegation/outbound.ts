@@ -191,8 +191,8 @@ export async function buildOutboundDelegation(target: URL, context: DelegationCo
       redelegated = true;
       const rules = kyaos.verifier.evaluateDelegationChainRules(chain, { now, maxChainLength: options.maxChainLength ?? kyaos.verifier.MAX_DELEGATION_DEPTH });
       if (!rules.ok) throw new RedelegationError(rules.reasons);
-      const issuers = hops.map((hop) => (isRecord(hop) ? hop['issuer'] : undefined));
-      if (issuers.some((issuer) => issuer !== options.signer.did)) throw new RedelegationError(['a re-delegated hop must be issued by this service']);
+      // The rules held, so every appended hop is a credential with an issuer.
+      if (hops.some((hop) => (hop as { issuer: unknown }).issuer !== options.signer.did)) throw new RedelegationError(['a re-delegated hop must be issued by this service']);
     }
   }
   const responsibleParty = rootIssuer(chain);

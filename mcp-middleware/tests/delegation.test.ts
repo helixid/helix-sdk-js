@@ -236,6 +236,21 @@ describe.skipIf(!haveVerifierFixtures)('L3-D: service A forwards an agent\'s del
       expect(result).toMatchObject({ ok: false, reasons: ['attenuation_violation'] });
     });
 
+    it('a re-delegated hop must be this service\'s own, even when continuity holds', async () => {
+      const agentHop = hop(env, 'agent', {
+        id: 'urn:zcap:00000000-0000-4000-8000-0000000d3d09',
+        issuer: did('agent'),
+        invoker: did('service'),
+        parentCapability: chain[1]!['id'] as string,
+        invocationTarget: did('service'),
+        allowedAction: ['read:orders'],
+        validUntil: '2026-10-01T00:00:00Z',
+        caveats: [{ type: 'MaxAmount', limit: '100.00', currency: 'USD' }, { type: 'ValidUntil', date: '2026-10-01T00:00:00Z' }],
+        status: { url: 'https://agent.example/status/1', index: '3' },
+      });
+      await expect(sent(undefined, { redelegate: () => agentHop })).rejects.toThrow(/issued by this service/);
+    });
+
     it('A cannot re-delegate a chain it does not hold: continuity breaks', async () => {
       await expect(sent(undefined, { redelegate: () => own(['read:orders']) })).rejects.toThrow(/broken continuity/);
     });
@@ -328,6 +343,25 @@ describe.skipIf(!haveVerifierFixtures)('L3-D: service A forwards an agent\'s del
       expect(sink.events[3]!.resource).toEqual({ kind: 'public_did', did: 'did:web:c.helix.test' });
     });
 
+    it('records the digests of hops with a signed form, and the call\'s correlation id', async () => {
+      const sink = new MemoryAuditSink();
+      const trail = createMcpAuditTrail({ reporter: sink, serviceDid: did('service'), clock: () => NOW_MS });
+      const attachments: OutboundAttachment[] = [];
+      await sent(undefined, { context: { ...context(), correlationId: 'audit_1' }, audit: (attachment) => void attachments.push(attachment) });
+      const signedForms = [
+        { id: 'vc-1', credentialSubject: { id: 'c-1' }, proof: { proofValue: 'AAAA' } },
+        { id: 'vc-2', credentialSubject: { id: 'c-2' }, proof: { proofValue: 'AAAA' } },
+      ];
+      await trail.outboundAttached({ ...attachments[0]!, chain: signedForms });
+      const event = sink.events[0]!;
+      expect(event.correlationId).toBe('audit_1');
+      expect(event.authorization?.delegationCredentialDigest).toMatch(/^sha256:/);
+      expect(event.authorization?.delegationChainDigests).toHaveLength(2);
+      // A leaf that shows no id is recorded under the unknown reference.
+      await trail.outboundAttached({ ...attachments[0]!, chain: [{ credentialSubject: {} }] });
+      expect(sink.events[1]!.details).toMatchObject({ delegationRef: 'unknown' });
+    });
+
     it('an audit failure never blocks the call', async () => {
       const errors: unknown[] = [];
       const headers = await sent(undefined, { audit: () => { throw new Error('down'); }, onAuditError: (error) => errors.push(error) });
@@ -409,6 +443,53 @@ describe.skipIf(!haveVerifierFixtures)('L3-D: service A forwards an agent\'s del
     expect(result.effectiveScopes).toEqual(['write:orders']);
     const fixed = await sent(undefined, { scopes: ['read:orders'] });
     expect((await verifyInboundDelegationHeaders(fixed, { verifier: verifierB(), forwarders: '*' })).effectiveScopes).toEqual(['read:orders']);
+  });
+
+  it('edge cases: malformed chains, an empty audience list, duplicated advisory scopes, URL and bare-string targets, empty re-delegations', async () => {
+    const verify = (headers: Headers, options: Partial<Parameters<typeof verifyInboundDelegationHeaders>[1]> = {}) =>
+      verifyInboundDelegationHeaders(headers, { verifier: verifierB(), forwarders: [did('service')], ...options });
+    // A chain whose hop is no credential: the proof names a root the chain does not have.
+    const shapeless = await sent();
+    shapeless.set(DELEGATION_HEADERS.credential, encodeDelegationCredential([{ credentialSubject: { invoker: 7, invocationTarget: 9 } }]));
+    const refused = await verify(shapeless);
+    expect(refused).toMatchObject({ ok: false, reasons: ['delegation_subject_mismatch'] });
+    expect(refused.responsibleParty).toBeUndefined();
+    expect(refused.invocationTarget).toBeUndefined();
+    expect((await verify(await sent(), { audience: [] })).reasons).toEqual(['configuration_error']);
+    // Sent twice (a record keeps both values; fetch's Headers would join them into one).
+    const duplicated: Record<string, string | string[]> = Object.fromEntries((await sent(undefined, { advisoryHeaders: true })).entries());
+    duplicated[DELEGATION_HEADERS.grantedScopes.toLowerCase()] = ['read:orders,write:orders', 'read:orders'];
+    expect((await verifyInboundDelegationHeaders(duplicated, { verifier: verifierB(), forwarders: [did('service')] })).advisory.dropped).toEqual(['grantedScopes']);
+    // The controller stands in for a missing invoker; a non-string one names nobody.
+    expect(agentOfChain([{ credentialSubject: { controller: did('agent') } }], did('service'))).toBe(did('agent'));
+    expect(agentOfChain([{ credentialSubject: { invoker: 7 } }], did('service'))).toBeUndefined();
+    expect(agentOfChain([7], did('service'))).toBeUndefined();
+    expect(delegationIdOf([{ credentialSubject: { id: '' } }])).toBeUndefined();
+    expect(delegationContextOf({ authMethod: 'kyaos', agentDid: 'did:a', scopes: [], chain: [{}] }, { correlationId: 'c' })).toMatchObject({ correlationId: 'c' });
+    // A re-delegation that appends nothing, or nothing at all, sends the chain as it is.
+    for (const nothing of [undefined, null, []]) {
+      const headers = await sent(undefined, { redelegate: () => nothing });
+      expect(decodeDelegationCredential(headers.get(DELEGATION_HEADERS.credential)!)).toEqual(chain);
+    }
+    // A leaf whose allowedAction is not a list grants nothing to forward.
+    const { attachment } = await buildOutboundDelegation(new URL('https://b.helix.test/'), { agentDid: did('agent'), chain: [{ issuer: did('owner'), credentialSubject: { id: 'c' } }], scopes: ['read:orders'] }, { signer: A(), clock: () => NOW_MS });
+    expect(attachment.scopes).toEqual([]);
+    // A URL target, and a bare string target with no init, in context.
+    const seen: Headers[] = [];
+    const forward = withDelegation((async (_input: unknown, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers));
+      return new Response('{}');
+    }) as typeof fetch, { signer: A(), context: context(), clock: () => NOW_MS });
+    await forward(new URL('https://b.helix.test/mcp'));
+    await forward('https://b.helix.test/mcp');
+    expect(seen.map((headers) => headers.get(DELEGATION_HEADERS.agentDid))).toEqual([did('agent'), did('agent')]);
+    // Invalidating one credential leaves the verdicts of other chains in place.
+    const cache = new VerificationCache({ clock: () => NOW_MS });
+    const ok = { ok: true, chainSummary: { allowedAction: [] }, effectiveScopes: [] } as unknown as kyaos.verifier.VerifierResult;
+    cache.set(chain, ok);
+    cache.set([{ id: 'urn:other', issuer: 'did:x', credentialSubject: { id: 'urn:other', invoker: 'did:y' } }], ok);
+    expect(cache.invalidate('urn:other')).toBe(1);
+    expect(cache.size).toBe(1);
   });
 
   it('agentOfChain names the leaf delegate, or who delegated to the forwarder', () => {
