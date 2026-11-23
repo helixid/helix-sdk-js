@@ -17,6 +17,7 @@ export {
 export { MCPAuthError, ProofError, LevelError, ToolScopeError, AuthorizationServerUnavailableError } from './errors.js';
 // KYA-OS signed needs_authorization and resume (story L3-E).
 export * from './needs-authorization.js';
+export * from './helix-consent.js';
 export * from './resume-token-store.js';
 export * from './resume-token-store-env.js';
 export type { MCPMiddlewareOptions, MiddlewareVerifierOptions, MCPToolCall } from './types.js';

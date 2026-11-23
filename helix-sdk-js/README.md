@@ -16,8 +16,8 @@ DID resolution, and status checks are all API calls made through
 
 **Agents and Service Providers hold no keys.** The server generates the
 keypair when an agent is onboarded or a service is enrolled and holds the
-private key, so onboarding and issuing consent grants are API calls
-(`HelixClient.onboardAgent()`, `createService()`, `issueServiceDelegationGrant()`).
+private key, so onboarding and enrolment are API calls
+(`HelixClient.onboardAgent()`, `createService()`); consent is the user's own did:key signing the root hop on Helix's consent page (`kyaos.consent`, story L3-H).
 `AgentWallet` remains for an issuer's own key material only.
 
 ## Modules

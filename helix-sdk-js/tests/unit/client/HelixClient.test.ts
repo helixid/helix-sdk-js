@@ -135,7 +135,6 @@ describe('HelixClient Branch Coverage', () => {
   });
 
   describe('enterprise (apiKey) mode', () => {
-    const DID = 'did:web:helix.test:agents:a1';
     let enterprise: HelixClient;
 
     beforeEach(() => {
@@ -149,30 +148,25 @@ describe('HelixClient Branch Coverage', () => {
       expect(((c2 as any).http as HttpAdapter).hasAdminApiKey()).toBe(false);
     });
 
-    it('issueServiceDelegationGrant uses the same adapter (and so the same credential)', async () => {
-      mockHttp.post.mockResolvedValue({ grantVC: { id: 'vc-grant' } });
-      const vc = await enterprise.issueServiceDelegationGrant({
-        serviceDid: 'did:web:sp', agentDid: DID, userDid: 'did:key:z6Mkuser', scopes: ['read:orders'],
-      });
-      expect(vc).toEqual({ id: 'vc-grant' });
-      expect(mockHttp.post).toHaveBeenCalledWith('/v1/service-delegation-grants', expect.objectContaining({ serviceDid: 'did:web:sp' }));
+    it('createService and getStatusList go through the same adapter', async () => {
+      mockHttp.post.mockResolvedValue({ serviceDid: 'did:web:sp', serviceName: 'sp' });
+      expect(await enterprise.createService({ serviceName: 'sp', displayName: 'SP', verifiedDomain: 'https://sp.example' })).toEqual({ serviceDid: 'did:web:sp', serviceName: 'sp' });
+      expect(mockHttp.post).toHaveBeenCalledWith('/v1/services', expect.objectContaining({ serviceName: 'sp' }));
+      mockHttp.get.mockResolvedValue({ id: 'list' });
+      expect(await enterprise.getStatusList('iss list')).toEqual({ id: 'list' });
+      expect(mockHttp.get).toHaveBeenCalledWith('/v1/status-list/iss%20list');
     });
 
-    it('issueServiceDelegationGrant passes allowDelegation through', async () => {
-      mockHttp.post.mockResolvedValue({ grantVC: { id: 'vc-grant' } });
-      await enterprise.issueServiceDelegationGrant({
-        serviceDid: 'did:web:sp', agentDid: DID, userDid: 'did:key:z6Mkuser', scopes: ['read:orders'], allowDelegation: false,
-      });
-      expect(mockHttp.post).toHaveBeenCalledWith('/v1/service-delegation-grants', expect.objectContaining({ allowDelegation: false }));
-    });
-
-    it('getAgentScopes reads the agent scopes for a service through the adapter', async () => {
-      mockHttp.get.mockResolvedValue({ agentDid: DID, scopes: ['read:orders'] });
-      const result = await enterprise.getAgentScopes({ serviceDid: 'did:web:sp', agentDid: DID });
-      expect(result).toEqual({ agentDid: DID, scopes: ['read:orders'] });
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        `/v1/service-delegation-grants/agent-scopes?serviceDid=${encodeURIComponent('did:web:sp')}&agentDid=${encodeURIComponent(DID)}`,
-      );
+    it('records audit events only with an API key, and hands an audit sink to an AuditTrail', async () => {
+      mockHttp.post.mockResolvedValue({});
+      const event = { eventId: 'e1' } as never;
+      await enterprise.recordAuditEvent(event);
+      expect(mockHttp.post).toHaveBeenCalledWith('/v1/audit-log/events', event);
+      await enterprise.auditSink().append({ event } as never);
+      expect(mockHttp.post).toHaveBeenCalledTimes(2);
+      mockHttp.post.mockClear();
+      await client.recordAuditEvent(event);
+      expect(mockHttp.post).not.toHaveBeenCalled();
     });
 
     it('registerVC posts the signed credential', async () => {

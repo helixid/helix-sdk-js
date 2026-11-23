@@ -22,3 +22,4 @@ export * as conformance from './conformance/index.js';
 export * from './request-proof.js';
 export * from './needs-authorization.js';
 export * from './discovery.js';
+export * as consent from './consent.js';
