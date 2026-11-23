@@ -169,10 +169,11 @@ export {
 
 // KYA-OS story F-3: custody preference. `helix init` (self-custody onboarding),
 // HelixCustodialSigner (custodial agents sign through the API), the Signer the
-// agent runtime takes (a request proof: kyaos.verifier.signRequestProof), and the custody API client.
+// agent runtime takes (a request proof: kyaos.verifier.signRequestProof), and the custody API client;
+// story C-E: rotateKey (a new self-custody key, only its public half registered).
 export * as custody from './core/custody/index.js';
-export { EnvSigner, HelixCustodialSigner, HelixCustodyClient, helixInit, activateAgent, checkOwnHosting, changeToSelfCustody, rotationProof } from './core/custody/index.js';
-export type { Signer, HelixInitOptions, HelixInitResult, HelixCustodialSignerOptions, KeyCustodyMode, DidHostingMode, CustodyLabel } from './core/custody/index.js';
+export { EnvSigner, HelixCustodialSigner, HelixCustodyClient, helixInit, activateAgent, checkOwnHosting, changeToSelfCustody, rotateKey, rotationProof } from './core/custody/index.js';
+export type { Signer, HelixInitOptions, HelixInitResult, HelixCustodialSignerOptions, KeyCustodyMode, DidHostingMode, CustodyLabel, RotateKeyOptions, HopReissueResult } from './core/custody/index.js';
 
 // KYA-OS (stories rule 24): canonical JSON hashing, EdDSA JWS and the Signer,
 // the session handshake and the client side of the detached response proof.
