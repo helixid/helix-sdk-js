@@ -443,6 +443,22 @@ export class NeedsAuthorizationError extends HelixError {
   }
 }
 
+/**
+ * A step of the consent flow (KYA-OS story L3-H) that did not go through: a
+ * consent request, the signed root hop the consent page returned, a renewal
+ * or a withdrawal. `reason` is one of `ConsentReasons` in
+ * core/kyaos/consent.ts (`step_up_required` among them), `status` the HTTP
+ * status Helix answered with, when it answered.
+ */
+export class ConsentFlowError extends HelixError {
+  public readonly reason: string;
+  constructor(reason: string, message = 'consent flow failed', status = 400) {
+    super('CONSENT_FLOW_FAILED', message, status, { reason });
+    this.name = 'ConsentFlowError';
+    this.reason = reason;
+  }
+}
+
 export class JWTPublicKeyNotFoundError extends HelixError {
   constructor(message = 'JWT public key is not configured') {
     super('JWT_PUBLIC_KEY_NOT_FOUND', message, 500);

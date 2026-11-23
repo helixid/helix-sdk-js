@@ -163,8 +163,13 @@ export interface ChallengeInput extends ChallengeContext {
 }
 
 export interface NeedsAuthorizationOptions {
-  /** The consent page: a URL, or a function of the challenge's binding. Always covered by the proof. */
-  authorizationUrl: string | ((context: ChallengeContext) => string);
+  /**
+   * The consent page: a URL, or a function of the challenge's binding and the
+   * challenge input (who the caller is), which may answer asynchronously: story
+   * L3-H's `createHelixConsent` creates a consent request at Helix per challenge.
+   * Always covered by the proof.
+   */
+  authorizationUrl: string | ((context: ChallengeContext, input: ChallengeInput) => string | Promise<string>);
   /**
    * Default: the store `KYAOS_NONCE_STORE` leads to (deferredResumeTokenStoreFromEnv: Redis on `KYAOS_REDIS_URL`
    * when the replay store is Redis, memory otherwise). An explicit store wins.
@@ -242,8 +247,8 @@ export function createNeedsAuthorization(options: NeedsAuthorizationOptions): Ne
   const ttlSeconds = options.ttlSeconds ?? DEFAULT_RESUME_TTL_SECONDS;
   if (!(ttlSeconds > 0) || !Number.isFinite(ttlSeconds)) throw new RangeError('createNeedsAuthorization: ttlSeconds must be a positive number');
   const authorizer = options.authorizer ?? refusingAuthorizer;
-  const urlOf = (context: ChallengeContext): string => {
-    const url = typeof options.authorizationUrl === 'function' ? options.authorizationUrl(context) : options.authorizationUrl;
+  const urlOf = async (context: ChallengeContext, input: ChallengeInput): Promise<string> => {
+    const url = typeof options.authorizationUrl === 'function' ? await options.authorizationUrl(context, input) : options.authorizationUrl;
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error(`createNeedsAuthorization: authorizationUrl must be http(s), got ${url}`);
     return parsed.toString();
@@ -277,7 +282,7 @@ export function createNeedsAuthorization(options: NeedsAuthorizationOptions): Ne
     const context: ChallengeContext = { agentDid: input.agentDid, tool: input.tool, scopes: [...input.scopes] };
     if (context.scopes.length === 0) throw new Error('createNeedsAuthorization: a challenge needs at least one scope');
     const missing = input.missing !== undefined && input.missing.length > 0 ? input.missing : context.scopes;
-    const authorizationUrl = urlOf(context);
+    const authorizationUrl = await urlOf(context, input);
     const expiresAtMs = now() + ttlSeconds * 1000;
     const resumeToken = await store.issue(context, expiresAtMs);
     const display = input.display ?? options.display;
