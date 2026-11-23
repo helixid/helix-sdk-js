@@ -141,3 +141,50 @@ describe('the last-seen sequence and the jwks.json projection (C-E point 2)', ()
     expect(verifier.projectJwks({ id: DID, verificationMethod: [{ id: '#x', publicKeyJwk: { kty: 'OKP', crv: 'X25519', x: 'a' } }] })).toEqual({ keys: [] });
   });
 });
+
+describe('rotation edges (C-E)', () => {
+  it('projects relative ids and validFrom, skips methods without a usable Ed25519 key, and leaves out a missing version', () => {
+    const projected = verifier.projectJwks({
+      id: DID,
+      verificationMethod: [
+        { id: '#key-3', publicKeyJwk: { kty: 'OKP', crv: 'Ed25519', x: x(newKeys.publicKey) }, validFrom: '2026-06-01T00:00:00Z' },
+        { publicKeyJwk: { kty: 'OKP', crv: 'Ed25519', x: 'a' } },
+        { id: '#nokey' },
+        { id: '#ec', publicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'a' } },
+      ],
+    });
+    expect(projected).toEqual({ keys: [{ kty: 'OKP', crv: 'Ed25519', x: x(newKeys.publicKey), kid: `${DID}#key-3`, use: 'sig', alg: 'EdDSA', validFrom: '2026-06-01T00:00:00Z' }] });
+    expect(verifier.projectJwks({ id: DID })).toEqual({ keys: [] });
+  });
+
+  it('reads only the DID\'s own Ed25519 keys from a JWKS', async () => {
+    const own = { kty: 'OKP', crv: 'Ed25519', x: 'a', kid: `${DID}#key-1` };
+    const keys = await verifier.readJwks(DID, { keys: [own, { ...own, kid: 'did:web:other#k' }, { ...own, crv: 'X25519' }, { ...own, kty: 'EC' }, { ...own, x: 1 }, { ...own, kid: 1 }, null, 'junk'] }, new verifier.RotationSequenceGuard());
+    expect(keys).toEqual([own]);
+    await expect(verifier.readJwks(DID, null, new verifier.RotationSequenceGuard())).rejects.toThrow(/not a JWK Set/);
+  });
+
+  it('refuses a document that drops the sequence once one was seen; keeps the highest; evicts the oldest DID', async () => {
+    const guard = new verifier.RotationSequenceGuard();
+    expect(await guard.check(DID, { rotationSequence: 2 })).toBeUndefined();
+    expect((await guard.check(DID, {}))?.message).toMatch(/carries no rotationSequence/);
+    expect(await guard.check('did:web:unversioned.example', null)).toBeUndefined();
+    const store = new verifier.MemoryRotationSequenceStore(1);
+    store.raise('a', 3);
+    store.raise('a', 2);
+    expect(store.get('a')).toBe(3);
+    store.raise('b', 1);
+    expect(store.get('a')).toBeUndefined();
+    const guarded = verifier.guardedResolver(async () => ({ id: DID, rotationSequence: 1 }), guard);
+    await expect(guarded(DID)).rejects.toBeInstanceOf(verifier.StaleDidDocumentError);
+    expect(await verifier.guardedResolver(async () => undefined)(DID)).toBeUndefined();
+  });
+
+  it('reads a validFrom after the proof as superseded, and a bool or negative proof time as none', () => {
+    expect(keyValidityProblem({ id: 'k', validFrom: '2026-06-02T00:00:00Z' }, undefined, Date.parse('2026-06-01T00:00:00Z'))).toMatchObject({ reason: 'key_superseded' });
+    expect(proofTime(-5)).toBeUndefined();
+    expect(proofTime(Number.NaN)).toBeUndefined();
+    expect(proofTime('2026-13-45T00:00:00Z')).toBeUndefined();
+    expect(proofTime('2026-06-01T00:00:00.5+05:30')).toBe(Date.parse('2026-06-01T00:00:00.5+05:30'));
+  });
+});
