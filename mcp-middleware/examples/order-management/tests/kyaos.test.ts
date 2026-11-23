@@ -293,15 +293,15 @@ describe('order-management sample with KYA-OS and the typed audit trail together
     expect(sink.events[3]!.reason).toEqual({ code: 'insufficient_scope' });
   });
 
-  it('records a refused request proof as proof.rejected and the call as denied', async () => {
+  it('records a replayed request proof as a denied call, never attributed (story C-C: the nonce is checked before the signature)', async () => {
     const args = { orderId: 'ORD-1001' };
     const meta = await proofMeta('lookup_order', args);
     await auditedCall('lookup_order', args, {}, meta);
     sink.entries.length = 0;
     const replayed = await auditedCall('lookup_order', args, {}, meta);
     expect(replayed.status).toBe(401);
-    expect(sink.eventTypes).toEqual(['session.established', 'proof.rejected', 'tool.call.denied']);
-    expect(sink.events[1]).toMatchObject({ outcome: 'denied', actor: { kind: 'pairwise_did', did: AGENT } });
-    expect(sink.events[2]!.reason).toEqual({ code: 'proof_invalid' });
+    expect(sink.eventTypes).toEqual(['session.established', 'tool.call.denied']);
+    expect(sink.events[1]).toMatchObject({ outcome: 'denied', reason: { code: 'proof_invalid' } });
+    expect(sink.events[1]!.actor).toBeUndefined();
   });
 });

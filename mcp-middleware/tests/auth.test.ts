@@ -13,9 +13,13 @@ import { fixtureVerifier, makeAgent, proofMeta } from './proof-helpers.js';
 
 const SERVICE = 'did:web:svc.helix.test';
 const agent = makeAgent();
-/** A guard whose verifier resolves the test agent offline (story F-2: never the Helix API). */
+/**
+ * A guard whose verifier resolves the test agent offline (story F-2: never the Helix API). The agent has no
+ * card, so its calls come to L1: these tests are about credentials, scopes and audit, so every tool asks L1
+ * (story C-C's level check has its own tests in level.test.ts).
+ */
 const guard = (options: Omit<Parameters<typeof helixidMCPMiddleware>[0], 'verifier'> = {}) =>
-  helixidMCPMiddleware({ verifier: fixtureVerifier(SERVICE, { documents: { [agent.did]: agent.document } }), ...options });
+  helixidMCPMiddleware({ verifier: fixtureVerifier(SERVICE, { documents: { [agent.did]: agent.document } }), minimumLevel: 'L1', ...options });
 const proofFor = (name: string, input?: Record<string, unknown>) => proofMeta(agent.signer, SERVICE, { name, ...(input ? { input } : {}) });
 
 describe('credential extraction', () => {
@@ -30,9 +34,10 @@ describe('credential extraction', () => {
     await expect(mw({ name: 't', headers: new Headers({ Authorization: 'Bearer tok' }) })).resolves.toBeDefined();
   });
 
-  it('rejects a proof together with a bearer token, and duplicate Authorization headers', async () => {
+  it('rejects a chain without a proof together with a bearer token, and duplicate Authorization headers', async () => {
     const mw = guard({ validateOAuthToken: async () => ({ sub: 'u' }) });
-    await expect(mw({ name: 't', headers: { authorization: 'Bearer tok' }, _meta: await proofFor('t') })).rejects.toMatchObject({ code: 'CREDENTIAL_CONFLICT' });
+    // A proof with a bearer token is the §8.6 fusion (story C-C); a bare chain with one is two callers.
+    await expect(mw({ name: 't', headers: { authorization: 'Bearer tok' }, _meta: { 'org.kya-os/delegation-chain': [{}] } })).rejects.toMatchObject({ code: 'CREDENTIAL_CONFLICT' });
     await expect(mw({ name: 't', headers: { authorization: ['Bearer a', 'Bearer b'] } })).rejects.toMatchObject({ code: 'CREDENTIAL_CONFLICT' });
     await expect(mw({ name: 't', headers: { authorization: 'Bearer' } })).rejects.toMatchObject({ code: 'CREDENTIAL_CONFLICT' });
   });
@@ -353,5 +358,25 @@ describe('audit', () => {
     expect(bodies.map((b) => b.eventType)).toEqual(['proof.verified', 'authorization.approved']);
     expect(bodies[0]).toMatchObject({ actor: { kind: 'pairwise_did', did: 'did:key:z6Mkagent' }, details: { verificationCode: 'KYAOS_PROOF_L3_CACHED' } });
     expect(bodies[1]).toMatchObject({ authorization: { source: 'delegation', decision: 'allowed' } });
+  });
+
+  it('createHelixAuditSink carries the story C-C L3-minus and cnf diagnostic in the verification code, and a level refusal as its own reason', async () => {
+    const f = vi.fn(async () => new Response('{}', { status: 201 }));
+    const sink = createHelixAuditSink({ baseUrl: 'http://localhost:3680', apiKey: 'hak_test', serviceDid: 'did:web:svc', fetch: f as unknown as typeof fetch });
+    await sink({
+      event: 'AUTHZ_DENIED', result: 'denied', timestamp: 't', authMethod: 'kyaos', agentDid: 'did:key:z6Mkagent', level: 'L3', fresh: true,
+      proofAssurance: 'L3-minus', l3Minus: true, cnfDiagnostics: ['cnf_present_but_token_unfused'], requiredLevel: 'L3',
+      reason: 'level_insufficient: L3-minus < L3', effectiveScopes: [],
+    });
+    await sink({ event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: 't', authMethod: 'kyaos', agentDid: 'did:key:z6Mkagent', level: 'L3', proofAssurance: 'L3', cnfDiagnostics: [], effectiveScopes: [] });
+    await sink({ event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: 't', authMethod: 'kyaos', agentDid: 'did:key:z6Mkagent', level: 'L3', proofAssurance: 'L3-minus', fresh: false, effectiveScopes: [] });
+    const bodies = f.mock.calls.map((call) => JSON.parse((call as unknown as [string, RequestInit])[1].body as string));
+    expect(bodies.map((b) => b.eventType)).toEqual(['proof.verified', 'authorization.denied', 'proof.verified', 'authorization.approved', 'proof.verified', 'authorization.approved']);
+    expect(bodies[0].details.verificationCode).toBe('KYAOS_PROOF_L3_MINUS_CNF_UNFUSED');
+    expect(bodies[1]).toMatchObject({ reason: { code: 'proof_level_insufficient' }, authorization: { source: 'delegation', decision: 'denied' } });
+    expect(bodies[2].details.verificationCode).toBe('KYAOS_PROOF_L3');
+    expect(bodies[4].details.verificationCode).toBe('KYAOS_PROOF_L3_MINUS_CACHED');
+    // A-1's strict events hold no C-C member of their own.
+    for (const body of bodies) for (const key of ['proofAssurance', 'l3Minus', 'cnfDiagnostics', 'requiredLevel']) expect(JSON.stringify(body)).not.toContain(key);
   });
 });

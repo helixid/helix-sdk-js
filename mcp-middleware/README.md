@@ -21,6 +21,28 @@ await requireHelix({ name, input: args, _meta: request.params._meta, request, he
 
 A caller's scopes are the three-way intersection of its verified capability attestations (from its Entity Card), the leaf hop's `allowedAction` and the tool scopes this server offers; the caller's level is derived per SPEC-ENTITY-CARD §9.4. A refused proof is a `ProofError` (`PROOF_INVALID`, 401) whose `reasons` are the verifier's codes (`nonce_replayed`, `audience_mismatch`, `request_hash_mismatch`, `attenuation_violation`, `status_revoked`, `chain_too_long`, ...); no proof and no bearer token is `PROOF_MISSING` (401). A carried chain that fails is refused as is: nothing is looked up in its place. The verifier itself is `kyaos.verifier.verify()` in `@helixid/sdk-js`, mirrored by `helix_sdk.verifier` in helix-sdk-py.
 
+## Per-request holder-of-key proof and the minimum Card level (story C-C)
+
+Every proof is checked in the exact SPEC-ENTITY-CARD §11.2 order, stopping at the first broken binding: schema, `kid` names a key of `did`, the key resolved and its RFC 7638 thumbprint among the keys the DID publishes, `audience` equals this service's DID, `requestHash` (`sha-256=:<base64>:` over the JCS of `{method, params}` with `params._meta` removed) recomputed, the window (`expires - created` at most 60 s, ±5 s skew), the nonce unseen in the L2-A replay store, the detached JWS, the `cnf` fusion. A missing DID-keys seam or nonce store fails closed. A proof under the legacy key `org.kya-os/proof@1` or with the legacy `prf` verifies too; when both keys are present the canonical one is read. `verifyRequestProof(verifier, call)` runs the proof check alone.
+
+- **`cnf` fusion**: a bearer token sent with a proof is its sender constraint, not a second caller. Its `cnf.jkt` (`AuthResult.cnfJkt`, or `claims.cnf.jkt`) must equal the proof's `cnf.jkt` and the key's thumbprint for `L3`; without a token `cnf` the proof is `L3-minus`. A token `cnf` with no proof `cnf` is `cnf_required_by_token`. A proof `cnf` with no token is recorded as the `cnf_present_but_token_unfused` diagnostic.
+- **Level**: derived per §9.4 (`deriveConformanceLevel(check, proofFloor, revocationFresh)`) from the attested capabilities, the proof floor and whether every status was read live; the card's own `conformanceLevel` is never read.
+- **Minimum level**: `minimumLevel` (default `L3`) for every tool, `tools[name].minimumLevel` per tool, and `l3MinusSatisfiesL3` (default `true`). Scopes are checked first, the level after. A call below the tool's minimum is a `LevelError` (`PROOF_LEVEL_INSUFFICIENT`, 401 `insufficient_user_authentication`) carrying `derivedLevel` (`L1`, `L2`, `L3-minus`, `L3`) and `requiredLevel`. OAuth-only callers carry no level and are not checked.
+- **A chain without a proof** is verified in full (signatures, attenuation, revocation, card) with the leaf delegate as the unproven agent; the proof floor does not hold, so it comes to `L2` at most and is accepted only where a tool's minimum allows it.
+- **Audit**: the in-process `ToolAuditEvent` given to `auditSink` carries `level`, `fresh`, `proofAssurance`, `l3Minus`, any `cnfDiagnostics`, and on a level refusal `requiredLevel`; `reportVerification` gets `proofFloor`, `l3Minus` and `cnfDiagnostics` too. In the typed events (`McpAuditTrail.toolAuditSink()`) they enter only as the `proof.verified` verification code, `KYAOS_PROOF_<L1|L2|L3|L3_MINUS>[_CACHED][_CNF_UNFUSED]`, and a level refusal is `authorization.denied` with reason `proof_level_insufficient`.
+
+```ts
+const requireHelix = helixidMCPMiddleware({
+  verifier,
+  toolScopes: { lookup_order: ['read:orders'], cancel_order: ['write:orders'] },
+  minimumLevel: 'L3',                               // default
+  tools: { lookup_order: { minimumLevel: 'L2' } },  // a chain without a proof will do here
+  l3MinusSatisfiesL3: true,                         // default
+});
+```
+
+The agent side is `kyaos.withRequestProof(call, signer, { audience, chain, cnfJkt? })` in `@helixid/sdk-js`: the proof and the chain in `params._meta`, signed by the agent's own Signer.
+
 ## HTTP auth, per-tool scopes and audit (Phase 1)
 
 A runnable sample, an order-management MCP server with a 5-minute quickstart, is in

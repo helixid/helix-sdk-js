@@ -149,22 +149,6 @@ describe('HelixClient Branch Coverage', () => {
       expect(((c2 as any).http as HttpAdapter).hasAdminApiKey()).toBe(false);
     });
 
-    it('signVP goes through the adapter to the custodial route', async () => {
-      mockHttp.post.mockResolvedValue({ signedVP: { id: 'vp-1' } });
-      const vp = await enterprise.signVP(DID, 'orders');
-      expect(vp).toEqual({ id: 'vp-1' });
-      expect(mockHttp.post).toHaveBeenCalledWith(
-        `/v1/custodial-agents/${encodeURIComponent(DID)}/vp`,
-        { targetService: 'orders' },
-      );
-    });
-
-    it('core mode keeps the admin-gated agent routes', async () => {
-      mockHttp.post.mockResolvedValue({ signedVP: { id: 'vp-1' } });
-      await client.signVP(DID, 'orders');
-      expect(mockHttp.post).toHaveBeenCalledWith(`/v1/agents/${encodeURIComponent(DID)}/vp`, { targetService: 'orders' });
-    });
-
     it('issueServiceDelegationGrant uses the same adapter (and so the same credential)', async () => {
       mockHttp.post.mockResolvedValue({ grantVC: { id: 'vc-grant' } });
       const vc = await enterprise.issueServiceDelegationGrant({

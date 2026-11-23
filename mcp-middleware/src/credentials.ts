@@ -5,14 +5,17 @@ import { kyaos, type HeadersLike } from '@helixid/sdk-js';
 import { MCPAuthError } from './errors.js';
 
 /**
- * What a tool call carries to identify its caller: a KYA-OS request proof
- * (and, with it, the chain the request carries) in `params._meta`, or an
- * OAuth bearer token in the `Authorization` header. Story F-2 retired the
- * Helix VP (`X-Helix-VP`, `_meta["x-helix-vp"]`) with no backward
- * compatibility: those are no longer read.
+ * What a tool call carries to identify its caller: KYA-OS material in
+ * `params._meta` (a request proof, a delegation chain, or both), or an
+ * OAuth bearer token in the `Authorization` header. A request proof may
+ * come with a bearer token: the token is then not the caller's identity but
+ * the sender constraint whose `cnf.jkt` the proof fuses with for Card L3
+ * (story C-C, SPEC-ENTITY-CARD.md §8.6). Story F-2 retired the Helix VP
+ * (`X-Helix-VP`, `_meta["x-helix-vp"]`) with no backward compatibility:
+ * those are no longer read.
  */
 export type ExtractedCredential =
-  | { kind: 'proof'; proof: unknown; chain: unknown }
+  | { kind: 'proof'; proof: unknown; chain: unknown; bearer?: string }
   | { kind: 'oauth'; token: string };
 
 /**
@@ -46,13 +49,15 @@ function readHeaderValues(headers: HeadersLike | undefined, name: string): strin
 /**
  * Finds the caller's credential: the request proof at
  * `_meta["org.kya-os/request-proof"]` (or the legacy `org.kya-os/proof@1`
- * key, the canonical one winning when both are present), with the carried
- * chain at `_meta["org.kya-os/delegation-chain"]`; or `Authorization:
- * Bearer <token>` for OAuth. Tool arguments are never read.
+ * key, the canonical one winning when both are present) and the carried
+ * chain at `_meta["org.kya-os/delegation-chain"]`, either of them alone or
+ * both, with any bearer token as the proof's sender constraint; or
+ * `Authorization: Bearer <token>` alone for OAuth. Tool arguments are never
+ * read.
  *
  * Ambiguity is rejected, never resolved by picking one: two Authorization
- * headers, or a proof together with a bearer token, throw
- * CREDENTIAL_CONFLICT.
+ * headers, or a chain without a proof together with a bearer token (two
+ * unrelated callers), throw CREDENTIAL_CONFLICT.
  */
 export function extractCredential(input: {
   headers?: HeadersLike | undefined;
@@ -75,10 +80,13 @@ export function extractCredential(input: {
   }
 
   const proof = kyaos.verifier.readRequestProof(input._meta);
-  if (proof !== undefined && bearer !== undefined) {
-    throw new MCPAuthError('CREDENTIAL_CONFLICT', 'Both a KYA-OS request proof and an OAuth bearer token were provided; send exactly one');
+  const chain = kyaos.verifier.readCarriedChain(input._meta);
+  if (proof === undefined && chain !== undefined && bearer !== undefined) {
+    throw new MCPAuthError('CREDENTIAL_CONFLICT', 'A delegation chain without a request proof and an OAuth bearer token were both provided; send one');
   }
-  if (proof !== undefined) return { kind: 'proof', proof, chain: kyaos.verifier.readCarriedChain(input._meta) };
+  if (proof !== undefined || chain !== undefined) {
+    return { kind: 'proof', proof, chain, ...(bearer === undefined ? {} : { bearer }) };
+  }
   if (bearer !== undefined) return { kind: 'oauth', token: bearer };
   return undefined;
 }

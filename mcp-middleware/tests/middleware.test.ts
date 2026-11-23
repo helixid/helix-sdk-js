@@ -27,17 +27,24 @@ describe('helixidMCPMiddleware (proof path)', () => {
 
   it('accepts a valid proof from an agent whose document resolves, at L1 with no scopes when nothing is attested', async () => {
     const verifier = fixtureVerifier(SERVICE, { documents: { [agent.did]: agent.document } });
-    const middleware = helixidMCPMiddleware({ verifier, requiredScopes: [] });
+    const middleware = helixidMCPMiddleware({ verifier, requiredScopes: [], minimumLevel: 'L1' });
     const call = { name: 'orders.lookup', input: { orderId: 'ORD-1' }, _meta: await proofMeta(agent.signer, SERVICE, { name: 'orders.lookup', input: { orderId: 'ORD-1' } }) };
     await expect(middleware(call)).resolves.toBe(call);
     expect(middleware.verifier).toBe(verifier);
     const caller = await middleware.authorize({ ...call, _meta: await proofMeta(agent.signer, SERVICE, { name: 'orders.lookup', input: { orderId: 'ORD-1' } }) });
-    expect(caller).toEqual({ authMethod: 'kyaos', scopes: [], agentDid: agent.did, level: 'L1', proofAssurance: 'L3-minus', fresh: true });
+    expect(caller).toEqual({ authMethod: 'kyaos', scopes: [], agentDid: agent.did, level: 'L1', proofAssurance: 'L3-minus', fresh: true, proofFloor: true });
+    // Under the default minimum (L3, story C-C) the same unattested agent is refused, with the level it came to.
+    const strict = helixidMCPMiddleware({ verifier, requiredScopes: [] });
+    await expect(strict({ ...call, _meta: await proofMeta(agent.signer, SERVICE, { name: 'orders.lookup', input: { orderId: 'ORD-1' } }) })).rejects.toMatchObject({
+      code: 'PROOF_LEVEL_INSUFFICIENT',
+      derivedLevel: 'L1',
+      requiredLevel: 'L3',
+    });
   });
 
   it('refuses a replayed proof, a proof for another service and a tampered request, naming the reason', async () => {
     const verifier = fixtureVerifier(SERVICE, { documents: { [agent.did]: agent.document } });
-    const middleware = helixidMCPMiddleware({ verifier, requiredScopes: [] });
+    const middleware = helixidMCPMiddleware({ verifier, requiredScopes: [], minimumLevel: 'L1' });
     const meta = await proofMeta(agent.signer, SERVICE, { name: 't', input: { a: 1 } });
     await expect(middleware({ name: 't', input: { a: 1 }, _meta: meta })).resolves.toBeDefined();
     const replay = await middleware({ name: 't', input: { a: 1 }, _meta: meta }).catch((e: unknown) => e);
@@ -49,7 +56,7 @@ describe('helixidMCPMiddleware (proof path)', () => {
 
   it('hashes the JSON-RPC request the host hands over, as received', async () => {
     const verifier = fixtureVerifier(SERVICE, { documents: { [agent.did]: agent.document } });
-    const middleware = helixidMCPMiddleware({ verifier, requiredScopes: [] });
+    const middleware = helixidMCPMiddleware({ verifier, requiredScopes: [], minimumLevel: 'L1' });
     const request = { method: 'tools/call', params: { name: 't', arguments: { a: 1 }, extra: 'member' } };
     const proof = await kyaos.verifier.signRequestProof(request, agent.signer, { audience: SERVICE, now: NOW_MS });
     const meta = { 'org.kya-os/request-proof': proof };
@@ -60,21 +67,24 @@ describe('helixidMCPMiddleware (proof path)', () => {
 
   it('reads the proof under the legacy key for one major version', async () => {
     const verifier = fixtureVerifier(SERVICE, { documents: { [agent.did]: agent.document } });
-    const middleware = helixidMCPMiddleware({ verifier, requiredScopes: [] });
+    const middleware = helixidMCPMiddleware({ verifier, requiredScopes: [], minimumLevel: 'L1' });
     const call = { name: 't', _meta: await proofMeta(agent.signer, SERVICE, { name: 't' }, undefined, { legacyKey: true }) };
     await expect(middleware(call)).resolves.toBe(call);
   });
 
-  it('audits a refused proof whose signer was identified, with the reasons', async () => {
+  it('audits a refused call whose signer was identified, with the reasons; a replay names no principal', async () => {
     const events: unknown[] = [];
     const verifier = fixtureVerifier(SERVICE, { documents: { [agent.did]: agent.document } });
-    const middleware = helixidMCPMiddleware({ verifier, auditSink: (e) => void events.push(e), serviceDid: SERVICE });
+    const middleware = helixidMCPMiddleware({ verifier, auditSink: (e) => void events.push(e), serviceDid: SERVICE, minimumLevel: 'L1' });
     const meta = await proofMeta(agent.signer, SERVICE, { name: 't' });
     await middleware({ name: 't', _meta: meta });
+    // §11.2 (story C-C): the nonce (step 8) is checked before the signature (step 9), so a replay proves nobody.
     await middleware({ name: 't', _meta: meta }).catch(() => undefined);
+    // A malformed chain is refused after the proof held: that refusal names the agent.
+    await middleware({ name: 't', _meta: await proofMeta(agent.signer, SERVICE, { name: 't' }, [{ id: 'x' }]) }).catch(() => undefined);
     expect(events).toHaveLength(2);
-    expect(events[0]).toMatchObject({ event: 'AUTHZ_GRANTED', authMethod: 'kyaos', agentDid: agent.did, level: 'L1', fresh: true, serviceDid: SERVICE });
-    expect(events[1]).toMatchObject({ event: 'AUTHZ_DENIED', agentDid: agent.did, reason: 'nonce_replayed' });
+    expect(events[0]).toMatchObject({ event: 'AUTHZ_GRANTED', authMethod: 'kyaos', agentDid: agent.did, level: 'L1', fresh: true, serviceDid: SERVICE, proofAssurance: 'L3-minus', l3Minus: false });
+    expect(events[1]).toMatchObject({ event: 'AUTHZ_DENIED', agentDid: agent.did });
   });
 
   it('takes verifier settings and builds the verifier with the service DID and the tool scopes as the catalog', async () => {
@@ -133,7 +143,7 @@ describe.skipIf(!haveVerifierFixtures)('helixidMCPMiddleware over the shared fix
   it('reports verifications through the hook and survives a hook that throws', async () => {
     const onReportError = vi.fn();
     const verifier = fixtureVerifier(service, { env, reportVerification: async () => { throw new Error('trail down'); }, onReportError });
-    const middleware = helixidMCPMiddleware({ verifier, requiredScopes: [] });
+    const middleware = helixidMCPMiddleware({ verifier, requiredScopes: [], minimumLevel: 'L1' });
     await expect(middleware({ name: 'lookup_order', _meta: await proofMeta(agentSigner, service, { name: 'lookup_order' }, chain) })).resolves.toBeDefined();
     expect(onReportError).toHaveBeenCalledTimes(1);
   });

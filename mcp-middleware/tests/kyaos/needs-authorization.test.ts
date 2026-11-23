@@ -271,7 +271,7 @@ describe('the guard with needsAuthorization', () => {
     // A verified proof whose principal the verifier did not name (a stub local verifier, story F-2): nothing to bind the token to.
     const verifier = {
       serviceDid: SERVER,
-      verifyCall: async () => ({ ok: true, effectiveScopes: ['orders:read'], level: 'L1', fresh: true, reasons: [], chainSummary: { depth: 0 } }),
+      verifyCall: async () => ({ ok: true, effectiveScopes: ['orders:read'], level: 'L1', fresh: true, reasons: [], warnings: [], chainSummary: { depth: 0 } }),
     } as never;
     const na = createNeedsAuthorization({ authorizationUrl: CONSENT, now: () => NOW });
     const anonymous = helixidMCPMiddleware({ verifier, toolScopes: { refund_order: ['orders:admin'] }, needsAuthorization: na });

@@ -234,7 +234,7 @@ describe('order-management sample server', () => {
     expectNothingLeaked(['delete_order', 'toolScopes']);
   });
 
-  it('records a KYA-OS request proof verified in-process by its level, attributed to the agent, and a refused one as proof.rejected (story F-2)', async () => {
+  it('records a KYA-OS request proof verified in-process by its level, attributed to the agent, and a refused one as a denied call that names no DID (stories F-2, C-C)', async () => {
     const meta = await proofMeta('lookup_order', { orderId: 'ORD-1001' });
     const first = await callTool('lookup_order', { orderId: 'ORD-1001' }, {}, meta);
     // The agent presented no chain and no attested card: a valid proof with no delegated scope is refused by scope, never by the API.
@@ -248,28 +248,36 @@ describe('order-management sample server', () => {
     const replay = await callTool('lookup_order', { orderId: 'ORD-1001' }, {}, meta);
     expect(replay.status).toBe(401);
     expect(replay.body.error_description).toContain('nonce_replayed');
-    expect(typesFrom(4)).toEqual(['session.established', 'proof.rejected', 'tool.call.denied']);
-    expect(eventsFrom(4)[1]).toMatchObject({ outcome: 'denied', reason: { code: 'nonce_replayed' }, actor: { kind: 'pairwise_did', did: AGENT } });
-    expect(eventsFrom(4)[2]!.reason).toEqual({ code: 'proof_invalid' });
+    // Story C-C: §11.2 checks the nonce before the signature, so a replay names no verified DID and is never attributed.
+    expect(typesFrom(4)).toEqual(['session.established', 'tool.call.denied']);
+    expect(eventsFrom(4)[1]).toMatchObject({ outcome: 'denied', reason: { code: 'proof_invalid' } });
+    expect(eventsFrom(4)[1]!.actor).toBeUndefined();
 
     const tampered = await callTool('lookup_order', { orderId: 'ORD-1002' }, {}, await proofMeta('lookup_order', { orderId: 'ORD-1001' }));
     expect(tampered.status).toBe(401);
     expect(tampered.body.error_description).toContain('request_hash_mismatch');
     // A proof that names no verified DID is never attributed: only the call is recorded, denied by its code.
-    expect(typesFrom(7)).toEqual(['session.established', 'tool.call.denied']);
-    expect(eventsFrom(7)[1]).toMatchObject({ reason: { code: 'proof_invalid' } });
-    expect(eventsFrom(7)[1]!.actor).toBeUndefined();
+    expect(typesFrom(6)).toEqual(['session.established', 'tool.call.denied']);
+    expect(eventsFrom(6)[1]).toMatchObject({ reason: { code: 'proof_invalid' } });
+    expect(eventsFrom(6)[1]!.actor).toBeUndefined();
     const elsewhere = await callTool('lookup_order', { orderId: 'ORD-1001' }, {}, await proofMeta('lookup_order', { orderId: 'ORD-1001' }, 'did:web:other.example'));
     expect(elsewhere.status).toBe(401);
     expect(elsewhere.body.error_description).toContain('audience_mismatch');
     expectNothingLeaked(['ORD-1001', 'ORD-1002', 'lookup_order', JSON.stringify(meta)]);
   });
 
-  it('rejects a proof and a bearer token together with 400, audited as credential_conflict', async () => {
-    const res = await callTool('lookup_order', { orderId: 'ORD-1001' }, bearer('reader'), await proofMeta('lookup_order', { orderId: 'ORD-1001' }));
-    expect(res.status).toBe(400);
-    expect(sink.eventTypes).toEqual(['session.established', 'tool.call.denied']);
-    expect(sink.events[1]!.reason).toEqual({ code: 'credential_conflict' });
+  it('takes a bearer token next to a proof as its sender constraint, not as a second caller (story C-C)', async () => {
+    // The proof decides who called: the token's scopes are not the agent's, so the unattested agent is still refused by scope.
+    const fused = await callTool('lookup_order', { orderId: 'ORD-1001' }, bearer('reader'), await proofMeta('lookup_order', { orderId: 'ORD-1001' }));
+    expect(fused.status).toBe(403);
+    expect(sink.eventTypes).toEqual(['session.established', 'proof.verified', 'authorization.denied', 'tool.call.denied']);
+    expect(sink.events[1]).toMatchObject({ actor: { kind: 'pairwise_did', did: AGENT }, details: { verificationCode: 'KYAOS_PROOF_L1' } });
+    expect(sink.events[2]).toMatchObject({ reason: { code: 'insufficient_scope' }, authorization: { source: 'delegation', decision: 'denied' } });
+    // A chain without a proof and a bearer token are two callers: refused with 400, audited as credential_conflict.
+    const both = await callTool('lookup_order', { orderId: 'ORD-1001' }, bearer('reader'), { 'org.kya-os/delegation-chain': [{}] });
+    expect(both.status).toBe(400);
+    expect(typesFrom(4)).toEqual(['session.established', 'tool.call.denied']);
+    expect(eventsFrom(4)[1]!.reason).toEqual({ code: 'credential_conflict' });
   });
 
   it('records tool names only when the trail is told to', async () => {

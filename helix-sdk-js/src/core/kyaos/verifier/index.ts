@@ -19,4 +19,5 @@ export * from './request-proof.js';
 export * from './attestation.js';
 export * from './card.js';
 export * from './resolve.js';
+export * from './verify-request-proof.js';
 export * from './verify.js';

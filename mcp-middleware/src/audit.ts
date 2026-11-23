@@ -56,6 +56,14 @@ export interface ToolAuditEvent {
   /** KYA-OS callers: the level the local verifier derived (story F-2) and whether every status was read live. */
   level?: 'L1' | 'L2' | 'L3';
   fresh?: boolean;
+  /** KYA-OS callers (story C-C): `L3` on a full `cnf` fusion, `L3-minus` without a token `cnf`; absent for a call with no proof. */
+  proofAssurance?: 'L3' | 'L3-minus';
+  /** KYA-OS callers: true when the call's L3 rests on an unfused proof (L3-minus). */
+  l3Minus?: boolean;
+  /** KYA-OS callers: the `cnf` diagnostics (`cnf_present_but_token_unfused`), when there are any. */
+  cnfDiagnostics?: string[];
+  /** KYA-OS callers refused on level: the tool's minimum. */
+  requiredLevel?: 'L1' | 'L2' | 'L3';
   /** OAuth callers: the token's `sub`. Never recorded as such; see `McpAuditTrail`. */
   oauthSubject?: string;
   toolName?: string;
@@ -165,10 +173,21 @@ const OAUTH_SUBJECT_KEY_ID = 'oauth-subject-v1';
 /** The guard's own denials of an identified caller; any other reason a KYA-OS caller is denied with is the local verifier's. */
 const GUARD_REASONS: ReadonlySet<string> = new Set(['tool is not in toolScopes', 'insufficient scope', 'needs_authorization']);
 
-/** `KYAOS_PROOF_<level>`, with `_CACHED` when the verifier did not read every status live (story F-2). */
-function kyaosVerificationCode(event: ToolAuditEvent): string {
-  return `KYAOS_PROOF${event.level !== undefined ? `_${event.level}` : ''}${event.fresh === false ? '_CACHED' : ''}`;
+/**
+ * `KYAOS_PROOF_<level>`, with `_CACHED` when the verifier did not read every
+ * status live (story F-2). Story C-C: an L3 that rests on an unfused proof is
+ * `L3_MINUS`, and the `cnf` diagnostic `cnf_present_but_token_unfused` adds
+ * `_CNF_UNFUSED`; the code is the only place A-1's events carry them.
+ */
+export function kyaosVerificationCode(event: ToolAuditEvent): string {
+  const l3Minus = event.l3Minus ?? (event.level === 'L3' && event.proofAssurance === 'L3-minus');
+  const level = event.level === undefined ? '' : `_${l3Minus ? 'L3_MINUS' : event.level}`;
+  const cnfUnfused = event.cnfDiagnostics?.includes('cnf_present_but_token_unfused') === true;
+  return `KYAOS_PROOF${level}${event.fresh === false ? '_CACHED' : ''}${cnfUnfused ? '_CNF_UNFUSED' : ''}`;
 }
+
+/** Story C-C: the reason code of a call refused because its derived level is below the tool's minimum. */
+export const LEVEL_INSUFFICIENT_REASON = 'proof_level_insufficient';
 
 /** The lifecycle events of one tool call; see `McpAuditTrail.beginToolCall`. */
 export class ToolCallAudit {
@@ -382,7 +401,10 @@ export class McpAuditTrail {
    * `_CACHED` when a status was not read live), then `authorization.approved` or
    * `authorization.denied` (reason `needs_authorization` for an L3-E
    * challenge); a request proof the verifier refused is `proof.rejected` by
-   * its first reason code, and nothing else. An OAuth caller: only the
+   * its first reason code, and nothing else. Story C-C: the verification
+   * code also names L3-minus and an unfused `cnf`, and a call below the tool's
+   * minimum level is `proof.verified` then `authorization.denied` with reason
+   * `proof_level_insufficient`. An OAuth caller: only the
    * authorization event, with the subject as a keyed commitment.
    */
   toolAuditSink(): AuditSink {
@@ -398,7 +420,8 @@ export class McpAuditTrail {
       const scopeId = event.requiredScope;
       const allowed = event.result === 'allowed';
       const kyaos = event.authMethod === 'kyaos';
-      if (kyaos && !allowed && scopeId === undefined && event.reason !== undefined && !GUARD_REASONS.has(event.reason)) {
+      const levelRefused = kyaos && !allowed && event.requiredLevel !== undefined;
+      if (kyaos && !allowed && !levelRefused && scopeId === undefined && event.reason !== undefined && !GUARD_REASONS.has(event.reason)) {
         // The local verifier refused the request proof: its reasons are codes, the first one names the refusal.
         await this.proof('rejected', { outcome: 'denied', reasonCode: event.reason.split(',')[0]!.trim() || 'proof_invalid', context: base });
         return;
@@ -418,8 +441,14 @@ export class McpAuditTrail {
       } else {
         await this.authorization('denied', {
           outcome: 'denied',
-          // KYA-OS story L3-E: a signed needs_authorization challenge keeps its reason.
-          reasonCode: event.reason === 'needs_authorization' ? 'needs_authorization' : scopeId !== undefined ? 'insufficient_scope' : 'tool_not_permitted',
+          // KYA-OS story L3-E: a signed needs_authorization challenge keeps its reason; story C-C: a level refusal is its own code.
+          reasonCode: levelRefused
+            ? LEVEL_INSUFFICIENT_REASON
+            : event.reason === 'needs_authorization'
+              ? 'needs_authorization'
+              : scopeId !== undefined
+                ? 'insufficient_scope'
+                : 'tool_not_permitted',
           context,
           ...(toolName !== undefined ? { toolName } : {}),
         });
