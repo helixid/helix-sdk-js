@@ -150,8 +150,8 @@ export interface HelixClientOptions {
   /**
    * Enterprise (server-custody, account-scoped) mode: presence of this
    * option is what selects it. Every call then sends it as the bearer
-   * token (enterprise has no admin key), and signVP()/delegateAuthority()
-   * talk to /v1/custodial-agents/:did/... instead of core's
+   * token (enterprise has no admin key), and signVP()
+   * talks to /v1/custodial-agents/:did/... instead of core's
    * /v1/agents/:did/.... See helix-server-enterprise's
    * POST /v1/account/api-keys. No email/password, no login call -- an
    * agent process holds only this, the same way an OSS agent holds only
@@ -381,7 +381,7 @@ export class HelixClient {
   // -- Service Providers ---------------------------------------------------
   // Services hold no keys: the server mints the service DID, keeps its key,
   // and signs consent grants on the service's behalf. Same custody model as
-  // agents (onboardAgent/signVP/delegateAuthority), so both are API calls.
+  // agents (onboardAgent/signVP), so both are API calls.
 
   /** Enroll a service (self-hosted servers; hosted accounts enroll through the console/account API). */
   async createService(input: CreateServiceInput): Promise<{ serviceDid: string; serviceName: string }> {
@@ -523,48 +523,6 @@ export class HelixClient {
       body,
     );
     return result.signedVP;
-  }
-
-  /**
-   * Delegates a slice of a server-custody agent's authority to another DID —
-   * the custodial counterpart to the (now-defunct, see delegation.ts)
-   * wallet-based delegate(), which needed the delegator's own private key
-   * and so has had nothing legitimate to call since agent self-custody was
-   * retired. Same trust boundary as signVP(): the caller never has, and
-   * never can have, the delegator's private key, so this is an API call
-   * that authorizes HelixID to sign on the delegator's behalf, not a local
-   * signature.
-   *
-   * Mirrors signVP()'s two modes exactly: enterprise (this.apiKey set) hits
-   * the account-scoped custodial route; core/OSS hits the admin-key-gated
-   * route. Pass `vcId` to pin which of the delegator's active credentials to
-   * delegate from (e.g. it already holds more than one, ambiguous to the
-   * default subject-only lookup).
-   */
-  async delegateAuthority(
-    did: string,
-    to: string,
-    scopes: string[],
-    expiresIn: number,
-    options: { vcId?: string; revokeExisting?: boolean } = {},
-  ): Promise<SignedVC> {
-    this.assertAPIConfigured();
-    const body = {
-      to,
-      scopes,
-      expiresIn,
-      ...(options.vcId !== undefined ? { vcId: options.vcId } : {}),
-      // Same rule as every stored credential: the same scopes delegated
-      // again refresh the earlier delegation, other scopes stand beside it,
-      // revokeExisting clears the others.
-      ...(options.revokeExisting !== undefined ? { revokeExisting: options.revokeExisting } : {}),
-    };
-
-    const result = await this.http.post<{ delegatedVC: SignedVC }>(
-      `/v1/${this.agentRoutePrefix()}/${encodeURIComponent(did)}/delegate`,
-      body,
-    );
-    return result.delegatedVC;
   }
 
   /** Where custodial agent actions live: enterprise's account-scoped routes, or core's admin-key-gated ones. */
