@@ -197,13 +197,13 @@ describe('cross-implementation: the helix-core credential fixture', () => {
 
   it.skipIf(!available)('signs the owner-signed attestation of fixtures/kya-os-helix/credentials.json byte for byte', async () => {
     const fixture = JSON.parse(readFileSync(path, 'utf8')) as {
-      keys: Record<string, { private_key_hex: string; did: string }>;
+      keys: Record<string, { private_key_hex: string; did: string; kid: string }>;
       attestations: { name: string; signer: string; input: { subjectDid: string; capability: string; validUntil: string; id: string; validFrom: string; proofCreated: string }; credential: Record<string, unknown> & { credentialStatus: BitstringStatusEntry } }[];
     };
     const ownerSigned = fixture.attestations.find((a) => a.signer === 'owner')!;
     const owner = fixture.keys['owner']!;
     const store = new CredentialStore();
-    const [signed] = await store.signAttestations([ownerSigned.input.capability], signer(owner.private_key_hex, owner.did), {
+    const [signed] = await store.signAttestations([ownerSigned.input.capability], signer(owner.private_key_hex, owner.did, owner.kid.split('#')[1]), {
       subjectDid: ownerSigned.input.subjectDid,
       validUntil: ownerSigned.input.validUntil,
       validFrom: ownerSigned.input.validFrom,
