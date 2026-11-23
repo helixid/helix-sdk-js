@@ -8,8 +8,8 @@ import { fixtureSeams, haveVerifierFixtures, loadCases, loadEnvironment } from '
 describe.skipIf(!haveVerifierFixtures)("the card's revocation entry", () => {
   const env = haveVerifierFixtures ? loadEnvironment() : (undefined as never);
   const live = haveVerifierFixtures ? loadCases()['status']!.find((entry) => entry.name === 'live_card')! : (undefined as never);
-  const run = (seams: Partial<verifier.VerifierSeams>) =>
-    verifier.verify(live.input as never, { ...fixtureSeams(env, live.seams, live.now), ...seams }, live.options as never);
+  const run = (seams: Partial<verifier.VerifierSeams>, withChain = true) =>
+    verifier.verify((withChain ? live.input : { ...live.input, chain: undefined }) as never, { ...fixtureSeams(env, live.seams, live.now), ...seams }, live.options as never);
 
   it('is read through the revocation seam, and the call stays fresh when it is read live', async () => {
     const seen: unknown[] = [];
@@ -19,9 +19,18 @@ describe.skipIf(!haveVerifierFixtures)("the card's revocation entry", () => {
     expect(seen).toContainEqual({ issuer: card.id, credentialStatus: { type: 'BitstringStatusListEntry', statusPurpose: 'revocation', ...card.revocation } });
   });
 
+  it('is read live when the tool demands it (liveStatus)', async () => {
+    const contexts: unknown[] = [];
+    const card = live.input.card as { id: string };
+    const result = await verifier.verify(live.input as never, { ...fixtureSeams(env, live.seams, live.now), checkRevocation: async (credential, context) => ((credential as { issuer: string }).issuer === card.id && contexts.push(context), { revoked: false, fresh: true }) }, { ...(live.options as object), liveStatus: true } as never);
+    expect(result.ok).toBe(true);
+    expect(contexts).toEqual([expect.objectContaining({ live: true })]);
+  });
+
   it('refuses when no status seam can read it, when the checker throws, and as status_revoked when a verdict names no code', async () => {
-    const missing = await run({ fetchStatusList: undefined, checkRevocation: undefined });
-    expect(missing.reasons[0]).toBe(verifier.ReasonCodes.STATUS_SEAM_MISSING);
+    // No chain, so the card's own entry is the first status read.
+    const missing = await run({ fetchStatusList: undefined, checkRevocation: undefined }, false);
+    expect([missing.reasons[0], missing.messages[0]]).toEqual([verifier.ReasonCodes.STATUS_SEAM_MISSING, "no fetchStatusList seam: the card's revocation entry cannot be read"]);
     const hopsOk = { revoked: false, fresh: true } as const;
     const throwing = await run({ checkRevocation: async (credential) => { if ((credential as { issuer: string }).issuer === (live.input.card as { id: string }).id) throw new Error('boom'); return hopsOk; } });
     expect([throwing.ok, throwing.reasons[0]]).toEqual([false, verifier.ReasonCodes.STATUS_UNAVAILABLE]);
