@@ -36,7 +36,7 @@ import { normalizeEd25519PrivateKey } from '../keys.js';
 import { resolveEntityCard, sameDid, type ResolveEntityCardOptions } from '../entity-card.js';
 import { HelixCustodyClient, type DidHostingMode, type FetchLike, type OnboardingResult } from './client.js';
 import { base64UrlEncode, enrollmentProofMessage, rotationProofMessage } from './proof.js';
-import { DEFAULT_SIGNING_KEY_ENV_VAR, kidFragment } from './signer.js';
+import { DEFAULT_SIGNING_KEY_ENV_VAR, kidFragment, type Signer } from './signer.js';
 
 export const INIT_FILES = {
   didDocument: 'did.json',
@@ -290,16 +290,94 @@ export async function changeToSelfCustody(options: ChangeToSelfCustodyOptions): 
     { keyCustody: 'self', publicKeyJwk, kid: fragment, proof: { issuedAt, signature }, ...(options.overlapSeconds === undefined ? {} : { overlapSeconds: options.overlapSeconds }) },
     options.subject ?? 'agent',
   );
-  await mkdir(options.outDir, { recursive: true });
-  const signingKey = join(options.outDir, INIT_FILES.signingKey);
-  const summaryPath = join(options.outDir, INIT_FILES.summary);
-  await writeFile(signingKey, `# The private key of ${options.did} (${kid}). Self-custody: it never leaves this host.\nHELIX_AGENT_DID=${options.did}\nHELIX_AGENT_KID=${fragment}\n${envVar}=${Buffer.from(seed).toString('hex')}\n`, {
+  const files = await writeKeyFiles(options.outDir, options.did, kid, fragment, envVar, seed, publicKeyJwk, result);
+  seed.fill(0);
+  return { result, files };
+}
+
+export interface RotateKeyOptions {
+  client: HelixCustodyClient;
+  did: string;
+  /** The current key's Signer: it signs the rotation, so no account key is needed. Omit to rely on the client's account key. */
+  currentSigner?: Signer | undefined;
+  /** Where the new key's `signing-key.env` and `helix-agent.json` (and, own hosting, the documents) are written. */
+  outDir: string;
+  subject?: 'agent' | 'service' | 'owner' | undefined;
+  /** Fragment for the new key. Default `key-<base36 timestamp>`, unused by any earlier key. */
+  kid?: string | undefined;
+  /** How long the old key stays usable beside the new one; default Helix's (24 h). */
+  overlapSeconds?: number | undefined;
+  envVar?: string | undefined;
+  generateKey?: (() => AgentKey) | undefined;
+  /** Injected for tests. */
+  now?: (() => Date) | undefined;
+}
+
+/**
+ * `rotateKey()` (KYA-OS story C-E point 1): a new key for a self-custody
+ * agent, generated here; only its public half goes to Helix (stories rule
+ * 7), with a proof of possession, and the current key's signature over the
+ * same message authorising the change. Helix lists both keys for the
+ * overlap, then keeps the old one with `validUntil`, so proofs it made
+ * still verify; the agent's leaf hops are reissued bound to the new key
+ * (`result.hopReissue`; `pendingIssuers` names hops a self-custody issuer
+ * must reissue). The new private key is written to `signing-key.env`
+ * (mode 0600) for the agent's `EnvSigner`.
+ */
+export async function rotateKey(options: RotateKeyOptions): Promise<{ result: Awaited<ReturnType<HelixCustodyClient['rotateKey']>>; files: { signingKey: string; summary: string } }> {
+  const envVar = options.envVar ?? DEFAULT_SIGNING_KEY_ENV_VAR;
+  const fragment = kidFragment(options.did, options.kid ?? `key-${Date.now().toString(36)}`);
+  const kid = `${options.did}#${fragment}`;
+  const key = (options.generateKey ?? generateAgentKey)();
+  const seed = normalizeEd25519PrivateKey(key.privateKeyHex);
+  try {
+    const publicKeyJwk = toPublicKeyJwk(key.publicKeyHex);
+    const issuedAt = (options.now?.() ?? new Date()).toISOString();
+    const message = rotationProofMessage({ did: options.did, kid, issuedAt });
+    const signature = base64UrlEncode(await ed25519.signAsync(message, seed));
+    let currentKeyProof: { signature: string } | undefined;
+    if (options.currentSigner) {
+      if (options.currentSigner.did !== options.did) throw new Error(`rotateKey: the current signer is ${options.currentSigner.did}, not ${options.did}`);
+      currentKeyProof = { signature: base64UrlEncode(await options.currentSigner.sign(message)) };
+    }
+    const result = await options.client.rotateKey(
+      options.did,
+      {
+        publicKeyJwk,
+        kid: fragment,
+        proof: { issuedAt, signature },
+        ...(currentKeyProof ? { currentKeyProof } : {}),
+        ...(options.overlapSeconds === undefined ? {} : { overlapSeconds: options.overlapSeconds }),
+      },
+      options.subject ?? 'agent',
+    );
+    const files = await writeKeyFiles(options.outDir, options.did, kid, fragment, envVar, seed, publicKeyJwk, result);
+    return { result, files };
+  } finally {
+    seed.fill(0);
+  }
+}
+
+async function writeKeyFiles(
+  outDir: string,
+  did: string,
+  kid: string,
+  fragment: string,
+  envVar: string,
+  seed: Uint8Array,
+  publicKeyJwk: AgentPublicKeyJwk,
+  result: { didHosting: DidHostingMode; documents: { didDocument: unknown; card: unknown; didDocumentUrl: string; cardUrl: string }; publishRequired: boolean },
+): Promise<{ signingKey: string; summary: string }> {
+  await mkdir(outDir, { recursive: true });
+  const signingKey = join(outDir, INIT_FILES.signingKey);
+  const summaryPath = join(outDir, INIT_FILES.summary);
+  await writeFile(signingKey, `# The private key of ${did} (${kid}). Self-custody: it never leaves this host.\nHELIX_AGENT_DID=${did}\nHELIX_AGENT_KID=${fragment}\n${envVar}=${Buffer.from(seed).toString('hex')}\n`, {
     encoding: 'utf8',
     mode: 0o600,
   });
   await chmod(signingKey, 0o600);
   await writeJson(summaryPath, {
-    did: options.did,
+    did,
     kid,
     keyCustody: 'self',
     didHosting: result.didHosting,
@@ -309,9 +387,8 @@ export async function changeToSelfCustody(options: ChangeToSelfCustodyOptions): 
     envVar,
   } satisfies Summary);
   if (result.publishRequired) {
-    await writeJson(join(options.outDir, INIT_FILES.didDocument), result.documents.didDocument);
-    await writeJson(join(options.outDir, INIT_FILES.card), result.documents.card);
+    await writeJson(join(outDir, INIT_FILES.didDocument), result.documents.didDocument);
+    await writeJson(join(outDir, INIT_FILES.card), result.documents.card);
   }
-  seed.fill(0);
-  return { result, files: { signingKey, summary: summaryPath } };
+  return { signingKey, summary: summaryPath };
 }

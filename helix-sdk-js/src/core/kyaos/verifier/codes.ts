@@ -48,6 +48,12 @@ export const ReasonCodes = {
   NONCE_REPLAYED: 'nonce_replayed',
   NONCE_STORE_UNAVAILABLE: 'nonce_store_unavailable',
 
+  // Key rotation (story C-E): the signing key's validity, the document's version.
+  KEY_REVOKED: 'key_revoked',
+  KEY_SUPERSEDED: 'key_superseded',
+  KEY_VALIDITY_MALFORMED: 'key_validity_malformed',
+  DID_DOCUMENT_STALE: 'did_document_stale',
+
   // The carried chain (SPEC.md §6.10, SPEC-ENTITY-CARD.md §10.5, §11.4).
   CHAIN_TOO_LONG: 'chain_too_long',
   CHAIN_INVALID: 'chain_invalid',

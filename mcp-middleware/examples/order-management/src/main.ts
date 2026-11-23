@@ -8,6 +8,8 @@ import { kyaos } from '@helixid/sdk-js';
 import type { AuditDeliverySink } from '@helixid/sdk-js';
 import {
   RedisStatusCacheStore,
+  RedisRotationSequenceStore,
+  type RedisRotationSequenceClient,
   type RedisStatusCacheClient,
   createHelixAuditDelivery,
   createRevocationSignalClient,
@@ -647,6 +649,8 @@ if (serviceDid) {
     ...(maxChainLength === undefined ? {} : { maxChainLength }),
     ...(cards === undefined ? {} : { cards }),
     allowLoopbackHttp: env['KYAOS_ALLOW_LOOPBACK_HTTP'] === '1',
+    // Story C-E: in multi-instance mode the last-seen DID document version is shared too.
+    ...(statusCacheRedis ? { rotationSequenceStore: new RedisRotationSequenceStore({ client: statusCacheRedis as unknown as RedisRotationSequenceClient }) } : {}),
     catalog: [...new Set(Object.values(TOOL_SCOPES).flat())],
     // One replay store for the handshake, the response proofs and the request proofs.
     ...(kyaOs ? { nonceStore: kyaOs.nonceStore } : {}),

@@ -38,6 +38,7 @@ import { utf8ToBytes } from '@noble/hashes/utils';
 import { InvalidJWSError } from '../../HelixError.js';
 import { base58btcDecode } from '../../vp-crypto.js';
 import { canonicalize } from '../jcs.js';
+import { keyValidityProblem, proofTime } from '../key-validity.js';
 import { JwsReasons, base64UrlDecodeStrict, selectAssertionMethod, verificationMethodToJwk, type DidResolver } from '../jws.js';
 
 export type { DidResolver } from '../jws.js';
@@ -55,6 +56,12 @@ export const DataIntegrityReasons = {
   DID_UNRESOLVED: 'did_unresolved',
   KEY_REJECTED: 'key_rejected',
   SIGNATURE_INVALID: 'signature_invalid',
+  /** Story C-E: the key carries `revoked`; nothing it signed is accepted. */
+  KEY_REVOKED: 'key_revoked',
+  /** Story C-E: the proof's `created` is outside the key's validity. */
+  KEY_SUPERSEDED: 'key_superseded',
+  /** Story C-E: the key's validity members are not RFC 3339 instants. */
+  KEY_VALIDITY_MALFORMED: 'key_validity_malformed',
 } as const;
 
 export type DataIntegrityReason = (typeof DataIntegrityReasons)[keyof typeof DataIntegrityReasons];
@@ -110,7 +117,7 @@ function isPrefix(whole: unknown[], prefix: unknown[]): boolean {
 export async function verifyDataIntegrity(
   document: Record<string, unknown>,
   resolveDid: DidResolver,
-  options: { proofPurpose?: 'assertionMethod' } = {},
+  options: { proofPurpose?: 'assertionMethod'; now?: number } = {},
 ): Promise<ProofVerification> {
   const purpose = options.proofPurpose ?? 'assertionMethod';
   const proof = document['proof'];
@@ -170,13 +177,17 @@ export async function verifyDataIntegrity(
     return refused(DataIntegrityReasons.DID_UNRESOLVED, `could not resolve ${did}`);
   }
   let publicKey: Uint8Array;
+  let method: ReturnType<typeof selectAssertionMethod>;
   try {
-    const method = selectAssertionMethod(resolved, did, verificationMethod);
+    method = selectAssertionMethod(resolved, did, verificationMethod);
     publicKey = base64UrlDecodeStrict(verificationMethodToJwk(method).x)!;
   } catch (error: unknown) {
     const reason = error instanceof InvalidJWSError ? error.reason : JwsReasons.KEY_UNSUPPORTED;
     return refused(DataIntegrityReasons.KEY_REJECTED, `${reason}: ${(error as Error).message}`);
   }
+  // Story C-E point 3: the key `kid` names must have been valid at `created`.
+  const validity = keyValidityProblem(method, proofTime(members['created']), options.now);
+  if (validity) return refused(validity.reason, validity.message);
   let data: Uint8Array;
   try {
     data = hashData(config, unsecured);

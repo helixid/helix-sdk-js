@@ -38,6 +38,11 @@
 
 import * as ed25519 from "@noble/ed25519";
 import { InvalidJWSError } from "../HelixError.js";
+import {
+  keyValidityProblem,
+  proofTime,
+  type KeyValidityReason,
+} from "./key-validity.js";
 import { base58btcDecode } from "../vp-crypto.js";
 // keys.js also installs noble's synchronous sha512, which ed25519.verify needs.
 import { multibaseToPublicKeyHex } from "../keys.js";
@@ -63,6 +68,12 @@ export const JwsReasons = {
   KEY_AMBIGUOUS: "jws_key_ambiguous",
   KEY_FOREIGN_CONTROLLER: "jws_key_foreign_controller",
   KEY_UNSUPPORTED: "jws_key_unsupported",
+  /** Story C-E: the key carries `revoked`; nothing it signed is accepted. */
+  KEY_REVOKED: "jws_key_revoked",
+  /** Story C-E: the JWS was made (`iat`) outside the key's validity. */
+  KEY_SUPERSEDED: "jws_key_superseded",
+  /** Story C-E: the key's validity members are not RFC 3339 instants. */
+  KEY_VALIDITY_MALFORMED: "jws_key_validity_malformed",
 } as const;
 
 export type JwsReason = (typeof JwsReasons)[keyof typeof JwsReasons];
@@ -94,6 +105,13 @@ export interface VerifyJwsOptions {
   expectedKid?: string;
   /** The DID the `kid` must belong to, when the caller knows it. */
   expectedDid?: string;
+  /**
+   * Story C-E, `verifyJwsByKid` only: when the JWS was made, epoch ms, checked
+   * against the key's validity. Default the payload's `iat`, else now.
+   */
+  at?: number;
+  /** Epoch ms for a JWS that states no time; default `Date.now()`. */
+  now?: number;
 }
 
 export interface JwsVerification {
@@ -564,5 +582,15 @@ export async function verifyJwsByKid(
   }
   const method = selectAssertionMethod(document, did, kid);
   const jwk = verificationMethodToJwk(method);
-  return verifyJws(jws, { ...jwk, kid }, { ...options, expectedDid: did });
+  const verified = verifyJws(jws, { ...jwk, kid }, { ...options, expectedDid: did });
+  const iat = (verified.payload as { iat?: unknown } | undefined)?.iat;
+  const problem = keyValidityProblem(method, options.at ?? proofTime(iat), options.now);
+  if (problem) throw new InvalidJWSError(JWS_KEY_VALIDITY_REASONS[problem.reason], problem.message);
+  return verified;
 }
+
+const JWS_KEY_VALIDITY_REASONS: Record<KeyValidityReason, JwsReason> = {
+  key_revoked: JwsReasons.KEY_REVOKED,
+  key_superseded: JwsReasons.KEY_SUPERSEDED,
+  key_validity_malformed: JwsReasons.KEY_VALIDITY_MALFORMED,
+};

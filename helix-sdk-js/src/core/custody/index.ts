@@ -10,3 +10,4 @@ export * from './proof.js';
 export * from './client.js';
 export * from './custodial-signer.js';
 export * from './init.js';
+export * from './reissue.js';

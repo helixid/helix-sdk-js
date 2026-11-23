@@ -13,6 +13,7 @@
 export * from './jcs.js';
 export * from './signer.js';
 export * from './jws.js';
+export * from './key-validity.js';
 export * from './hash.js';
 export * from './handshake.js';
 export * from './response-proof.js';
