@@ -71,6 +71,8 @@ export interface VerifyAttestationOptions {
   scopes?: readonly string[] | undefined;
   /** The lists read live during this verification (see `RevocationContext.reads`). */
   reads?: Map<string, StatusListRead> | undefined;
+  /** Read each list live, past the status cache (see `RevocationContext.live`). */
+  liveStatus?: boolean | undefined;
 }
 
 /**
@@ -111,7 +113,7 @@ export async function verifyCapabilityAttestation(
   }
   let status;
   try {
-    status = await checker(credential, { now: options.now, scopes: options.scopes, reads: options.reads });
+    status = await checker(credential, { now: options.now, scopes: options.scopes, reads: options.reads, ...(options.liveStatus === true ? { live: true } : {}) });
   } catch (error) {
     return { ok: false, reason: ReasonCodes.STATUS_UNAVAILABLE, message: `the revocation check failed: ${(error as Error).message}` };
   }

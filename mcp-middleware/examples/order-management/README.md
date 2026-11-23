@@ -139,7 +139,7 @@ received. The tools themselves (`src/orders.ts`) contain no auth code.
 | `KYAOS_TRUSTED_ISSUERS`, `KYAOS_TRUSTED_ROOTS` | `*`, any | Attestation issuers and root-hop issuers the verifier trusts (comma-separated DIDs) |
 | `KYAOS_MAX_CHAIN_LENGTH` | `10` | Longest carried chain read |
 | `KYAOS_CARDS_FILE` | none | JSON map of agent DID to Entity Card |
-| `KYAOS_STATUS_CACHE_TTL` | `300` | Seconds a status list or verdict is cached (story L3-C); a cached read is not fresh (Card L3 → L2) |
+| `KYAOS_STATUS_CACHE_TTL` | `300` | Seconds a status list or verdict is cached (story L3-C), for tools at L2 or below; a cached read is not fresh (Card L3 → L2). A tool that demands L3 reads its lists live every call |
 | `KYAOS_HIGH_PRIVILEGE_SCOPES`, `KYAOS_HIGH_PRIVILEGE_TTL` | none, `60` | Scopes whose reads are cached at most that long (≤ 60 s) |
 | `KYAOS_MAX_STALE_SECONDS` | `60` | How long a list read inside its window may be served past its `validUntil` from the cache |
 | `KYAOS_STATUS_LIST_ISSUERS` | none | JSON: issuer DID to the status-list URLs or `https:` origins it keeps |

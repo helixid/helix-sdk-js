@@ -184,8 +184,8 @@ describe('createRevocationChecker', () => {
       advance: (seconds: number) => {
         now += seconds * 1000;
       },
-      check: (index: number, overrides: Partial<verifier.RevocationSubject> = {}, scopes?: string[]) =>
-        checker({ id: `urn:uuid:cred-${index}`, issuer: issuer.did, credentialStatus: entryFor(URL_A, index), ...overrides }, { now, scopes }),
+      check: (index: number, overrides: Partial<verifier.RevocationSubject> = {}, scopes?: string[], live?: boolean) =>
+        checker({ id: `urn:uuid:cred-${index}`, issuer: issuer.did, credentialStatus: entryFor(URL_A, index), ...overrides }, { now, scopes, ...(live === undefined ? {} : { live }) }),
     };
   }
 
@@ -249,6 +249,21 @@ describe('createRevocationChecker', () => {
     advance(121);
     expect(await check(1)).toEqual({ revoked: false, fresh: true });
     expect(fetcher.calls).toHaveLength(2);
+  });
+
+  it('reads live past the cached verdict and list when the request asks for live status, and refreshes the cache', async () => {
+    const { bodies, check, fetcher } = setup([[URL_A, signedList({ url: URL_A, issuer })]], { statusCacheTtl: 120 });
+    expect(await check(3)).toEqual({ revoked: false, fresh: true });
+    expect(await check(3)).toEqual({ revoked: false, fresh: false });
+    // The list changes: a live request sees it at once, while the cache still says "clear".
+    bodies.set(URL_A, signedList({ url: URL_A, issuer, bits: bitsWith(16, [3]) }));
+    expect(await check(3, {}, undefined, true)).toMatchObject({ revoked: true, fresh: false, code: 'status_revoked' });
+    expect(await check(4, {}, undefined, true)).toEqual({ revoked: false, fresh: true });
+    expect(fetcher.calls).toHaveLength(3);
+    // The live reads refreshed the cache: a cached request now reads the new verdict and list.
+    expect(await check(3)).toMatchObject({ revoked: true, code: 'status_revoked' });
+    expect(await check(5)).toEqual({ revoked: false, fresh: false });
+    expect(fetcher.calls).toHaveLength(3);
   });
 
   it('keeps a list read live earlier in the same verification live for a second credential on it', async () => {

@@ -133,6 +133,8 @@ export interface LocalVerifierCall {
   tokenCnfJkt?: string | undefined;
   /** Default true. False: a call with a chain and no proof is verified on the chain alone, at most L2 (story C-C). */
   requireProof?: boolean | undefined;
+  /** Read every status list live, past the status cache: the guard sets it for a tool whose minimum level is L3 (story L3-C). */
+  liveStatus?: boolean | undefined;
 }
 
 export interface LocalVerifier {
@@ -296,6 +298,7 @@ export function createLocalVerifier(options: LocalVerifierOptions): LocalVerifie
       {
         ...(call.tokenCnfJkt === undefined ? {} : { tokenCnfJkt: call.tokenCnfJkt }),
         ...(call.requireProof === undefined ? {} : { requireProof: call.requireProof }),
+        ...(call.liveStatus === true ? { liveStatus: true } : {}),
       },
     );
     const entry: VerificationReport = {

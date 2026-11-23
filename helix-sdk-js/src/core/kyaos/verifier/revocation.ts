@@ -51,6 +51,13 @@ export interface RevocationContext {
    * here, and stays live (`fresh`), instead of from the cache.
    */
   reads?: Map<string, StatusListRead> | undefined;
+  /**
+   * Read every list live, past any cached verdict or list: a request that
+   * must be fresh (a tool whose minimum Card level is L3, which needs fresh
+   * revocation status). A live read still refreshes the cache for requests
+   * that may use it.
+   */
+  live?: boolean | undefined;
 }
 
 export interface RevocationVerdict {
@@ -91,6 +98,7 @@ function withRoot(base: StatusConfiguration, pinnedRoot: string | undefined, roo
  * entry (statusSize, index), before any fetch; the keeper; a cached verdict;
  * a cached list or a live read; the entry against the list; the verdict
  * cached. Only a live, proof-verified read made inside its window is cached.
+ * With `context.live`, the cached verdict and list are skipped.
  */
 export function createRevocationChecker(options: RevocationCheckerOptions): RevocationChecker {
   const base: StatusConfiguration =
@@ -118,7 +126,7 @@ export function createRevocationChecker(options: RevocationCheckerOptions): Revo
         ? { credentialId: credential.id, url, index: entry.statusListIndex, purpose: entry.statusPurpose, issuer: credential.issuer, keeper: kept.did }
         : undefined;
 
-    if (verdictKey !== undefined) {
+    if (verdictKey !== undefined && context.live !== true) {
       const cached = await cache!.getVerdict(verdictKey, scopes);
       if (cached !== undefined) {
         return cached.revoked
@@ -127,7 +135,7 @@ export function createRevocationChecker(options: RevocationCheckerOptions): Revo
       }
     }
 
-    let read: StatusListRead | undefined = context.reads?.get(url) ?? (cache === undefined ? undefined : await cache.getList(url, scopes));
+    let read: StatusListRead | undefined = context.reads?.get(url) ?? (cache === undefined || context.live === true ? undefined : await cache.getList(url, scopes));
     if (read === undefined) {
       try {
         read = await options.fetchStatusList(url);

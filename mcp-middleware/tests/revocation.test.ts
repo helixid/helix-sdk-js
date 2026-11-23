@@ -12,6 +12,7 @@ import { RedisStatusCacheStore } from '../src/kyaos/status-cache-store.js';
 import { RevocationSignalClient, SseParser, createRevocationSignalClient, type SignalReport } from '../src/revocation-signals.js';
 import { ResolutionRefusedError, createResolutionFetch, isPublicUnicastAddress, resolutionTarget } from '../src/resolution-fetch.js';
 import { createLocalVerifier, type LocalVerifier } from '../src/verify-locally.js';
+import { helixidMCPMiddleware } from '../src/middleware.js';
 import { NOW_MS, fixtureSigner, haveVerifierFixtures, loadCases, loadEnvironment, proofMeta, type FixtureEnvironment } from './proof-helpers.js';
 import { encodedBits, signList } from './revocation-helpers.js';
 
@@ -122,6 +123,52 @@ describe.skipIf(!haveVerifierFixtures)('revocation through the local verifier (s
     // The signal reached instance A only; B shares the store, so both refuse.
     expect(await present(a, NOW_MS)).toMatchObject({ ok: false, reasons: ['status_revoked'] });
     expect(await present(b, NOW_MS)).toMatchObject({ ok: false, reasons: ['status_revoked'] });
+  });
+
+  it('a tool that demands L3 reads its lists live on every call: a repeat inside the TTL stays L3; a tool set to L2 is served from the cache; a signal still drops the cached verdict', async () => {
+    const lists = new FixtureLists(env);
+    const store = new kyaos.verifier.MemoryStatusCacheStore({ now: () => NOW_MS });
+    const verifier = instance(lists, store, () => NOW_MS);
+    const guard = helixidMCPMiddleware({ verifier, requiredScopes: [], tools: { list_orders: { minimumLevel: 'L2' } } });
+    const at = async (name: string): Promise<{ level?: string; fresh?: boolean }> => {
+      const tool = { name, input: { orderId: 'ORD-1001' } };
+      return guard.authorize({ ...tool, _meta: await proofMeta(fixtureSigner(env, 'agent'), service, tool, chain, { now: NOW_MS }) });
+    };
+    expect(await at('lookup_order')).toMatchObject({ level: 'L3', fresh: true });
+    let asked = lists.asked.length;
+    // The default minimum is L3: the same call again, inside the TTL, reads every list live and stays L3.
+    expect(await at('lookup_order')).toMatchObject({ level: 'L3', fresh: true });
+    expect(lists.asked.length).toBeGreaterThan(asked);
+    asked = lists.asked.length;
+    // A tool set to L2 takes the cached verdicts: no list is read, and the call is L2, not fresh.
+    expect(await at('list_orders')).toMatchObject({ level: 'L2', fresh: false });
+    expect(lists.asked.length).toBe(asked);
+
+    // The root hop is revoked. The L3 tool sees it at once (live); the L2 tool keeps its cached verdict until the signal.
+    const root = chain[0]!;
+    lists.revoke(root.credentialStatus.statusListCredential, Number(root.credentialStatus.statusListIndex));
+    await expect(at('lookup_order')).rejects.toMatchObject({ reasons: ['status_revoked'] });
+    // The live read refreshed the cache: the revoked list is what an L2 tool now reads.
+    await expect(at('list_orders')).rejects.toMatchObject({ reasons: ['status_revoked'] });
+  });
+
+  it('a live read for an L3 tool does not wait for a signal; without one, an L2 tool reads the cached verdict until the signal drops it', async () => {
+    const lists = new FixtureLists(env);
+    const store = new kyaos.verifier.MemoryStatusCacheStore({ now: () => NOW_MS });
+    const verifier = instance(lists, store, () => NOW_MS);
+    const guard = helixidMCPMiddleware({ verifier, requiredScopes: [], tools: { list_orders: { minimumLevel: 'L2' } } });
+    const at = async (name: string): Promise<{ level?: string; fresh?: boolean }> => {
+      const tool = { name, input: { orderId: 'ORD-1001' } };
+      return guard.authorize({ ...tool, _meta: await proofMeta(fixtureSigner(env, 'agent'), service, tool, chain, { now: NOW_MS }) });
+    };
+    expect(await at('list_orders')).toMatchObject({ level: 'L3', fresh: true });
+    const root = chain[0]!;
+    lists.revoke(root.credentialStatus.statusListCredential, Number(root.credentialStatus.statusListIndex));
+    // Inside the TTL, with no signal, the L2 tool still reads the cached "not revoked".
+    expect(await at('list_orders')).toMatchObject({ level: 'L2', fresh: false });
+    const client = createRevocationSignalClient(verifier, { trustedIssuers: [helix.did], resolveDid, clock: () => NOW_MS });
+    expect(await client.handle(await kyaos.verifier.signRevocationSignal({ credentialId: root.id, iat: NOW_MS / 1000 }, helix))).toMatchObject({ accepted: true });
+    await expect(at('list_orders')).rejects.toMatchObject({ reasons: ['status_revoked'] });
   });
 
   it('with the signal channel down, a revoked hop is refused no later than statusCacheTtl', async () => {

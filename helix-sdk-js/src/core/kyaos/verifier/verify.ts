@@ -131,6 +131,13 @@ export interface VerifierOptions {
    * the chain alone, with the proof floor unmet, so its level is at most L2.
    */
   requireProof?: boolean | undefined;
+  /**
+   * Read every status list live, past the status cache (story L3-C with
+   * C-C's levels): a call to a tool whose minimum Card level is L3 needs
+   * fresh revocation status, which a cached read is not. Default false: the
+   * cache serves, and a cached read is not fresh, so at most L2.
+   */
+  liveStatus?: boolean | undefined;
 }
 
 export interface ChainSummary {
@@ -343,7 +350,12 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
       return refused(refusals, chainSummary, proved);
     }
     // Root to leaf, stopping at the first revoked or unresolvable hop (§6.5 cascade, story L3-C point 4).
-    const revocation = await checkChainRevocation(chain, checker, { now, scopes: requestScopes(options, evaluation.allowedAction), reads });
+    const revocation = await checkChainRevocation(chain, checker, {
+      now,
+      scopes: requestScopes(options, evaluation.allowedAction),
+      reads,
+      ...(options.liveStatus === true ? { live: true } : {}),
+    });
     if (revocation.revoked) {
       refusals.add(revocation.code ?? ReasonCodes.STATUS_REVOKED, `hop ${String(revocation.index)}: ${revocation.message ?? 'revoked'}`);
       return refused(refusals, chainSummary, proved);
@@ -394,6 +406,7 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
       checkRevocation: revocationSeam(seams, options),
       scopes: requestScopes(options, leafAllowedAction),
       reads,
+      ...(options.liveStatus === true ? { liveStatus: true } : {}),
     });
     capabilities = { verified: check.verified, unverified: check.unverified };
     capabilitiesFresh = check.fresh;
