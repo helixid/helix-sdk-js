@@ -93,6 +93,13 @@ export interface LocalVerifierOptions {
   allowLoopbackHttp?: boolean | undefined;
   /** A DID resolver of the host's own, in place of the built-in did:key / did:web one. */
   resolveDid?: kyaos.verifier.DidResolver | undefined;
+  /**
+   * Story C-E point 2: where the default resolver keeps the highest DID
+   * document `rotationSequence` it has seen, refusing a lower one. Default: in
+   * memory for this verifier; pass a `RedisRotationSequenceStore` (next to the
+   * nonce store) so every instance refuses the same replay.
+   */
+  rotationSequenceStore?: kyaos.verifier.RotationSequenceStore | undefined;
   /** The `resolveDidKeys` seam; default: every Ed25519 key the resolved document publishes. */
   resolveDidKeys?: kyaos.verifier.VerifierSeams['resolveDidKeys'];
   /** The status-list seam; default: fetch the list at its URL, verify its proof, then decode it (story L3-C). */
@@ -231,7 +238,10 @@ export function createLocalVerifier(options: LocalVerifierOptions): LocalVerifie
     if (!response.ok) throw new Error(`${url} answered ${response.status}`);
     return response.json();
   };
-  const resolveDid: kyaos.verifier.DidResolver = options.resolveDid ?? kyaos.verifier.createDidResolver({ fetch: doFetch });
+  const resolveDid: kyaos.verifier.DidResolver = options.resolveDid ?? kyaos.verifier.createDidResolver({
+      fetch: doFetch,
+      ...(options.rotationSequenceStore ? { sequenceGuard: new kyaos.verifier.RotationSequenceGuard(options.rotationSequenceStore) } : {}),
+    });
   const resolveDidKeys = options.resolveDidKeys ?? kyaos.verifier.createDidKeysResolver(resolveDid);
   // Every list's proof is verified, by its issuer's assertionMethod key, before any bit is read (story L3-C point 2).
   const fetchStatusList: kyaos.verifier.FetchStatusList = options.fetchStatusList ?? kyaos.verifier.createStatusListFetcher({ fetch: doFetch, resolveDid });

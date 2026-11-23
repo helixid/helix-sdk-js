@@ -40,4 +40,6 @@ export type { SessionStore, KyaOsSession, CreateSessionInput, IdentityState, Mem
 export { buildResponseProof, attachResponseProof, RESPONSE_PROOF_META_KEY } from './response-proof.js';
 export type { ProofMeta, DetachedProof, ProofOutcome } from './response-proof.js';
 export { RedisStatusCacheStore } from './status-cache-store.js';
+export { RedisRotationSequenceStore, RAISE_TO_MAX_SCRIPT, ROTATION_SEQUENCE_KEY_PREFIX } from './rotation-sequence-store.js';
+export type { RedisRotationSequenceClient } from './rotation-sequence-store.js';
 export type { RedisStatusCacheClient } from './status-cache-store.js';
