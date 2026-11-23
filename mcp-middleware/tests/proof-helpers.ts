@@ -102,12 +102,17 @@ export async function proofMeta(
   audience: string,
   call: { name: string; input?: Record<string, unknown> | undefined },
   chain?: unknown,
-  options: { now?: number; legacyKey?: boolean } = {},
+  options: { now?: number; legacyKey?: boolean; cnfJkt?: string } = {},
 ): Promise<Record<string, unknown>> {
   const request: kyaos.verifier.ProofRequest = { method: 'tools/call', params: { name: call.name, ...(call.input === undefined ? {} : { arguments: call.input }) } };
-  const proof = await kyaos.verifier.signRequestProof(request, signer, { audience, now: options.now ?? NOW_MS });
+  const proof = await kyaos.verifier.signRequestProof(request, signer, { audience, now: options.now ?? NOW_MS, ...(options.cnfJkt === undefined ? {} : { cnfJkt: options.cnfJkt }) });
   return {
     [options.legacyKey ? kyaos.verifier.LEGACY_REQUEST_PROOF_META_KEY : kyaos.verifier.REQUEST_PROOF_META_KEY]: proof,
     ...(chain === undefined ? {} : { [kyaos.verifier.DELEGATION_CHAIN_META_KEY]: chain }),
   };
+}
+
+/** The RFC 7638 thumbprint of an Ed25519 public key given as hex: what `cnf.jkt` carries. */
+export function thumbprintOfHex(publicKeyHex: string): string {
+  return kyaos.verifier.jwkThumbprint({ kty: 'OKP', crv: 'Ed25519', x: Buffer.from(publicKeyHex, 'hex').toString('base64url') });
 }

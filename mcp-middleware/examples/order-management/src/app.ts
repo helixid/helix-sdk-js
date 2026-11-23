@@ -157,8 +157,13 @@ function auditCode(error: unknown): string {
 export function createOrderServer(options: OrderServerOptions): Server {
   const store = options.store ?? createOrderStore();
   const kyaos = options.kyaos;
-  // The handshake needs an identified caller, not a scope: it is listed with none (story F-2).
-  const guard = helixidMCPMiddleware({ ...options.auth, toolScopes: kyaos ? { ...TOOL_SCOPES, [kyaos.handshakeToolName]: [] } : TOOL_SCOPES });
+  // The handshake needs an identified caller, not a scope: it is listed with none (story F-2), and it opens
+  // a session rather than acting on anything, so any verified level will do (story C-C).
+  const guard = helixidMCPMiddleware({
+    ...options.auth,
+    toolScopes: kyaos ? { ...TOOL_SCOPES, [kyaos.handshakeToolName]: [] } : TOOL_SCOPES,
+    ...(kyaos ? { tools: { ...options.auth.tools, [kyaos.handshakeToolName]: { minimumLevel: 'L1' as const } } } : {}),
+  });
   const mcpPath = new URL(options.resource).pathname;
   const metadataUrl = protectedResourceMetadataUrl(options.resource);
   const metadataPath = new URL(metadataUrl).pathname;

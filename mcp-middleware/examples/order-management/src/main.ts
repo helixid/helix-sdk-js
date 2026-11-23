@@ -31,6 +31,7 @@ import {
 import { createOrderServer } from './app.js';
 import { demoRetryAuthorizer } from './demo-authorizer.js';
 import { TOOL_SCOPES } from './orders.js';
+import { LEVEL_VARIABLES, describeLevelSettings, readLevelSettings } from './levels.js';
 import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './well-known-env.js';
 
 /**
@@ -74,6 +75,12 @@ import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './we
  *   KYAOS_REVOCATION_WEBHOOK_PATH a path on this server that receives pushed SETs (RFC 8935)
  *   KYAOS_VERIFICATION_LOG      1: print each verification (level, fresh, reasons) and each revocation signal
  *                               as one JSON line; a file path: append them there as JSON lines instead
+ *   KYAOS_MINIMUM_LEVEL     the Card level every tool demands (story C-C): L1, L2 or L3 (default L3: a
+ *                           verified request proof, every capability attested, status read live)
+ *   KYAOS_TOOL_LEVELS       per-tool minimums, comma-separated tool=level (lookup_order=L2 accepts a
+ *                           delegation chain without a request proof for lookup_order)
+ *   KYAOS_L3_MINUS_SATISFIES_L3=0  refuse L3-minus (a proof with no token cnf to fuse) for L3 tools
+ *                           (default: accepted, as SPEC-ENTITY-CARD.md §9.4 allows)
  *   OAUTH_ISSUER          OAuth door, one authorization server. The issuer alone is enough: its keys are
  *                         read from its metadata (aud must be MCP_RESOURCE). Optional:
  *   OAUTH_JWKS_URI          its jwks_uri, to skip discovery
@@ -553,6 +560,12 @@ if (serviceDid) {
   } catch (error) {
     fail(`status cache: ${error instanceof Error ? error.message : String(error)}`);
   }
+  // Story C-C: the minimum Card level, per tool.
+  try {
+    Object.assign(auth, readLevelSettings(env, Object.keys(TOOL_SCOPES)));
+  } catch (error) {
+    fail((error as Error).message);
+  }
   const localVerifier = createLocalVerifier({
     serviceDid,
     statusCache,
@@ -592,10 +605,10 @@ if (serviceDid) {
   } else if (signalIssuers !== undefined) {
     fail('KYAOS_SIGNAL_ISSUERS needs KYAOS_REVOCATION_EVENTS_URL or KYAOS_REVOCATION_WEBHOOK_PATH');
   }
-} else if (
-  ['KYAOS_TRUSTED_ISSUERS', 'KYAOS_TRUSTED_ROOTS', 'KYAOS_MAX_CHAIN_LENGTH', 'KYAOS_CARDS_FILE', ...L3C_SETTINGS].some((name) => env[name])
-) {
-  fail('KYAOS_TRUSTED_ISSUERS / KYAOS_TRUSTED_ROOTS / KYAOS_MAX_CHAIN_LENGTH / KYAOS_CARDS_FILE and the revocation settings need SERVICE_DID');
+  } else if (
+    ['KYAOS_TRUSTED_ISSUERS', 'KYAOS_TRUSTED_ROOTS', 'KYAOS_MAX_CHAIN_LENGTH', 'KYAOS_CARDS_FILE', ...L3C_SETTINGS, ...LEVEL_VARIABLES].some((name) => env[name])
+  ) {
+    fail('KYAOS_TRUSTED_ISSUERS / KYAOS_TRUSTED_ROOTS / KYAOS_MAX_CHAIN_LENGTH / KYAOS_CARDS_FILE / KYAOS_MINIMUM_LEVEL / KYAOS_TOOL_LEVELS / KYAOS_L3_MINUS_SATISFIES_L3 and the revocation settings need SERVICE_DID');
 }
 
 /** The discovery document (story L1-D): built once, validated against the schema, or the reason it is off. */
@@ -633,7 +646,7 @@ server.listen(port, host, () => {
   console.log(
     `  KYA-OS proofs: ${
       auth.verifier
-        ? `verified in-process for ${serviceDid}, trusted issuers ${env['KYAOS_TRUSTED_ISSUERS'] || '*'}, chain length <= ${env['KYAOS_MAX_CHAIN_LENGTH'] || 10}`
+        ? `verified in-process for ${serviceDid}, trusted issuers ${env['KYAOS_TRUSTED_ISSUERS'] || '*'}, chain length <= ${env['KYAOS_MAX_CHAIN_LENGTH'] || 10}, ${describeLevelSettings(auth)}`
         : 'off (set SERVICE_DID)'
     }`,
   );

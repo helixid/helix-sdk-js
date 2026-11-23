@@ -7,7 +7,8 @@
 /**
  * KYA-OS primitives the SDK carries itself (stories rule 24): RFC 8785
  * canonical JSON and hashing (L1-B), EdDSA JWS and the Signer (L1-C), the
- * session handshake and the detached response proof (L2-A).
+ * session handshake and the detached response proof (L2-A), the per-request
+ * holder-of-key proof and the carried chain (C-C).
  */
 export * from './jcs.js';
 export * from './signer.js';
@@ -17,5 +18,6 @@ export * from './handshake.js';
 export * from './response-proof.js';
 export * as verifier from './verifier/index.js';
 export * as conformance from './conformance/index.js';
+export * from './request-proof.js';
 export * from './needs-authorization.js';
 export * from './discovery.js';

@@ -1,8 +1,9 @@
 import type { kyaos } from '@helixid/sdk-js';
 import type { ToolAuditEvent } from './audit.js';
 import { extractCredential } from './credentials.js';
-import { AuthorizationServerUnavailableError, MCPAuthError, ProofError, ToolScopeError } from './errors.js';
-import { createOAuthValidator } from './oauth.js';
+import { AuthorizationServerUnavailableError, LevelError, MCPAuthError, ProofError, ToolScopeError } from './errors.js';
+import { assertLevelPolicy, derivedLevelOf, meetsMinimumLevel, minimumLevelFor, type MinimumLevel } from './level.js';
+import { cnfJktOf, createOAuthValidator, type AuthResult } from './oauth.js';
 import { challengeFor, resumeRetry } from './needs-authorization-guard.js';
 import type { MCPToolCall, MCPMiddlewareOptions } from './types.js';
 import { createLocalVerifier, type LocalVerifier } from './verify-locally.js';
@@ -18,6 +19,10 @@ export interface AuthorizedCaller {
   proofAssurance?: kyaos.verifier.ProofAssurance;
   /** KYA-OS callers: whether every status the level relies on was read live. */
   fresh?: boolean;
+  /** KYA-OS callers (story C-C): true when a request proof verified; false for a chain verified without one. */
+  proofFloor?: boolean;
+  /** KYA-OS callers: the `cnf` diagnostics (`cnf_present_but_token_unfused`). */
+  cnfDiagnostics?: string[];
 }
 
 type Caller = AuthorizedCaller;
@@ -43,6 +48,9 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
     throw new Error('Provide either `oauth` or `validateOAuthToken`, not both');
   }
   const validateOAuth = options.validateOAuthToken ?? (options.oauth ? createOAuthValidator(options.oauth) : undefined);
+  // Story C-C: the minimum Card level per tool, checked after the scopes. A typo in a level throws here, never lowers a bar.
+  const levelPolicy = { minimumLevel: options.minimumLevel, tools: options.tools, l3MinusSatisfiesL3: options.l3MinusSatisfiesL3 };
+  assertLevelPolicy(levelPolicy);
   const serviceDid = options.serviceDid ?? options.expectedTargetService;
   // The verifier runs in-process (story F-2): nothing here ever asks the Helix API about a credential.
   const localVerifier: LocalVerifier | undefined =
@@ -56,7 +64,11 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
             serviceDid: options.verifier.serviceDid ?? serviceDid ?? '',
           });
 
-  const audit = async (caller: Caller, toolName: string | undefined, denied: { scope?: string; reason: string } | undefined): Promise<void> => {
+  const audit = async (
+    caller: Caller,
+    toolName: string | undefined,
+    denied: { scope?: string; reason: string; requiredLevel?: MinimumLevel } | undefined,
+  ): Promise<void> => {
     if (!options.auditSink) return;
     const event: ToolAuditEvent = {
       event: denied ? 'AUTHZ_DENIED' : 'AUTHZ_GRANTED',
@@ -68,6 +80,10 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
       ...(caller.oauthSubject !== undefined ? { oauthSubject: caller.oauthSubject } : {}),
       ...(caller.level !== undefined ? { level: caller.level } : {}),
       ...(caller.fresh !== undefined ? { fresh: caller.fresh } : {}),
+      ...(caller.proofAssurance !== undefined ? { proofAssurance: caller.proofAssurance } : {}),
+      ...(caller.authMethod === 'kyaos' && caller.level !== undefined ? { l3Minus: caller.level === 'L3' && caller.proofAssurance === 'L3-minus' } : {}),
+      ...(caller.cnfDiagnostics !== undefined && caller.cnfDiagnostics.length > 0 ? { cnfDiagnostics: caller.cnfDiagnostics } : {}),
+      ...(denied?.requiredLevel !== undefined ? { requiredLevel: denied.requiredLevel } : {}),
       ...(toolName !== undefined ? { toolName } : {}),
       ...(denied?.scope !== undefined ? { requiredScope: denied.scope } : {}),
       ...(denied ? { reason: denied.reason } : {}),
@@ -78,6 +94,26 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
     } catch (err) {
       options.onAuditError?.(err);
     }
+  };
+
+  const validateBearer = async (token: string): Promise<AuthResult> => {
+    if (!validateOAuth) {
+      throw new MCPAuthError('OAUTH_TOKEN_INVALID', 'Bearer tokens are not accepted by this server');
+    }
+    let auth;
+    try {
+      auth = await validateOAuth(token);
+    } catch (err) {
+      // Our own verdicts pass through; the authorization server being down is a
+      // server fault, not a bad token. Anything else came from a custom callback
+      // and means "rejected".
+      if (err instanceof MCPAuthError || err instanceof AuthorizationServerUnavailableError) throw err;
+      throw new MCPAuthError('OAUTH_TOKEN_INVALID', 'The access token was rejected');
+    }
+    if (!auth || typeof auth.sub !== 'string' || auth.sub.length === 0) {
+      throw new MCPAuthError('OAUTH_TOKEN_INVALID', 'The access token has no subject');
+    }
+    return auth;
   };
 
   const authorize = async (toolCall: MCPToolCall): Promise<AuthorizedCaller> => {
@@ -97,11 +133,20 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
       if (!localVerifier) {
         throw new Error('helixidMCPMiddleware: `verifier` is required to verify KYA-OS request proofs');
       }
+      // A bearer token next to a proof is its sender constraint: its cnf.jkt fuses with the proof's for L3 (§8.6).
+      let tokenCnfJkt: string | undefined;
+      if (credential.bearer !== undefined) {
+        const auth = await validateBearer(credential.bearer);
+        tokenCnfJkt = auth.cnfJkt ?? cnfJktOf(auth.claims);
+      }
+      // A chain may come without a proof (story C-C): it verifies, at most at L2, and the level check below decides.
       const result = await localVerifier.verifyCall({
         ...(toolName === undefined ? {} : { name: toolName }),
         ...(toolCall.input === undefined ? {} : { input: toolCall.input }),
         ...(toolCall._meta === undefined ? {} : { _meta: toolCall._meta }),
         ...(toolCall.request === undefined ? {} : { request: toolCall.request }),
+        ...(tokenCnfJkt === undefined ? {} : { tokenCnfJkt }),
+        requireProof: false,
       });
       /* c8 ignore next */
       if (result === undefined) throw new ProofError('PROOF_MISSING', 'The request carries no KYA-OS request proof');
@@ -112,31 +157,19 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
         }
         throw refused;
       }
+      const cnfDiagnostics = result.warnings.filter((warning) => warning.startsWith('cnf_'));
       caller = {
         authMethod: 'kyaos',
         scopes: result.effectiveScopes,
-        ...(result.proofDid === undefined ? {} : { agentDid: result.proofDid }),
+        ...(result.agentDid === undefined ? {} : { agentDid: result.agentDid }),
         level: result.level,
         ...(result.proofAssurance === undefined ? {} : { proofAssurance: result.proofAssurance }),
         fresh: result.fresh,
+        proofFloor: result.proofFloor,
+        ...(cnfDiagnostics.length > 0 ? { cnfDiagnostics } : {}),
       };
     } else {
-      if (!validateOAuth) {
-        throw new MCPAuthError('OAUTH_TOKEN_INVALID', 'Bearer tokens are not accepted by this server');
-      }
-      let auth;
-      try {
-        auth = await validateOAuth(credential.token);
-      } catch (err) {
-        // Our own verdicts pass through; the authorization server being down is a
-        // server fault, not a bad token. Anything else came from a custom callback
-        // and means "rejected".
-        if (err instanceof MCPAuthError || err instanceof AuthorizationServerUnavailableError) throw err;
-        throw new MCPAuthError('OAUTH_TOKEN_INVALID', 'The access token was rejected');
-      }
-      if (!auth || typeof auth.sub !== 'string' || auth.sub.length === 0) {
-        throw new MCPAuthError('OAUTH_TOKEN_INVALID', 'The access token has no subject');
-      }
+      const auth = await validateBearer(credential.token);
       caller = { authMethod: 'oauth', scopes: auth.scopes ?? [], oauthSubject: auth.sub };
     }
 
@@ -163,6 +196,16 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
       if (challenge !== undefined) throw challenge;
       await audit(caller, toolName, { scope: missing, reason: 'insufficient scope' });
       throw new ToolScopeError(missing, required);
+    }
+
+    // The level, after the scopes (story C-C): how sure we are the caller is that agent right now.
+    if (caller.authMethod === 'kyaos') {
+      const requiredLevel = minimumLevelFor(levelPolicy, toolName);
+      const derived = derivedLevelOf(caller.level ?? 'L1', caller.proofAssurance);
+      if (!meetsMinimumLevel(derived, requiredLevel, options.l3MinusSatisfiesL3 ?? true)) {
+        await audit(caller, toolName, { reason: `level_insufficient: ${derived} < ${requiredLevel}`, requiredLevel });
+        throw new LevelError(derived, requiredLevel);
+      }
     }
 
     await audit(caller, toolName, undefined);

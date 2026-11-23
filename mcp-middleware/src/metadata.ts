@@ -46,7 +46,15 @@ export function buildProtectedResourceMetadata(input: ProtectedResourceMetadataI
 export interface HttpErrorResponse {
   status: number;
   headers: { 'WWW-Authenticate': string };
-  body: { error: string; error_description: string; _meta?: Record<string, unknown>; [member: string]: unknown };
+  body: {
+    error: string;
+    error_description: string;
+    /** PROOF_LEVEL_INSUFFICIENT (story C-C): the level the call came to and the one the tool demands. */
+    derivedLevel?: string;
+    requiredLevel?: string;
+    _meta?: Record<string, unknown>;
+    [member: string]: unknown;
+  };
 }
 
 export interface HttpErrorOptions {
@@ -70,6 +78,8 @@ const MAPPED: Record<string, { status: number; error: string }> = {
   // KYA-OS request proofs (story F-2): absent, or refused by the local verifier.
   PROOF_MISSING: { status: 401, error: '' },
   PROOF_INVALID: { status: 401, error: 'invalid_token' },
+  // Story C-C: verified, but below the tool's minimum Card level (RFC 9470's step-up error).
+  PROOF_LEVEL_INSUFFICIENT: { status: 401, error: 'insufficient_user_authentication' },
   OAUTH_TOKEN_INVALID: { status: 401, error: 'invalid_token' },
   CREDENTIAL_CONFLICT: { status: 400, error: 'invalid_request' },
   INSUFFICIENT_SCOPE: { status: 403, error: 'insufficient_scope' },
@@ -93,7 +103,7 @@ export function toHttpErrorResponse(error: unknown, options: HttpErrorOptions): 
   const mapped = typeof code === 'string' && Object.hasOwn(MAPPED, code) ? MAPPED[code] : undefined;
   if (!mapped) return undefined;
   const message = error instanceof Error ? error.message : 'Unauthorized';
-  const e = error as { requiredScope?: unknown; requiredScopes?: unknown } | null;
+  const e = error as { requiredScope?: unknown; requiredScopes?: unknown; derivedLevel?: unknown; requiredLevel?: unknown } | null;
   const required = Array.isArray(e?.requiredScopes)
     ? e.requiredScopes.filter((x): x is string => typeof x === 'string')
     : typeof e?.requiredScope === 'string'
@@ -114,6 +124,8 @@ export function toHttpErrorResponse(error: unknown, options: HttpErrorOptions): 
     body: {
       error: mapped.error || 'unauthorized',
       error_description: message,
+      ...(typeof e?.derivedLevel === 'string' ? { derivedLevel: e.derivedLevel } : {}),
+      ...(typeof e?.requiredLevel === 'string' ? { requiredLevel: e.requiredLevel } : {}),
       ...(code === 'NEEDS_AUTHORIZATION' ? (error as { challenge?: Record<string, unknown> }).challenge : {}),
       ...(options.proof ? { _meta: { 'org.kya-os/response-proof': options.proof } } : {}),
     },

@@ -6,29 +6,7 @@ import type { HelixJWTPayload } from '../core/schemas/jwt.js';
 import type { DIDDocument, ServiceEndpoint } from '../core/did.js';
 import type { StatusListCredential } from '../core/status-list-schema.js';
 import type { SignedVC } from '../core/schemas/vc.js';
-import type { SignedVP } from '../core/schemas/vp.js';
-import type { VerifyVPOptions, VerifyVPResult } from '../core/verification-types.js';
 import { HttpAdapter } from '../http/HttpAdapter.js';
-
-/**
- * Full response from `POST /v1/vp/verify` — see the SDK-API-only design.
- * Superset of core's `VerifyVPResult` (same verification fields — parity is
- * enforced server-side, see helix-api's IVPService) plus the fields only the
- * API call itself can produce (targetService, verifiedAt, an optional
- * session). The server logs VP_VERIFIED/VP_REJECTED on every call, so unlike
- * the old local-verification path, the SDK does not need its own audit call
- * here.
- */
-export interface VerifyVPApiResult extends VerifyVPResult {
-  targetService: string;
-  verifiedAt: string;
-  userDid?: string;
-  session?: {
-    token: string;
-    expiresAt: string;
-    publicKeyEndpoint: string;
-  };
-}
 
 interface HttpAdapterLike {
   post<T>(path: string, body?: unknown): Promise<T>;
@@ -150,9 +128,7 @@ export interface HelixClientOptions {
   /**
    * Enterprise (server-custody, account-scoped) mode: presence of this
    * option is what selects it. Every call then sends it as the bearer
-   * token (enterprise has no admin key), and signVP()
-   * talks to /v1/custodial-agents/:did/... instead of core's
-   * /v1/agents/:did/.... See helix-server-enterprise's
+   * token (enterprise has no admin key). See helix-server-enterprise's
    * POST /v1/account/api-keys. No email/password, no login call -- an
    * agent process holds only this, the same way an OSS agent holds only
    * `adminApiKey`.
@@ -381,7 +357,7 @@ export class HelixClient {
   // -- Service Providers ---------------------------------------------------
   // Services hold no keys: the server mints the service DID, keeps its key,
   // and signs consent grants on the service's behalf. Same custody model as
-  // agents (onboardAgent/signVP), so both are API calls.
+  // agents (onboardAgent), so both are API calls.
 
   /** Enroll a service (self-hosted servers; hosted accounts enroll through the console/account API). */
   async createService(input: CreateServiceInput): Promise<{ serviceDid: string; serviceName: string }> {
@@ -439,22 +415,6 @@ export class HelixClient {
     );
   }
 
-  async verifyVP(vp: SignedVP, options: VerifyVPOptions = {}): Promise<VerifyVPApiResult> {
-    // Verification, audit logging (VP_VERIFIED/VP_REJECTED), and session
-    // issuance all happen server-side (see the SDK-API-only design) —
-    // no local verifyVP() call, no separate SDK-side audit write. Note
-    // `statusListResolver` isn't forwarded: it's a function (not
-    // serializable) and only ever used as helix-api's own internal
-    // same-origin-list fast path, never by an external caller.
-    return this.http.post<VerifyVPApiResult>('/v1/vp/verify', {
-      signedVP: vp,
-      ...(options.expectedTargetService !== undefined
-        ? { expectedTargetService: options.expectedTargetService }
-        : {}),
-      ...(options.allowSelfSigned !== undefined ? { allowSelfSigned: options.allowSelfSigned } : {}),
-    });
-  }
-
   async checkVCStatus(vc: SignedVC): Promise<'active' | 'revoked' | 'expired'> {
     if (!this.http.get) throw new Error('GET not implemented by adapter');
     const response = await this.http.get<{ vcId: string; status: 'active' | 'revoked' | 'expired' }>(
@@ -487,47 +447,6 @@ export class HelixClient {
   ): Promise<{ agentDid: string; vcId: string }> {
     this.assertAPIConfigured();
     return this.http.post('/v1/onboard', { enrollmentToken, domains });
-  }
-
-  /**
-   * Signs a VP on behalf of a server-custody agent — the caller never has,
-   * and never can have, the private key, so this is an API call instead of
-   * local VPBuilder.sign(). The server picks the credentials from the DIDs
-   * alone: every active HelixAgentCredential the agent holds (its own, plus
-   * any delegated to it).
-   *
-   * `targetService` is the DID of the service the VP is for. With a
-   * `userDid` the agent is acting on that user's behalf, and the server
-   * attaches every active DelegationGrantCredential that service issued to
-   * this agent for that user; none at all fails with
-   * CONSENT_GRANT_NOT_FOUND, meaning the user has not consented yet.
-   */
-  async signVP(
-    did: string,
-    targetService: string,
-    options: { userDid?: string } = {},
-  ): Promise<SignedVP> {
-    this.assertAPIConfigured();
-    const body = {
-      targetService,
-      ...(options.userDid !== undefined ? { userDid: options.userDid } : {}),
-    };
-
-    // Enterprise mode (this.apiKey set): custodial signing is
-    // account-scoped, so it targets /v1/custodial-agents/:did/vp instead of
-    // core's admin-key-gated /v1/agents/:did/vp. The bearer token itself is
-    // sent by HttpAdapter, like every other call -- so errors map to typed
-    // HelixErrors here too, not a bare Error.
-    const result = await this.http.post<{ signedVP: SignedVP }>(
-      `/v1/${this.agentRoutePrefix()}/${encodeURIComponent(did)}/vp`,
-      body,
-    );
-    return result.signedVP;
-  }
-
-  /** Where custodial agent actions live: enterprise's account-scoped routes, or core's admin-key-gated ones. */
-  private agentRoutePrefix(): 'custodial-agents' | 'agents' {
-    return this.apiKey ? 'custodial-agents' : 'agents';
   }
 
   async requestUserChallenge(

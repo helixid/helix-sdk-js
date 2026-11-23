@@ -47,6 +47,12 @@ export interface VerificationReport {
   ok: boolean;
   level: kyaos.verifier.ConformanceLevel;
   proofAssurance?: kyaos.verifier.ProofAssurance | undefined;
+  /** True when a request proof verified (story C-C); false for a call verified on its chain alone. */
+  proofFloor: boolean;
+  /** True when the L3 rests on a proof with no token `cnf` to fuse with (§8.6). */
+  l3Minus: boolean;
+  /** `cnf` diagnostics: `cnf_present_but_token_unfused` (§8.6). */
+  cnfDiagnostics: string[];
   effectiveScopes: string[];
   reasons: string[];
   fresh: boolean;
@@ -123,6 +129,10 @@ export interface LocalVerifierCall {
   _meta?: Record<string, unknown> | undefined;
   /** The JSON-RPC request as received, when the host has it; it is hashed as sent. Default: rebuilt from `name`, `input` and `_meta`. */
   request?: kyaos.verifier.ProofRequest | undefined;
+  /** The access token's `cnf.jkt`, when the call came with a sender-constrained token: the §8.6 fusion. */
+  tokenCnfJkt?: string | undefined;
+  /** Default true. False: a call with a chain and no proof is verified on the chain alone, at most L2 (story C-C). */
+  requireProof?: boolean | undefined;
 }
 
 export interface LocalVerifier {
@@ -131,7 +141,7 @@ export interface LocalVerifier {
   readonly nonceStore: NonceStore;
   /** The status cache the revocation checker reads; a `RevocationSignalClient` invalidates it. */
   readonly statusCache: kyaos.verifier.StatusCache;
-  /** Verifies one tool call from its `_meta`; `undefined` when it carries no request proof. */
+  /** Verifies one tool call from its `_meta`; `undefined` when it carries neither a request proof nor a chain. */
   verifyCall(call: LocalVerifierCall): Promise<kyaos.verifier.VerifierResult | undefined>;
   /** The verifier on explicit input, with this service's seams and options. */
   verify(input: kyaos.verifier.VerifierInput, overrides?: Partial<kyaos.verifier.VerifierOptions>): Promise<kyaos.verifier.VerifierResult>;
@@ -180,6 +190,20 @@ export function unrecordedReporter(log: (message: string) => void = (message) =>
     said = true;
     log('[kya-os] local verifications are unrecorded: no reportVerification hook is set (story A-1 connects the audit trail)');
   };
+}
+
+/** The JSON-RPC request a call's proof binds: the one received when the host has it, else rebuilt as `tools/call`. */
+export function requestOf(call: LocalVerifierCall): kyaos.verifier.ProofRequest {
+  return (
+    call.request ?? {
+      method: 'tools/call',
+      params: {
+        ...(call.name === undefined ? {} : { name: call.name }),
+        ...(call.input === undefined ? {} : { arguments: call.input }),
+        ...(call._meta === undefined ? {} : { _meta: call._meta }),
+      },
+    }
+  );
 }
 
 export function createLocalVerifier(options: LocalVerifierOptions): LocalVerifier {
@@ -264,25 +288,27 @@ export function createLocalVerifier(options: LocalVerifierOptions): LocalVerifie
 
   const verifyCall = async (call: LocalVerifierCall): Promise<kyaos.verifier.VerifierResult | undefined> => {
     const proof = kyaos.verifier.readRequestProof(call._meta);
-    if (proof === undefined) return undefined;
     const chain = kyaos.verifier.readCarriedChain(call._meta);
-    const request: kyaos.verifier.ProofRequest = call.request ?? {
-      method: 'tools/call',
-      params: {
-        ...(call.name === undefined ? {} : { name: call.name }),
-        ...(call.input === undefined ? {} : { arguments: call.input }),
-        ...(call._meta === undefined ? {} : { _meta: call._meta }),
+    if (proof === undefined && chain === undefined) return undefined;
+    const request = requestOf(call);
+    const result = await verify(
+      { proof, ...(chain === undefined ? {} : { chain }), request },
+      {
+        ...(call.tokenCnfJkt === undefined ? {} : { tokenCnfJkt: call.tokenCnfJkt }),
+        ...(call.requireProof === undefined ? {} : { requireProof: call.requireProof }),
       },
-    };
-    const result = await verify({ proof, ...(chain === undefined ? {} : { chain }), request });
+    );
     const entry: VerificationReport = {
       timestamp: new Date(clock()).toISOString(),
       serviceDid: options.serviceDid,
       toolName: call.name,
-      agentDid: result.proofDid,
+      agentDid: result.agentDid ?? result.proofDid,
       ok: result.ok,
       level: result.level,
       proofAssurance: result.proofAssurance,
+      proofFloor: result.proofFloor,
+      l3Minus: result.level === 'L3' && result.proofAssurance === 'L3-minus',
+      cnfDiagnostics: result.warnings.filter((warning) => warning.startsWith('cnf_')),
       effectiveScopes: result.effectiveScopes,
       reasons: result.reasons,
       fresh: result.fresh,

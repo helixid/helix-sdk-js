@@ -70,6 +70,10 @@ SERVICE_DID=did:web:orders.example pnpm --filter @helixid/example-mcp-order-mana
   signed, wrong-purpose or out-of-range list reads as revoked. Lists and verdicts are cached (`KYAOS_STATUS_CACHE_TTL`,
   in Redis with `KYAOS_REDIS_URL`); `KYAOS_REVOCATION_EVENTS_URL` + `KYAOS_SIGNAL_ISSUERS` drop a cached verdict the moment
   Helix signals the revocation.
+- Every tool demands Card level L3 by default (story C-C): a verified request proof, every capability on the
+  agent's card attested, status read live. `KYAOS_MINIMUM_LEVEL`, `KYAOS_TOOL_LEVELS` (`lookup_order=L2`) and
+  `KYAOS_L3_MINUS_SATISFIES_L3=0` change that; a call below a tool's minimum answers 401 with `derivedLevel`
+  and `requiredLevel`. The handshake tool accepts any verified level.
 - `HELIX_API_URL` + `HELIX_API_KEY` turn on the audit sink (`POST /v1/audit-log/events`); nothing else talks to the API.
   `HELIX_API_URL` is required whenever `HELIX_API_KEY` is set, so the sink never falls back to the hosted production API.
 
@@ -144,6 +148,9 @@ received. The tools themselves (`src/orders.ts`) contain no auth code.
 | `KYAOS_REVOCATION_WEBHOOK_PATH` | none | A path here that receives pushed SETs (RFC 8935) |
 | `KYAOS_REDIS_URL` | none | The status cache's Redis, shared by every instance (and the replay store's when `KYAOS_NONCE_STORE=redis`) |
 | `KYAOS_VERIFICATION_LOG` | off | `1`: each verification and signal as one JSON line on stdout; a path: appended there |
+| `KYAOS_MINIMUM_LEVEL` | `L3` | Card level every tool demands (story C-C): `L1`, `L2` or `L3` |
+| `KYAOS_TOOL_LEVELS` | none | Per-tool minimums, `tool=level,...`; `lookup_order=L2` accepts a chain without a proof there |
+| `KYAOS_L3_MINUS_SATISFIES_L3` | `1` | `0` refuses L3-minus (no token `cnf` to fuse) for L3 tools |
 | `OAUTH_ISSUER` | none | One authorization server; its keys are read from its metadata |
 | `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` | none | With `OAUTH_ISSUER`: check tokens by RFC 7662 introspection (opaque tokens) |
 | `OAUTH_JWKS_URI`, `OAUTH_INTROSPECTION_URL` | from metadata | Give the endpoints explicitly and skip discovery |

@@ -164,14 +164,21 @@ export async function checkCapabilities(
   return { verified, unverified, fresh, refusals };
 }
 
+/** The §9.4 proof floor: a boolean, or a proof verdict whose `ok` says whether it held. */
+export type ProofFloor = boolean | { ok: boolean } | undefined;
+
 /**
- * SPEC-ENTITY-CARD.md §9.4: L1 unless every declared capability is attested
- * and verified; L3 only with the proof floor and a fresh revocation read;
+ * SPEC-ENTITY-CARD.md §9.4, `deriveConformanceLevel(check, proofFloor,
+ * revocationFresh)`: L1 unless every declared capability is attested and
+ * verified; L3 only with the proof floor and a fresh revocation read;
  * otherwise L2. Fail-closed: a missing artifact demotes, never errors open.
+ * L3-minus (§8.6) satisfies the proof floor; whether it satisfies a tool's
+ * L3 minimum is the caller's policy (story C-C, `l3MinusSatisfiesL3`).
  */
-export function deriveConformanceLevel(check: CapabilityCheck, proofFloorOk = false, revocationFresh = true): ConformanceLevel {
+export function deriveConformanceLevel(check: CapabilityCheck, proofFloor: ProofFloor = false, revocationFresh = true): ConformanceLevel {
   const allAttested = check.verified.length > 0 && check.unverified.length === 0;
   if (!allAttested) return 'L1';
-  if (proofFloorOk && revocationFresh) return 'L3';
+  const floor = typeof proofFloor === 'object' && proofFloor !== null ? proofFloor.ok === true : proofFloor === true;
+  if (floor && revocationFresh) return 'L3';
   return 'L2';
 }

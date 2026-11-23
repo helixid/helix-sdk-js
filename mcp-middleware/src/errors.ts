@@ -31,7 +31,7 @@ export class MCPAuthError extends Error {
   }
 }
 
-export type ProofErrorCode = 'PROOF_MISSING' | 'PROOF_INVALID';
+export type ProofErrorCode = 'PROOF_MISSING' | 'PROOF_INVALID' | 'PROOF_LEVEL_INSUFFICIENT';
 
 /**
  * A KYA-OS request proof that is absent, or that the local verifier refused
@@ -49,6 +49,26 @@ export class ProofError extends Error {
     this.name = 'ProofError';
     this.code = code;
     this.reasons = reasons;
+  }
+}
+
+/**
+ * A verified call whose derived Card level is below the tool's minimum
+ * (story C-C point 7; SPEC-ENTITY-CARD.md D.2 `proof_level_insufficient`):
+ * a chain without a proof for an L3 tool, say, or a stale status list that
+ * demoted the call to L2. Raised after the scope check passed. Carries the
+ * level the call came to (`derivedLevel`, `L3-minus` for an unfused L3) and
+ * the one the tool demands.
+ */
+export class LevelError extends ProofError {
+  public readonly derivedLevel: string;
+  public readonly requiredLevel: string;
+
+  constructor(derivedLevel: string, requiredLevel: string) {
+    super('PROOF_LEVEL_INSUFFICIENT', `This tool needs Card level ${requiredLevel}; the call came to ${derivedLevel}`, ['proof_level_insufficient']);
+    this.name = 'LevelError';
+    this.derivedLevel = derivedLevel;
+    this.requiredLevel = requiredLevel;
   }
 }
 
