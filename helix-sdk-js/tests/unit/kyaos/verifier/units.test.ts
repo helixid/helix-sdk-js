@@ -317,6 +317,12 @@ describe('data integrity and attestations', () => {
     expect(await verifier.verifyCapabilityAttestation(signed, resolve, { ...options, fetchStatusList: async () => { throw new Error('down'); } })).toMatchObject({ reason: 'status_unavailable' });
     expect(await verifier.verifyCapabilityAttestation(signed, resolve, { ...options, fetchStatusList: async () => undefined })).toMatchObject({ reason: 'status_unavailable' });
     expect(await verifier.verifyCapabilityAttestation({ ...signed, extra: 1 }, resolve, options)).toMatchObject({ reason: 'schema_invalid' });
+    const raising: verifier.RevocationChecker = async () => {
+      throw new Error('checker down');
+    };
+    expect(await verifier.verifyCapabilityAttestation(signed, resolve, { ...options, fetchStatusList: undefined, checkRevocation: raising })).toMatchObject({ reason: 'status_unavailable', message: expect.stringContaining('checker down') });
+    const bare: verifier.RevocationChecker = async () => ({ revoked: true, fresh: false });
+    expect(await verifier.verifyCapabilityAttestation(signed, resolve, { ...options, checkRevocation: bare })).toEqual({ ok: false, reason: 'status_revoked', message: 'revoked' });
     expect(verifier.capabilityName('x')).toBe('x');
     expect(verifier.capabilityName({ name: 'y', attestations: [] })).toBe('y');
     expect(verifier.deriveConformanceLevel({ verified: ['a'], unverified: [] }, false)).toBe('L2');

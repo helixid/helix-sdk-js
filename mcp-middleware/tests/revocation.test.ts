@@ -423,5 +423,8 @@ describe('resolution fetch (the SafeFetch rules without DNS pinning)', () => {
     const foreign = { invalidate: async () => 'credential' as const, getList: async () => undefined, getVerdict: async () => undefined, setList: async () => undefined, setVerdict: async () => undefined, ttlFor: () => 1 };
     expect(createLocalVerifier({ serviceDid: 'did:web:svc.example', statusCache: foreign as never, reportVerification: () => undefined }).statusCache).toBe(foreign);
     expect(createLocalVerifier({ serviceDid: 'did:web:svc.example', statusCache: { statusCacheTtl: 30 }, maxClockSkewMs: 0, reportVerification: () => undefined }).statusCache.statusCacheTtl).toBe(30);
+    // statusListIssuers reaches the revocation checker, which holds it to its own rules (a DID key, origins without a path).
+    expect(() => createLocalVerifier({ serviceDid: 'did:web:svc.example', statusListIssuers: { a: ['https://x/'] }, reportVerification: () => undefined })).toThrow(TypeError);
+    expect(() => createLocalVerifier({ serviceDid: 'did:web:svc.example', statusListIssuers: { 'did:web:svc.example': ['https://status.svc.example'] }, reportVerification: () => undefined })).not.toThrow();
   });
 });

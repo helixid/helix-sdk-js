@@ -42,6 +42,7 @@ describe('resolution URLs and card endpoints', () => {
     expect(cardEndpointOf(document)).toBe('https://127.0.0.1:4000/agents/a1/card.json');
     expect(cardEndpointOf({ service: [{ type: ['Other', 'KyaOsEntityCard'], serviceEndpoint: 'https://x' }, 'junk'] })).toBe('https://x');
     expect(cardEndpointOf({ service: [{ type: 'KyaOsEntityCard', serviceEndpoint: { nested: true } }] })).toBeUndefined();
+    expect(cardEndpointOf({ service: ['junk', { type: 'KyaOsEntityCard', serviceEndpoint: 'https://y' }] })).toBe('https://y');
     expect(cardEndpointOf({})).toBeUndefined();
     expect(cardEndpointOf(null)).toBeUndefined();
   });
@@ -95,6 +96,9 @@ describe('createLocalVerifier defaults', () => {
     expect(await hosted.seams.resolveCard!(AGENT)).toMatchObject({ name: 'hosted' });
     const none = createLocalVerifier({ serviceDid: SERVICE, resolveDid: async () => ({ id: AGENT }) as never, clock: () => NOW_MS, reportVerification: () => undefined });
     expect(await none.seams.resolveCard!(AGENT)).toBeUndefined();
+    // A card endpoint that does not answer 2xx is an error, never an empty card.
+    const unserved = createLocalVerifier({ serviceDid: SERVICE, resolveDid: async () => document as never, fetch: staticFetch({}), allowLoopbackHttp: true, clock: () => NOW_MS, reportVerification: () => undefined });
+    await expect(unserved.seams.resolveCard!(AGENT)).rejects.toThrow(/card.json answered 404/);
   });
 
   it('passes the service settings through to the verifier', async () => {
