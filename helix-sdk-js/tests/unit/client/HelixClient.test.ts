@@ -149,32 +149,6 @@ describe('HelixClient Branch Coverage', () => {
       expect(((c2 as any).http as HttpAdapter).hasAdminApiKey()).toBe(false);
     });
 
-    it('issueServiceDelegationGrant uses the same adapter (and so the same credential)', async () => {
-      mockHttp.post.mockResolvedValue({ grantVC: { id: 'vc-grant' } });
-      const vc = await enterprise.issueServiceDelegationGrant({
-        serviceDid: 'did:web:sp', agentDid: DID, userDid: 'did:key:z6Mkuser', scopes: ['read:orders'],
-      });
-      expect(vc).toEqual({ id: 'vc-grant' });
-      expect(mockHttp.post).toHaveBeenCalledWith('/v1/service-delegation-grants', expect.objectContaining({ serviceDid: 'did:web:sp' }));
-    });
-
-    it('issueServiceDelegationGrant passes allowDelegation through', async () => {
-      mockHttp.post.mockResolvedValue({ grantVC: { id: 'vc-grant' } });
-      await enterprise.issueServiceDelegationGrant({
-        serviceDid: 'did:web:sp', agentDid: DID, userDid: 'did:key:z6Mkuser', scopes: ['read:orders'], allowDelegation: false,
-      });
-      expect(mockHttp.post).toHaveBeenCalledWith('/v1/service-delegation-grants', expect.objectContaining({ allowDelegation: false }));
-    });
-
-    it('getAgentScopes reads the agent scopes for a service through the adapter', async () => {
-      mockHttp.get.mockResolvedValue({ agentDid: DID, scopes: ['read:orders'] });
-      const result = await enterprise.getAgentScopes({ serviceDid: 'did:web:sp', agentDid: DID });
-      expect(result).toEqual({ agentDid: DID, scopes: ['read:orders'] });
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        `/v1/service-delegation-grants/agent-scopes?serviceDid=${encodeURIComponent('did:web:sp')}&agentDid=${encodeURIComponent(DID)}`,
-      );
-    });
-
     it('registerVC posts the signed credential', async () => {
       mockHttp.post.mockResolvedValue({ vcId: 'vc-grant', alreadyRegistered: false });
       const res = await enterprise.registerVC({ id: 'vc-grant' } as any);

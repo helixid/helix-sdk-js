@@ -147,42 +147,6 @@ export interface CreateServiceInput {
   apiEndpoint?: string;
 }
 
-export interface IssueServiceDelegationGrantInput {
-  /** The service granting on the user's behalf -- the grant's `issuer`. */
-  serviceDid: string;
-  /** The agent the user is delegating to -- the grant's subject. */
-  agentDid: string;
-  /** The consenting user, recorded as given (never resolved). */
-  userDid: string;
-  scopes: string[];
-  /** `standing` (default, ~10 years) or `session` (24 hours). */
-  durability?: 'standing' | 'session';
-  /**
-   * Also revoke every other grant this service holds for the same user and
-   * agent, so the new one is the only consent that stands. Off by default:
-   * a consent with a different scope set is added beside the existing ones,
-   * and consenting again to exactly the same scopes refreshes that grant.
-   */
-  revokeExisting?: boolean;
-  /**
-   * Whether the consent also covers agents this agent delegates to. Omitted,
-   * the grant carries no flag and verifiers treat it as allowed.
-   */
-  allowDelegation?: boolean;
-}
-
-export interface GetAgentScopesInput {
-  /** The service whose consent screen is asking; must be one the caller may grant for. */
-  serviceDid: string;
-  agentDid: string;
-}
-
-/** The scopes the agent holds as itself: the most any consent to it may grant. */
-export interface AgentScopesResult {
-  agentDid: string;
-  scopes: string[];
-}
-
 export interface CreateStatusListOptions {
   listId?: string;
   length?: number;
@@ -355,38 +319,14 @@ export class HelixClient {
   }
 
   // -- Service Providers ---------------------------------------------------
-  // Services hold no keys: the server mints the service DID, keeps its key,
-  // and signs consent grants on the service's behalf. Same custody model as
-  // agents (onboardAgent), so both are API calls.
+  // Consent is not a grant a service signs for its user any more: since
+  // KYA-OS story L3-H the user's own did:key signs the root hop on Helix's
+  // consent page (`kyaos.consent`).
 
   /** Enroll a service (self-hosted servers; hosted accounts enroll through the console/account API). */
   async createService(input: CreateServiceInput): Promise<{ serviceDid: string; serviceName: string }> {
     this.assertAPIConfigured();
     return this.http.post('/v1/services', input);
-  }
-
-  /**
-   * Issues a DelegationGrantCredential from `serviceDid` to `agentDid` on
-   * `userDid`'s behalf: built, signed with the service's server-held key
-   * and stored with a revocable status-list entry, in one call. Revoke it
-   * with {@link revokeVC}.
-   */
-  async issueServiceDelegationGrant(input: IssueServiceDelegationGrantInput): Promise<SignedVC> {
-    this.assertAPIConfigured();
-    const result = await this.http.post<{ grantVC: SignedVC }>('/v1/service-delegation-grants', input);
-    return result.grantVC;
-  }
-
-  /**
-   * The scopes `agentDid` holds as itself, from its own active onboarding
-   * credentials (never those delegated to it). Grant issuance refuses any
-   * scope outside this set, so a consent screen should offer no more.
-   */
-  async getAgentScopes(input: GetAgentScopesInput): Promise<AgentScopesResult> {
-    this.assertAPIConfigured();
-    if (!this.http.get) throw new Error('GET not implemented by adapter');
-    const query = new URLSearchParams({ serviceDid: input.serviceDid, agentDid: input.agentDid });
-    return this.http.get<AgentScopesResult>(`/v1/service-delegation-grants/agent-scopes?${query.toString()}`);
   }
 
   async getStatusList(listId: string): Promise<StatusListCredentialResponse> {
