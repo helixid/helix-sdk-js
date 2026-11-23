@@ -49,7 +49,7 @@ class FixtureLists {
         credentialSubject: { id: `${url}#list`, type: 'BitstringStatusList', statusPurpose: list.status_purpose, encodedList: encodedBits(16, this.revoked.get(url) ?? []) },
       },
       key.private_key_hex,
-      `${list.issuer}#key-1`,
+      key.kid,
     );
   }
 
@@ -71,7 +71,7 @@ describe.skipIf(!haveVerifierFixtures)('revocation through the local verifier (s
   const call = { name: 'lookup_order', input: { orderId: 'ORD-1001' } };
   const chain = haveVerifierFixtures ? (valid.input.chain as Array<{ id: string; credentialStatus: { statusListCredential: string; statusListIndex: string } }>) : [];
   const helix = haveVerifierFixtures ? fixtureSigner(env, 'helix') : (undefined as never);
-  // The fixture world's DID documents (each lists its key as #key-1), the resolution the verifier and the signal check share.
+  // The fixture world's DID documents (each did:key lists its W3C method #<multibase>), the resolution the verifier and the signal check share.
   const resolveDid: kyaos.verifier.DidResolver = async (did) => (haveVerifierFixtures ? (env.did_documents[did] as never) : undefined) ?? null;
 
   function instance(lists: FixtureLists, store: kyaos.verifier.StatusCacheStore, clock: () => number, options: Partial<Parameters<typeof createLocalVerifier>[0]> = {}): LocalVerifier {
