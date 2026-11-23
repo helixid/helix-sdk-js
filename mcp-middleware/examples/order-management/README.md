@@ -159,6 +159,12 @@ received. The tools themselves (`src/orders.ts`) contain no auth code.
 | `WELL_KNOWN_MCP` | on | KYA-OS discovery at `/.well-known/mcp`; `0` answers 404, `1` makes an unusable `SERVICE_DID` a startup error |
 | `STATUS_LIST_CREDENTIAL` | none | URL of this server's status list credential, advertised in the discovery document |
 
+## Calling another service on the agent's behalf (story L3-D)
+
+`KYAOS_DOWNSTREAM_URL` (with `SERVICE_DID` and `SERVICE_SIGNING_KEY`) adds `forward_lookup_order` (`orders:read`): it asks another order service's `lookup_order` for the order, through the middleware's `withDelegation` / `with_delegation`, which forwards the chain the agent presented here (`KYA-OS-Delegation-Credential`), a delegation proof this server signs for the target host (`KYA-OS-Delegation-Proof`, 60 s), the agent DID and the session id; `KYAOS_DELEGATION_ADVISORY=1` adds the advisory chain and scope headers. Each attachment is audited: `delegation.outbound_attached` on the typed trail, and a `outbound-delegation` line in `KYAOS_VERIFICATION_LOG`.
+
+The receiving sample accepts such calls from the services in `KYAOS_FORWARDERS` (`*` or DIDs; default none) for chains that target them, and always for chains that target itself. `KYAOS_DELEGATION_AUDIENCE` is its host as forwarders name it (default the host of a did:web `SERVICE_DID`). A forwarded call carries no request proof of the agent's, so it comes to at most Card L2: lower the receiving tool's level (`KYAOS_TOOL_LEVELS=lookup_order=L2`). A revocation signal drops the cached verdict of a forwarded chain at once.
+
 ## KYA-OS session and response proof (story L2-A)
 
 Set `SERVICE_SIGNING_KEY` (the Ed25519 private key, hex, that `SERVICE_DID`'s document lists as `key-1`) and the server registers the `_kyaos_handshake` tool, opens sessions and signs a detached proof into `_meta["org.kya-os/response-proof"]` on every tool call outcome (a refusal carries its `denied` proof in the 400/401/403 body). Optional: `KYAOS_PUBLIC_ORIGIN` (default: the origin of `MCP_RESOURCE`), `KYAOS_CLOCK_SKEW_SECONDS` (30 to 600, default 120), `KYAOS_SESSIONS=0`, and `KYAOS_SESSION_TTL_MINUTES` (default 30). The replay store is chosen by `KYAOS_NONCE_STORE` (`memory`, the default, covers this instance only; `redis` or `dynamo` is shared by every instance), which `@helixid/mcp-middleware` reads itself: see `.env.example` and the middleware README. `redis` needs the `ioredis` package, `dynamo` needs `@aws-sdk/client-dynamodb` and `@aws-sdk/lib-dynamodb`; a missing one stops the server at startup.

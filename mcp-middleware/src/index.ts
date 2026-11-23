@@ -77,3 +77,7 @@ export {
   assertWellKnownMcp,
 } from './well-known.js';
 export type { WellKnownMcp, WellKnownMcpConfig, WellKnownMcpDocument, WellKnownMcpResponse, WellKnownMcpValidation, WellKnownCapabilities } from './well-known.js';
+
+// KYA-OS story L3-D: forward delegation context on downstream calls.
+export * from './delegation/index.js';
+export type { InboundDelegationSettings } from './types.js';

@@ -8,7 +8,11 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import {
   AuthorizationServerUnavailableError,
+  delegationContextOf,
   runAuditedTool,
+  runWithDelegation,
+  type DelegationContext,
+  type MiddlewareCaller,
   type AuditedToolResult,
   buildProtectedResourceMetadata,
   helixidMCPMiddleware,
@@ -24,6 +28,7 @@ import {
 } from '@helixid/mcp-middleware';
 import { z } from 'zod';
 import { TOOL_SCOPES, createOrderStore, registerOrderTools, type OrderStore, type ToolWrapper } from './orders.js';
+import { FORWARD_TOOL_SCOPES, registerForwardTool, type DownstreamOptions } from './downstream.js';
 
 export interface OrderServerOptions {
   /** This server's MCP endpoint URL, e.g. `http://localhost:3700/mcp`. MCP is served at its path. */
@@ -63,6 +68,11 @@ export interface OrderServerOptions {
   onServerError?: (error: unknown) => void;
   /** KYA-OS story C-A: serve this server's own did.json and card.json from its origin. */
   identity?: ServeIdentityOptions;
+  /**
+   * KYA-OS story L3-D: the downstream order service `forward_lookup_order`
+   * calls on the agent's behalf, forwarding its delegation. Off when not given.
+   */
+  downstream?: DownstreamOptions;
 }
 
 const MAX_BODY_BYTES = 1_000_000;
@@ -159,9 +169,10 @@ export function createOrderServer(options: OrderServerOptions): Server {
   const kyaos = options.kyaos;
   // The handshake needs an identified caller, not a scope: it is listed with none (story F-2), and it opens
   // a session rather than acting on anything, so any verified level will do (story C-C).
+  const toolScopes = options.downstream ? { ...TOOL_SCOPES, ...FORWARD_TOOL_SCOPES } : TOOL_SCOPES;
   const guard = helixidMCPMiddleware({
     ...options.auth,
-    toolScopes: kyaos ? { ...TOOL_SCOPES, [kyaos.handshakeToolName]: [] } : TOOL_SCOPES,
+    toolScopes: kyaos ? { ...toolScopes, [kyaos.handshakeToolName]: [] } : toolScopes,
     ...(kyaos ? { tools: { ...options.auth.tools, [kyaos.handshakeToolName]: { minimumLevel: 'L1' as const } } } : {}),
   });
   const mcpPath = new URL(options.resource).pathname;
@@ -169,7 +180,7 @@ export function createOrderServer(options: OrderServerOptions): Server {
   const metadataPath = new URL(metadataUrl).pathname;
   const metadata = buildProtectedResourceMetadata({
     resource: options.resource,
-    scopesSupported: [...new Set(Object.values(TOOL_SCOPES).flat())],
+    scopesSupported: [...new Set(Object.values(toolScopes).flat())],
     resourceName: 'Order Management (HelixID sample)',
     ...(options.authorizationServers ? { authorizationServers: options.authorizationServers } : {}),
   });
@@ -212,12 +223,20 @@ export function createOrderServer(options: OrderServerOptions): Server {
       // KYA-OS: the proof of each allowed call is signed inside its tool handler
       // (the result is only known there); a batch may call one tool twice.
       const finishers = new Map<string, Finisher[]>();
+      // Story L3-D: the delegation each allowed call carries, which its handler may forward downstream.
+      const delegations = new Map<string, Array<DelegationContext | undefined>>();
+      const allowed = (tool: string, caller: MiddlewareCaller, sessionId?: string): void => {
+        const list = delegations.get(tool) ?? [];
+        list.push(delegationContextOf(caller, { ...(sessionId === undefined ? {} : { sessionId }), ...(call ? { correlationId: call.correlationId } : {}) }));
+        delegations.set(tool, list);
+      };
       // The agent the handshake call's credentials identified, if any.
       let authenticatedAgentDid: string | undefined;
 
       for (const message of toolCalls) {
         const params = message.params ?? {};
         const name = typeof params.name === 'string' ? params.name : undefined;
+        const tool = name ?? '';
         const input = asRecord(params.arguments);
         const meta = asRecord(params._meta);
         const toolCall = {
@@ -257,7 +276,7 @@ export function createOrderServer(options: OrderServerOptions): Server {
 
         if (!kyaos) {
           try {
-            await guard(toolCall);
+            allowed(tool, await guard.authorize(toolCall));
           } catch (error) {
             await refuse(error);
             return;
@@ -265,7 +284,11 @@ export function createOrderServer(options: OrderServerOptions): Server {
           continue;
         }
 
-        const started = await kyaos.start({ name: name ?? '', arguments: input, _meta: meta }, { authorize: () => guard.authorize(toolCall) });
+        let caller: MiddlewareCaller | undefined;
+        const started = await kyaos.start(
+          { name: name ?? '', arguments: input, _meta: meta },
+          { authorize: async () => (caller = await guard.authorize(toolCall)) },
+        );
         if (started.outcome === 'denied') {
           await refuse(started.error, started.proof);
           return;
@@ -279,9 +302,11 @@ export function createOrderServer(options: OrderServerOptions): Server {
         }
         // Control arguments (`_kyaos*`) never reach the tool.
         message.params = { ...params, arguments: started.arguments };
-        const list = finishers.get(name ?? '') ?? [];
+        // `start` authorized the call before allowing it, so the caller is known here.
+        allowed(tool, caller!, started.session?.id);
+        const list = finishers.get(tool) ?? [];
         list.push((result) => started.finish(result) as Promise<CallToolResult>);
-        finishers.set(name ?? '', list);
+        finishers.set(tool, list);
       }
 
       // Stateless: a fresh server and transport per request. Leaving out
@@ -293,11 +318,14 @@ export function createOrderServer(options: OrderServerOptions): Server {
       // result, a degraded marker included. The handshake is not a tool call
       // and is not audited.
       const wrap: ToolWrapper = (name, handler) => async (args, extra) => {
-        const result = call ? ((await runAuditedTool(call, async () => (await handler(args, extra)) as AuditedToolResult)) as CallToolResult) : await handler(args, extra);
+        const delegation = delegations.get(name)?.shift();
+        const run = (): Promise<CallToolResult> => (delegation ? runWithDelegation(delegation, () => handler(args, extra)) : handler(args, extra));
+        const result = call ? ((await runAuditedTool(call, async () => (await run()) as AuditedToolResult)) as CallToolResult) : await run();
         const finish = finishers.get(name)?.shift();
         return finish ? finish(result) : result;
       };
       registerOrderTools(server, store, wrap);
+      if (options.downstream) registerForwardTool(server, options.downstream, wrap);
       if (kyaos) {
         server.registerTool(
           kyaos.handshakeToolName,

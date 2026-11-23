@@ -31,6 +31,7 @@ import {
 import { createOrderServer } from './app.js';
 import { demoRetryAuthorizer } from './demo-authorizer.js';
 import { TOOL_SCOPES } from './orders.js';
+import { FORWARD_TOOL, type DownstreamOptions } from './downstream.js';
 import { LEVEL_VARIABLES, describeLevelSettings, readLevelSettings } from './levels.js';
 import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './well-known-env.js';
 
@@ -134,6 +135,18 @@ import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './we
  *                         above. 0 turns the route off (404); 1 makes a SERVICE_DID the document cannot
  *                         carry a startup error instead of a notice. Optional:
  *   STATUS_LIST_CREDENTIAL  URL of this server's status list credential, advertised in the document
+ *
+ * Downstream delegation (KYA-OS story L3-D, SPEC.md §8):
+ *   KYAOS_DOWNSTREAM_URL  another order service's MCP endpoint: adds forward_lookup_order (orders:read),
+ *                         which looks the order up there on the calling agent's behalf, forwarding the
+ *                         chain it presented with a delegation proof this server signs (needs
+ *                         SERVICE_SIGNING_KEY). Each attachment is audited (the typed trail when on,
+ *                         and a line in KYAOS_VERIFICATION_LOG).
+ *   KYAOS_DELEGATION_ADVISORY=1  also send the advisory KYA-OS-Delegation-Chain / KYA-OS-Granted-Scopes
+ *   KYAOS_FORWARDERS      the services whose forwarded chains this server honours (their own resource as
+ *                         the chain's target): * or comma-separated DIDs; default none
+ *   KYAOS_DELEGATION_AUDIENCE  this server's host(s), as forwarders name it in the proof's aud;
+ *                         default the host of a did:web SERVICE_DID
  */
 const DEMO_TOKENS: Record<string, AuthResult> = {
   'demo-reader': { sub: 'demo-reader', scopes: ['orders:read'] },
@@ -435,6 +448,33 @@ if (env['SERVICE_SIGNING_KEY']) {
   fail('KYAOS_* settings need SERVICE_SIGNING_KEY');
 }
 
+// Story L3-D: forward_lookup_order calls another order service on the agent's behalf.
+let downstream: DownstreamOptions | undefined;
+const downstreamUrl = env['KYAOS_DOWNSTREAM_URL'];
+if (downstreamUrl) {
+  if (!serviceDid || !env['SERVICE_SIGNING_KEY']) fail('KYAOS_DOWNSTREAM_URL needs SERVICE_DID and SERVICE_SIGNING_KEY (the delegation proof is signed by this server)');
+  try {
+    new URL(downstreamUrl);
+  } catch {
+    fail('KYAOS_DOWNSTREAM_URL must be a URL');
+  }
+  const outboundLog = env['KYAOS_VERIFICATION_LOG'] || undefined;
+  downstream = {
+    url: downstreamUrl,
+    signer: new kyaos.EnvSigner({ did: serviceDid, envVar: 'SERVICE_SIGNING_KEY' }),
+    advisoryHeaders: env['KYAOS_DELEGATION_ADVISORY'] === '1',
+    // Every attachment: the typed trail (delegation.outbound_attached, once the trail exists) and one log line.
+    audit: async (attachment): Promise<void> => {
+      const { chain: _chain, ...line } = attachment;
+      if (outboundLog === '1') console.log(`[kya-os] outbound-delegation ${JSON.stringify(line)}`);
+      else if (outboundLog !== undefined) appendFileSync(outboundLog, `${JSON.stringify({ kind: 'outbound-delegation', ...line })}\n`);
+      if (audit) await audit.outboundAttached(attachment);
+    },
+  };
+} else if (env['KYAOS_DELEGATION_ADVISORY']) {
+  fail('KYAOS_DELEGATION_ADVISORY needs KYAOS_DOWNSTREAM_URL');
+}
+
 const authorizationUrl = env['KYAOS_AUTHORIZATION_URL'];
 if (authorizationUrl) {
   if (!serviceDid) fail('KYAOS_AUTHORIZATION_URL needs SERVICE_DID (the challenge binds the token to this service)');
@@ -563,7 +603,7 @@ if (serviceDid) {
   }
   // Story C-C: the minimum Card level, per tool.
   try {
-    Object.assign(auth, readLevelSettings(env, Object.keys(TOOL_SCOPES)));
+    Object.assign(auth, readLevelSettings(env, [...Object.keys(TOOL_SCOPES), ...(env['KYAOS_DOWNSTREAM_URL'] ? [FORWARD_TOOL] : [])]));
   } catch (error) {
     fail((error as Error).message);
   }
@@ -584,6 +624,13 @@ if (serviceDid) {
     log: (message) => console.warn(message),
   });
   auth.verifier = localVerifier;
+  // Story L3-D: downstream calls forwarding an agent's delegation, verified by the same verifier.
+  const forwarders = env['KYAOS_FORWARDERS']?.trim() === '*' ? '*' : didList('KYAOS_FORWARDERS');
+  const delegationAudience = env['KYAOS_DELEGATION_AUDIENCE']?.split(',').map((host) => host.trim()).filter((host) => host.length > 0);
+  auth.inboundDelegation = {
+    ...(forwarders === undefined ? {} : { forwarders }),
+    ...(delegationAudience === undefined || delegationAudience.length === 0 ? {} : { audience: delegationAudience }),
+  };
   const eventsUrl = env['KYAOS_REVOCATION_EVENTS_URL'];
   const signalIssuers = didList('KYAOS_SIGNAL_ISSUERS');
   if (eventsUrl || revocationWebhookPath) {
@@ -607,7 +654,7 @@ if (serviceDid) {
     fail('KYAOS_SIGNAL_ISSUERS needs KYAOS_REVOCATION_EVENTS_URL or KYAOS_REVOCATION_WEBHOOK_PATH');
   }
   } else if (
-    ['KYAOS_TRUSTED_ISSUERS', 'KYAOS_TRUSTED_ROOTS', 'KYAOS_MAX_CHAIN_LENGTH', 'KYAOS_CARDS_FILE', ...L3C_SETTINGS, ...LEVEL_VARIABLES].some((name) => env[name])
+    ['KYAOS_TRUSTED_ISSUERS', 'KYAOS_TRUSTED_ROOTS', 'KYAOS_MAX_CHAIN_LENGTH', 'KYAOS_CARDS_FILE', 'KYAOS_FORWARDERS', 'KYAOS_DELEGATION_AUDIENCE', ...L3C_SETTINGS, ...LEVEL_VARIABLES].some((name) => env[name])
   ) {
     fail('KYAOS_TRUSTED_ISSUERS / KYAOS_TRUSTED_ROOTS / KYAOS_MAX_CHAIN_LENGTH / KYAOS_CARDS_FILE / KYAOS_MINIMUM_LEVEL / KYAOS_TOOL_LEVELS / KYAOS_L3_MINUS_SATISFIES_L3 and the revocation settings need SERVICE_DID');
 }
@@ -630,6 +677,7 @@ const server = createOrderServer({
   ...(kyaOs ? { kyaos: kyaOs } : {}),
   ...(revocationSignals && revocationWebhookPath ? { revocationWebhook: { path: revocationWebhookPath, handle: revocationSignals.webhookHandler() } } : {}),
   ...(wellKnown ? { wellKnown } : {}),
+  ...(downstream ? { downstream } : {}),
   onServerError: (error) => console.error('server error:', error),
 });
 process.once('SIGTERM', () => {
@@ -687,4 +735,9 @@ server.listen(port, host, () => {
     }`,
   );
   console.log(`  Discovery:   ${describeWellKnown(discovery)}`);
+  console.log(
+    `  Downstream:  ${downstream ? `forward_lookup_order to ${downstream.url}${downstream.advisoryHeaders ? ' (advisory headers on)' : ''}` : 'off (set KYAOS_DOWNSTREAM_URL)'}; forwards accepted from ${
+      auth.inboundDelegation && auth.inboundDelegation.forwarders !== undefined ? (auth.inboundDelegation.forwarders === '*' ? 'any service' : auth.inboundDelegation.forwarders.join(', ')) : 'none'
+    }`,
+  );
 });

@@ -242,6 +242,34 @@ signals.start();
 ```
 
 - **Revocation signal.** Helix emits one Security Event Token (RFC 8417) per revoked credential, carrying only its id. `RevocationSignalClient` verifies the issuer (checked before anything is resolved) and the signature, then calls `statusCache.invalidate(credentialId)`, which deletes that credential's verdict and the list it was read from (every cached list when it held nothing for the id). In the shared Redis one delete is seen by every instance; a duplicate is harmless. A signal with a bad signature or from an unknown issuer is ignored and reported through `onSignal`; it never revokes anything. Nothing is polled.
+## Forwarding delegation context on downstream calls (story L3-D)
+
+When a tool handler calls another service on the agent's behalf (SPEC.md §8), it forwards the agent's authority as signed artifacts, and the downstream service verifies the chain itself: no secret is shared between the two services, and the downstream service never takes the caller's word for who asked or what was granted.
+
+**Outbound.** After `authorize()`, `delegationContextOf(caller)` is the agent DID (recovered from its request proof), the chain it presented and its effective scopes; run the handler with `runWithDelegation(context, handler)` and call downstream through `withDelegation(fetch, { signer })`. Every request then carries:
+
+| Header | | |
+|---|---|---|
+| `KYA-OS-Delegation-Credential` | authoritative | the chain, root to leaf, base64url of its JSON (Helix hops carry an embedded `eddsa-jcs-2022` proof, so the whole chain travels) |
+| `KYA-OS-Delegation-Proof` | authoritative | a JWT this service signs (`mintDelegationProofJwt`): `iss` this service, `sub` the root hop's issuer (the Responsible Party of this journey), `aud` the target host, `exp` = `iat` + 60 s, fresh `jti`, `delegation_id` (the leaf capability), `delegation_chain` (`<vcId>><delegationId>` per hop), `scope` |
+| `KYA-OS-Agent-DID` | authoritative | the agent DID |
+| `KYA-OS-Session-Id` | anchor | when the call had a session |
+| `KYA-OS-Delegation-Chain`, `KYA-OS-Granted-Scopes` | advisory | only with `advisoryHeaders: true`; copies, never read for a decision |
+
+Re-delegation: `redelegate: (context, target) => hop` appends the service's own hop (it must hold the leaf: F-1's continuity rule); a hop that does not attenuate the chain throws `RedelegationError` before anything is sent. `scopes` narrows what is forwarded. Every attachment goes to `audit` (`trail.outboundAudit()` records `delegation.outbound_attached`: the chain string as the action name, the target host's DID as the resource).
+
+```ts
+import { delegationContextOf, runWithDelegation, withDelegation } from '@helixid/mcp-middleware';
+
+const downstream = withDelegation(fetch, { signer, audit: trail.outboundAudit() });
+const caller = await guard.authorize(toolCall);
+await runWithDelegation(delegationContextOf(caller)!, () => handler(args)); // the handler calls downstream(url, init)
+```
+
+**Inbound.** The guard verifies a call carrying these headers (`inboundDelegation`, on by default with a verifier) with `verifyInboundDelegationHeaders`, in this order: the three authoritative headers once each; the chain decoded and bounded; the proof's signature under the forwarder's assertion key, `aud` this service's host (`audience`, default the host of a did:web service DID), the 60 s window; `sub` = the root hop's issuer, `delegation_id` = the leaf, `delegation_chain` = the chain's own string; the chain's target is this service, or the forwarder itself when `forwarders` lists it (`'*'` or DIDs; default none); the forwarder is bound to the chain (its target or its leaf delegate); `KYA-OS-Agent-DID` is the agent the chain names; the `jti` once in the replay store; then the chain, root to leaf, by the local verifier. Scopes are the verifier's, narrowed by the proof's `scope`. A forwarded call carries no request proof of the agent's, so it comes to at most **L2**: a tool that accepts it sets `minimumLevel: 'L2'`. Advisory headers are returned when they agree and listed in `advisory.dropped` when they do not.
+
+**Cache.** Chain verdicts are cached by credential id (`VerificationCache`, default one as long-lived as the status cache: `statusCacheTtl`, at most 60 s for a high-privilege scope), served only for the very chain (JCS digest), reported not fresh, bypassed for a tool whose minimum level is L3, and dropped at once by a revocation signal for any hop of the chain (the default `createRevocationSignalClient` invalidates the status cache and every verification cache linked to it). `DelegationGraph` (L3.14 to L3.19) keeps the hops so a signal for a parent drops its descendants' verdicts too.
+
 ## KYA-OS signed `needs_authorization` and resume (story L3-E)
 
 When a caller is identified but its delegation does not cover the tool's scopes, the guard answers with the SPEC §9.2 challenge instead of a plain 403: `{error: "needs_authorization", message, authorizationUrl, resumeToken, expiresAt, scopes, display?}`. Under the KYA-OS runtime the challenge is the call's tool result (`isError`, the challenge as text and as `structuredContent`) signed with `outcome: needs_authorization` and a `responseHash` over the whole result, so `authorizationUrl` is covered by the service signature; the SDK (`kyaos.handleNeedsAuthorization`) recomputes that hash before surfacing the URL and refuses a swapped one with `response_hash_mismatch`.

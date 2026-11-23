@@ -4,6 +4,17 @@ import type { AuthResult, OAuthOptions } from './oauth.js';
 import type { MinimumLevel } from './level.js';
 import type { LocalVerifier, LocalVerifierOptions } from './verify-locally.js';
 import type { NeedsAuthorization } from './needs-authorization.js';
+import type { VerificationCache } from './delegation/verification-cache.js';
+
+/** How the guard verifies downstream calls carrying KYA-OS delegation headers (story L3-D). */
+export interface InboundDelegationSettings {
+  /** This service's host(s), as forwarders name it in the proof's `aud`; default the host of a did:web service DID. */
+  audience?: string | readonly string[] | undefined;
+  /** Forwarding services whose own resource is honoured as a chain's target: `'*'` or DIDs. Default none. */
+  forwarders?: '*' | readonly string[] | undefined;
+  /** The chain verdict cache; default one as long-lived as the verifier's status cache; `false` for none. */
+  cache?: VerificationCache | false | undefined;
+}
 
 export interface MCPToolCall {
   name?: string;
@@ -83,4 +94,11 @@ export interface MCPMiddlewareOptions {
    * resume token and the new delegation credential. See `createNeedsAuthorization`.
    */
   needsAuthorization?: NeedsAuthorization;
+  /**
+   * KYA-OS story L3-D: a call carrying `KYA-OS-Delegation-Credential` and
+   * `KYA-OS-Delegation-Proof` (another service forwarding an agent's
+   * authority) is verified from those signed artifacts by the local
+   * verifier. On by default with a verifier; `false` turns it off.
+   */
+  inboundDelegation?: InboundDelegationSettings | false;
 }
