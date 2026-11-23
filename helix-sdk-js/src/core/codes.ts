@@ -116,6 +116,10 @@ export const ErrorCodes = {
   // A-1 — KYA-OS auditability (typed audit events, evidence vault)
   AUDIT_EVENT_INVALID: 'AUDIT_EVENT_INVALID',
   AUDIT_EVIDENCE_INVALID: 'AUDIT_EVIDENCE_INVALID',
+
+  // KYA-OS story C-A: Entity Cards and the SSRF-hardened outbound fetch
+  ENTITY_CARD_INVALID: 'ENTITY_CARD_INVALID',
+  SAFE_FETCH_REFUSED: 'SAFE_FETCH_REFUSED',
 } as const;
 
 export const ErrorCode = ErrorCodes;

@@ -110,6 +110,42 @@ Inspect wallet metadata without printing the private key.
 helix wallet inspect --wallet ./agent.enc
 ```
 
+### `helix init` (self-custody onboarding)
+
+Onboards an agent whose key stays with you (KYA-OS story F-3). Take the
+enrollment token the console gives you for a self-custody agent:
+
+```bash
+helix init --token enroll:... --out ./agent --api-url https://api.example
+```
+
+The key is generated on this host. Only its public JWK and a proof of
+possession are sent. `./agent` gets `did.json`, `card.json`,
+`signing-key.env` (the private key, mode 0600) and `helix-agent.json`. With
+Helix hosting the agent is active at once. With your own domain, publish
+`did.json` and `card.json` where the output says, then:
+
+```bash
+helix activate --token enroll:... --out ./agent
+```
+
+Helix reads the documents from your domain and activates the agent only if
+they list the key you registered. For a loopback test domain, set
+`HELIX_OUTBOUND_DEVELOPMENT=1`.
+
+### `helix custody take`
+
+Moves a custodial agent, service or owner to self-custody. This is a key
+rotation: the new key is generated here, both keys stay in the DID document
+during the overlap, and the key Helix held is shredded.
+
+```bash
+helix custody take --did did:web:... --out ./agent --admin-key ...
+```
+
+Custodial subjects are labelled `custody: helix` and are not counted in
+KYA-OS conformance claims. Their proofs still verify.
+
 ## Environment variables
 
 | Variable | Required | Purpose |

@@ -22,8 +22,9 @@
  *   public key.
  * - `toPublicKeyJwk()`: the public key as RFC 8037 writes it (L1.8).
  * - `toDidKey()`: `did:key:z6Mk…`, multicodec `0xed01` then base58btc (L1.1).
- * - `agentKeyRegistration()`: the body of `POST /v1/agents/{did}/keys`,
- *   checked to carry no private material (self-custody invariant, rule 7).
+ *
+ * Helix learns the public half through enrollment (KYA-OS story F-3,
+ * `helixInit()`): the public JWK and a signature over Helix's challenge.
  *
  * Byte-compatible with helix-core (`src/core/did/document.ts`) and
  * helix-sdk-py (`helix_sdk.agent_key`), asserted against helix-core's
@@ -45,12 +46,6 @@ export interface AgentPublicKeyJwk {
   crv: 'Ed25519';
   x: string;
   kid?: string;
-}
-
-export interface AgentKeyRegistration {
-  publicKeyJwk: AgentPublicKeyJwk;
-  /** Verification-method fragment: the published id is `<did>#<kid>`. */
-  kid: string;
 }
 
 export const DEFAULT_AGENT_KEY_ID = 'key-1';
@@ -154,21 +149,6 @@ export function assertNoPrivateMaterial(value: unknown, path = ''): void {
     }
     assertNoPrivateMaterial(member, here);
   }
-}
-
-/**
- * The body of `POST /v1/agents/{did}/keys`: the public JWK (`kty`, `crv`,
- * `x`, nothing else) and the verification-method fragment. Takes the public
- * key as hex, bytes or JWK; a JWK with `d` or any other member is refused.
- */
-export function agentKeyRegistration(publicKey: string | Uint8Array | AgentPublicKeyJwk, kid: string = DEFAULT_AGENT_KEY_ID): AgentKeyRegistration {
-  const bytes = typeof publicKey === 'object' && !(publicKey instanceof Uint8Array) ? publicKeyJwkBytes(publicKey) : publicKeyBytes(publicKey);
-  if (typeof kid !== 'string' || kid.length === 0) {
-    throw new Error('kid must be a non-empty verification-method fragment');
-  }
-  const body: AgentKeyRegistration = { publicKeyJwk: toPublicKeyJwk(bytes), kid };
-  assertNoPrivateMaterial(body);
-  return body;
 }
 
 // ── base58btc (conformance L1.9) ────────────────────────────────────────────

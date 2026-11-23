@@ -15,9 +15,9 @@ DID resolution, and status checks are all API calls made through
 
 **Agents and Service Providers hold no keys.** The server generates the
 keypair when an agent is onboarded or a service is enrolled and holds the
-private key, so onboarding, presenting, delegating and issuing consent
-grants are all API calls (`HelixClient.onboardAgent()`, `signVP()`,
-`delegateAuthority()`, `createService()`, `issueServiceDelegationGrant()`).
+private key, so onboarding, presenting and issuing consent grants are all
+API calls (`HelixClient.onboardAgent()`, `signVP()`, `createService()`,
+`issueServiceDelegationGrant()`).
 `AgentWallet` remains for an issuer's own key material only.
 
 ## Modules
@@ -36,6 +36,7 @@ grants are all API calls (`HelixClient.onboardAgent()`, `signVP()`,
 | `core/kyaos/verifier/` | `kyaos.verifier.verify(input, seams, options)` — the local verifier (story F-2): a KYA-OS request proof plus its carried delegation chain, verified in-process from public DID documents, status lists and the agent's card through injected seams, never a Helix database. Mirrored by `helix_sdk.verifier` in helix-sdk-py |
 | `core/kyaos/conformance/` | `kyaos.conformance.HelixConformanceAdapter` — the KYA-OS `ConformanceAdapter` and a runner for the vendored vector categories |
 | `vp-builder.ts` | `VPBuilder` — local VP construction and signing (the explicit private-key carveout above) |
+| `core/custody/` | KYA-OS story F-3: `helixInit` (self-custody onboarding: the key is generated here, only the public JWK is sent), `activateAgent`, `changeToSelfCustody`, `EnvSigner` and `HelixCustodialSigner` (a custodial agent signs through the API; same `Signer` shape, so application code, such as a request proof from `kyaos.verifier.signRequestProof`, does not change), `HelixCustodyClient`. Custodial agents are labelled `custody: helix` and are not counted in KYA-OS conformance claims; their proofs still verify |
 
 `HelixClient` is the primary entry point for the API-backed flows
 (onboarding, signing, delegation, verification, DID/VC lifecycle), but the
