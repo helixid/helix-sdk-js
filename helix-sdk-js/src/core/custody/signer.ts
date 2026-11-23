@@ -27,6 +27,7 @@
 
 import * as ed25519 from '@noble/ed25519';
 import { derivePublicKey, normalizeEd25519PrivateKey } from '../keys.js';
+import { defaultKidFragment } from '../kyaos/signer.js';
 
 export interface Signer {
   /** DID of the key's controller. */
@@ -40,8 +41,12 @@ export interface Signer {
 export const DEFAULT_SIGNING_KEY_ENV_VAR = 'HELIX_SIGNING_KEY';
 export const DEFAULT_KID_FRAGMENT = 'key-1';
 
-/** `kid` as a fragment: accepts `key-1`, `#key-1` or `<did>#key-1` (which must be this DID's). */
-export function kidFragment(did: string, kid: string = DEFAULT_KID_FRAGMENT): string {
+/**
+ * `kid` as a fragment: accepts `key-1`, `#key-1` or `<did>#key-1` (which must
+ * be this DID's). Default `defaultKidFragment(did)`: the multibase value for a
+ * did:key, whose document defines no other method, else `key-1`.
+ */
+export function kidFragment(did: string, kid: string = defaultKidFragment(did)): string {
   let fragment = kid;
   if (fragment.startsWith(`${did}#`)) fragment = fragment.slice(did.length + 1);
   fragment = fragment.replace(/^#/, '');
@@ -58,7 +63,7 @@ export function verificationMethodOf(signer: Pick<Signer, 'did' | 'kid'>): strin
 
 export interface EnvSignerOptions {
   did: string;
-  /** Fragment or full verification-method id. Default `key-1`. */
+  /** Fragment or full verification-method id. Default `defaultKidFragment(did)`. */
   kid?: string;
   /** Variable holding the private key (raw 32-byte hex or PKCS8 seed hex). Default `HELIX_SIGNING_KEY`. */
   envVar?: string;

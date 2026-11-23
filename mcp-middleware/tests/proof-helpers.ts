@@ -93,7 +93,8 @@ export function fixtureVerifier(serviceDid: string, options: FixtureVerifierOpti
 /** The signer of a fixture key. */
 export function fixtureSigner(env: FixtureEnvironment, label: string): kyaos.Signer {
   const key = env.keys[label]!;
-  return new kyaos.EnvSigner({ did: key.did, envVar: 'FIXTURE_KEY', env: { FIXTURE_KEY: key.private_key_hex } });
+  // The fixture names its own kid (its did_documents publish `#key-1`), so pin it rather than the did:key default.
+  return new kyaos.EnvSigner({ did: key.did, kid: key.kid.slice(key.kid.indexOf('#') + 1), envVar: 'FIXTURE_KEY', env: { FIXTURE_KEY: key.private_key_hex } });
 }
 
 /** The `_meta` of a tool call: the request proof minted now, and the chain when given. */
