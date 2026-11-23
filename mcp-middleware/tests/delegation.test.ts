@@ -94,8 +94,17 @@ describe.skipIf(!haveVerifierFixtures)('L3-D: service A forwards an agent\'s del
   it('without the helper B refuses: no headers is no credential, and a forward B does not accept is refused', async () => {
     const guard = helixidMCPMiddleware({ verifier: verifierB(), toolScopes: { lookup_order: ['read:orders'] }, tools: { lookup_order: { minimumLevel: 'L2' } } });
     await expect(guard({ name: 'lookup_order', headers: {} })).rejects.toMatchObject({ code: 'PROOF_MISSING' });
-    const refused = await verifyInboundDelegationHeaders(await sent(), { verifier: verifierB() });
+    const refused = await verifyInboundDelegationHeaders(await sent(), { verifier: verifierB(), forwarders: [] });
     expect(refused).toMatchObject({ ok: false, reasons: ['delegation_target_not_accepted'], effectiveScopes: [], level: 'L1' });
+    // The default accepts any forwarder for the authority granted at that forwarder (Harish, 2026-11-23).
+    expect(await verifyInboundDelegationHeaders(await sent(), { verifier: verifierB() })).toMatchObject({ ok: true, forwarder: did('service') });
+    // ... and still binds the forwarder: a stranger cannot carry a chain granted at A.
+    const stranger = await sent();
+    stranger.set(
+      DELEGATION_HEADERS.proof,
+      await mintDelegationProofJwt({ sub: did('owner'), aud: 'b.helix.test', delegation_id: delegationIdOf(chain)!, delegation_chain: buildChainString(chain), scope: 'read:orders', now: NOW_MS }, fixtureSigner(env, 'stranger')),
+    );
+    expect((await verifyInboundDelegationHeaders(stranger, { verifier: verifierB() })).reasons).toEqual(['delegation_target_not_accepted']);
   });
 
   it('tampered advisory headers change nothing in B\'s decision; they are dropped where they disagree', async () => {

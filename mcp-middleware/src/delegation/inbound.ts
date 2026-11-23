@@ -20,7 +20,7 @@
  *    `delegation_chain` the chain's own string;
  * 4. who may forward what: the chain's `invocationTarget` is this service's
  *    resource, or the forwarder itself when this service accepts forwards
- *    from it (`forwarders`); the forwarder is bound to the chain (it is the
+ *    from it (`forwarders`, default any); the forwarder is bound to the chain (it is the
  *    target the agent was granted, or the leaf delegate holding it); and
  *    `KYA-OS-Agent-DID` is the agent the chain names (the leaf delegate, or
  *    who delegated to the forwarder), the DID whose signature the forwarder
@@ -70,8 +70,9 @@ export interface InboundDelegationOptions {
   /**
    * The forwarding services whose own resource this service honours as a
    * chain's target (authority the agent granted at the forwarder, carried
-   * by it): `'*'` any, or a list of DIDs. Default none: only chains that
-   * target this service.
+   * by it): `'*'` any (the default), or a list of DIDs; `[]` accepts only
+   * chains that target this service. The forwarder is always bound to the
+   * chain: it must be the chain's target or its leaf delegate.
    */
   forwarders?: '*' | readonly string[] | undefined;
   /** Cached chain verdicts; default none (every chain verified). */
@@ -237,7 +238,8 @@ export async function verifyInboundDelegationHeaders(headers: HeadersLike | unde
 
   // 4. Who may forward what, and for which agent.
   const resource = options.resource ?? verifier.serviceDid;
-  const forwarders = options.forwarders ?? [];
+  // Default '*' (Harish, 2026-11-23): any forwarder, for the authority granted at that forwarder; [] accepts none.
+  const forwarders = options.forwarders ?? '*';
   const forwardAccepted = forwarders === '*' || forwarders.includes(forwarder);
   if (invocationTarget === undefined || (invocationTarget !== resource && !(invocationTarget === forwarder && forwardAccepted))) {
     return refuse(InboundDelegationReasons.TARGET_NOT_ACCEPTED, `the chain targets ${String(invocationTarget)}, which this service does not accept from ${forwarder}`);

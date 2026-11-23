@@ -33,6 +33,7 @@ import { createOrderServer } from './app.js';
 import { demoRetryAuthorizer } from './demo-authorizer.js';
 import { TOOL_SCOPES } from './orders.js';
 import { FORWARD_TOOL, type DownstreamOptions } from './downstream.js';
+import { describeForwarders, forwardersFromEnv } from './delegation-env.js';
 import { LEVEL_VARIABLES, describeLevelSettings, readLevelSettings } from './levels.js';
 import { consentFromSettings, describeConsent, readConsentSettings, type ConsentSettings } from './consent-env.js';
 import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './well-known-env.js';
@@ -154,7 +155,7 @@ import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './we
  *                         and a line in KYAOS_VERIFICATION_LOG).
  *   KYAOS_DELEGATION_ADVISORY=1  also send the advisory KYA-OS-Delegation-Chain / KYA-OS-Granted-Scopes
  *   KYAOS_FORWARDERS      the services whose forwarded chains this server honours (their own resource as
- *                         the chain's target): * or comma-separated DIDs; default none
+ *                         the chain's target): * (default), comma-separated DIDs, or none
  *   KYAOS_DELEGATION_AUDIENCE  this server's host(s), as forwarders name it in the proof's aud;
  *                         default the host of a did:web SERVICE_DID
  */
@@ -654,7 +655,12 @@ if (serviceDid) {
   });
   auth.verifier = localVerifier;
   // Story L3-D: downstream calls forwarding an agent's delegation, verified by the same verifier.
-  const forwarders = env['KYAOS_FORWARDERS']?.trim() === '*' ? '*' : didList('KYAOS_FORWARDERS');
+  let forwarders: ReturnType<typeof forwardersFromEnv>;
+  try {
+    forwarders = forwardersFromEnv(env['KYAOS_FORWARDERS']);
+  } catch (error) {
+    fail((error as Error).message);
+  }
   const delegationAudience = env['KYAOS_DELEGATION_AUDIENCE']?.split(',').map((host) => host.trim()).filter((host) => host.length > 0);
   auth.inboundDelegation = {
     ...(forwarders === undefined ? {} : { forwarders }),
@@ -768,7 +774,7 @@ server.listen(port, host, () => {
   console.log(`  Discovery:   ${describeWellKnown(discovery)}`);
   console.log(
     `  Downstream:  ${downstream ? `forward_lookup_order to ${downstream.url}${downstream.advisoryHeaders ? ' (advisory headers on)' : ''}` : 'off (set KYAOS_DOWNSTREAM_URL)'}; forwards accepted from ${
-      auth.inboundDelegation && auth.inboundDelegation.forwarders !== undefined ? (auth.inboundDelegation.forwarders === '*' ? 'any service' : auth.inboundDelegation.forwarders.join(', ')) : 'none'
+      describeForwarders(auth.inboundDelegation === false ? false : auth.inboundDelegation?.forwarders)
     }`,
   );
 });

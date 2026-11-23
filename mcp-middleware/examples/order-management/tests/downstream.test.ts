@@ -62,7 +62,7 @@ describe.skipIf(!haveVerifierFixtures)('forward_lookup_order: service A calls se
     return port;
   }
 
-  async function world(forwarders: readonly string[]): Promise<{ a: string; sink: MemoryAuditSink }> {
+  async function world(forwarders?: readonly string[]): Promise<{ a: string; sink: MemoryAuditSink }> {
     const cards = { [agent()]: cardFor(env, agent(), ['orders:read'], env.keys['owner']!.did) };
     const b = await listen({
       resource: 'http://b.helix.test/mcp',
@@ -71,7 +71,7 @@ describe.skipIf(!haveVerifierFixtures)('forward_lookup_order: service A calls se
         serviceDid: B.did,
         verifier: fixtureVerifier(B.did, { env, documents: { [B.did]: B.document }, cards }),
         tools: { lookup_order: { minimumLevel: 'L2' } },
-        inboundDelegation: { forwarders },
+        inboundDelegation: forwarders === undefined ? {} : { forwarders },
       },
     });
     const sink = new MemoryAuditSink();
@@ -171,6 +171,13 @@ describe.skipIf(!haveVerifierFixtures)('forward_lookup_order: service A calls se
     expect(JSON.parse(body.result.content[0]!.text)).toEqual({ downstreamStatus: 502, downstream: null });
     expect(errors).toHaveBeenCalledWith('outbound delegation audit failed:', 'trail down');
     errors.mockRestore();
+  });
+
+  it('by default B accepts the forward of any service for the authority granted at that service', async () => {
+    const { a } = await world();
+    const { body } = await forward(a);
+    expect(body.result.isError).toBeUndefined();
+    expect(JSON.parse(body.result.content[0]!.text)).toMatchObject({ downstreamStatus: 200 });
   });
 
   it('B refuses when it does not accept A\'s forwards; A reports the refusal as the tool\'s error', async () => {
