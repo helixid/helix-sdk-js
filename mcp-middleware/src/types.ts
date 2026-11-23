@@ -10,7 +10,7 @@ import type { VerificationCache } from './delegation/verification-cache.js';
 export interface InboundDelegationSettings {
   /** This service's host(s), as forwarders name it in the proof's `aud`; default the host of a did:web service DID. */
   audience?: string | readonly string[] | undefined;
-  /** Forwarding services whose own resource is honoured as a chain's target: `'*'` or DIDs. Default none. */
+  /** Forwarding services whose own resource is honoured as a chain's target: `'*'` (default) or DIDs; `[]` for none. */
   forwarders?: '*' | readonly string[] | undefined;
   /** The chain verdict cache; default one as long-lived as the verifier's status cache; `false` for none. */
   cache?: VerificationCache | false | undefined;
