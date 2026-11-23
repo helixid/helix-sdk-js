@@ -4,7 +4,7 @@ import {
   CredentialAlreadyInWalletError,
   CredentialNotForThisAgentError,
 } from '../errors/index.js';
-import { derivePublicKey, generateKeyPair, publicKeyToMultibase, signData } from '../core/keys.js';
+import { derivePublicKey, generateKeyPair, signData } from '../core/keys.js';
 import type { ServiceEndpoint } from '../core/did.js';
 import type { SignedVC } from '../core/schemas/vc.js';
 import type { DelegationGrantVC } from '../core/schemas/delegation-grant.js';

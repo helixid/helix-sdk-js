@@ -70,6 +70,12 @@ SERVICE_DID=did:web:orders.example pnpm --filter @helixid/example-mcp-order-mana
   signed, wrong-purpose or out-of-range list reads as revoked. Lists and verdicts are cached (`KYAOS_STATUS_CACHE_TTL`,
   in Redis with `KYAOS_REDIS_URL`); `KYAOS_REVOCATION_EVENTS_URL` + `KYAOS_SIGNAL_ISSUERS` drop a cached verdict the moment
   Helix signals the revocation.
+- The agent's own revocation (SPEC-ENTITY-CARD §10.3): a HelixID-hosted agent's card names its identity credential's
+  status entry, on the Helix issuer's list. That list counts only when its signer keeps the URL, which by default is
+  the card's DID, so bind it to the Helix issuer, or every such agent is refused (`status_list_mismatch`). Bind the
+  exact URL, not the origin (other lists there are their own issuers'):
+  `KYAOS_STATUS_LIST_ISSUERS='{"did:web:api.helixid.dev":["https://api.helixid.dev/v1/status-list/helix-status-list-1"]}'`.
+  A revoked agent is then refused with `status_revoked`.
 - Every tool demands Card level L3 by default (story C-C): a verified request proof, every capability on the
   agent's card attested, status read live. `KYAOS_MINIMUM_LEVEL`, `KYAOS_TOOL_LEVELS` (`lookup_order=L2`) and
   `KYAOS_L3_MINUS_SATISFIES_L3=0` change that; a call below a tool's minimum answers 401 with `derivedLevel`
@@ -142,7 +148,7 @@ received. The tools themselves (`src/orders.ts`) contain no auth code.
 | `KYAOS_STATUS_CACHE_TTL` | `300` | Seconds a status list or verdict is cached (story L3-C), for tools at L2 or below; a cached read is not fresh (Card L3 → L2). A tool that demands L3 reads its lists live every call |
 | `KYAOS_HIGH_PRIVILEGE_SCOPES`, `KYAOS_HIGH_PRIVILEGE_TTL` | none, `60` | Scopes whose reads are cached at most that long (≤ 60 s) |
 | `KYAOS_MAX_STALE_SECONDS` | `60` | How long a list read inside its window may be served past its `validUntil` from the cache |
-| `KYAOS_STATUS_LIST_ISSUERS` | none | JSON: issuer DID to the status-list URLs or `https:` origins it keeps |
+| `KYAOS_STATUS_LIST_ISSUERS` | none | JSON: issuer DID to the status-list URLs or `https:` origins it keeps. Against HelixID, bind the Helix issuer to its own list's exact URL (see below) |
 | `KYAOS_SIGNAL_ISSUERS` | none | DIDs whose revocation SETs are honoured (the Helix issuer) |
 | `KYAOS_REVOCATION_EVENTS_URL` | none | Helix's `/v1/events/revocations`: one SSE connection, reconnecting |
 | `KYAOS_REVOCATION_WEBHOOK_PATH` | none | A path here that receives pushed SETs (RFC 8935) |

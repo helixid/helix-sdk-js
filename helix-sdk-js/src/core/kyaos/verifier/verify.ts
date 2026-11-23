@@ -64,7 +64,7 @@ import {
 } from './credentials.js';
 import { verifyDataIntegrity } from './data-integrity.js';
 import type { ProofRequest } from './request-proof.js';
-import { checkChainRevocation, revocationCheckerOf, type RevocationChecker } from './revocation.js';
+import { checkChainRevocation, revocationCheckerOf, type RevocationChecker, type RevocationSubject, type RevocationVerdict } from './revocation.js';
 import type { FetchStatusList, StatusListRead } from './status.js';
 import { verifyRequestProof, type NonceStoreSeam, type ProofAssurance } from './verify-request-proof.js';
 
@@ -394,6 +394,34 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
       return refused(refusals, chainSummary, proved);
     }
   }
+  // The card's own revocation entry (SPEC-ENTITY-CARD §10.3; Cleanup, Harish's pick A): a revoked
+  // agent is refused. The list's keeper is the card's DID unless the configuration binds the URL
+  // (statusListIssuers) to another issuer, as a Helix card's list is bound to Helix.
+  let cardFresh = true;
+  if (card?.revocation !== undefined) {
+    const checker = revocationSeam(seams, options);
+    if (checker === undefined) {
+      refusals.add(ReasonCodes.STATUS_SEAM_MISSING, "no fetchStatusList seam: the card's revocation entry cannot be read");
+      return refused(refusals, chainSummary, proved);
+    }
+    const entry = { type: 'BitstringStatusListEntry', statusPurpose: 'revocation', ...card.revocation } as RevocationSubject['credentialStatus'];
+    let verdict: RevocationVerdict;
+    try {
+      verdict = await checker({ issuer: card.id, credentialStatus: entry }, {
+        now,
+        scopes: requestScopes(options, leafAllowedAction),
+        reads,
+        ...(options.liveStatus === true ? { live: true } : {}),
+      });
+    } catch (error) {
+      verdict = { revoked: true, fresh: false, code: ReasonCodes.STATUS_UNAVAILABLE, message: `the revocation check failed: ${(error as Error).message}` };
+    }
+    if (verdict.revoked) {
+      refusals.add(verdict.code ?? ReasonCodes.STATUS_REVOKED, `the card's revocation entry: ${verdict.message ?? 'revoked'}`);
+      return refused(refusals, chainSummary, proved);
+    }
+    cardFresh = verdict.fresh;
+  }
   let capabilities: CapabilityCheck = { verified: [], unverified: [] };
   let capabilitiesFresh = true;
   if (card !== undefined && Array.isArray(card.capabilities) && card.capabilities.length > 0) {
@@ -414,7 +442,7 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
 
   // 8. Authority and level (story F-1 point 4; §9.4): the proof floor holds only when a proof verified.
   const effectiveScopes = deriveEffectiveScopes(capabilities.verified, leafAllowedAction, options.catalog ?? leafAllowedAction);
-  const fresh = chainFresh && capabilitiesFresh;
+  const fresh = chainFresh && capabilitiesFresh && cardFresh;
   const proofFloor = proofDid !== undefined;
   const level = deriveConformanceLevel(capabilities, proofFloor, fresh);
   return {
