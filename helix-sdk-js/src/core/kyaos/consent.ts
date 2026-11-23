@@ -306,7 +306,7 @@ export interface ApprovedConsent {
 export async function awaitConsentHop(authorizationUrl: string, options: AwaitConsentHopOptions): Promise<ApprovedConsent> {
   const fetch = options.fetch ?? defaultFetch;
   const interval = options.intervalMs ?? 1000;
-  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const sleep = options.sleep ?? ((ms: number): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const deadline = Date.now() + (options.timeoutMs ?? 300_000);
   for (;;) {
     const result = await fetchConsentResult(authorizationUrl, fetch);

@@ -72,9 +72,9 @@ export function createHelixConsent(options: HelixConsentOptions): HelixConsent {
   if (!(options.windowSeconds > 0) || !Number.isFinite(options.windowSeconds)) throw new RangeError('createHelixConsent: windowSeconds must be a positive number');
   if (options.signer.did !== options.serviceDid) throw new Error('createHelixConsent: the signer must be the service DID');
   const now = options.now ?? Date.now;
-  const userOf = options.serviceUserOf ?? ((input: ChallengeInput) => input.oauthSubject);
+  const userOf = options.serviceUserOf ?? ((input: ChallengeInput): string | undefined => input.oauthSubject);
   return {
-    async authorizationUrl(context, input) {
+    async authorizationUrl(context, input): Promise<string> {
       const serviceUserId = await userOf(input);
       if (serviceUserId === undefined || serviceUserId === '') throw new ConsentUserUnknownError();
       const created = await kyaos.consent.createConsentRequest({
@@ -95,7 +95,7 @@ export function createHelixConsent(options: HelixConsentOptions): HelixConsent {
       });
       return created.authorizationUrl;
     },
-    withdraw(consentId) {
+    withdraw(consentId): Promise<kyaos.consent.WithdrawnConsent> {
       return kyaos.consent.withdrawConsent({
         helixUrl: options.helixUrl,
         signer: options.signer,

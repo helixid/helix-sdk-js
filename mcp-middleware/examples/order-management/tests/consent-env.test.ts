@@ -53,8 +53,8 @@ describe('consentFromSettings', () => {
       return new Response(JSON.stringify({ id: 'x', authorizationUrl: 'https://helix.example/consent/x', resultUrl: '', expiresAt: 1, status: 'pending' }), { status: 201 });
     });
     const verify = vi.fn(async () => ({ ok: true, agentDid: AGENT, effectiveScopes: ['orders:read'], reasons: [] }) as never);
-    let verifier: { verify: typeof verify } | undefined;
-    const consent = consentFromSettings({ helixUrl: 'https://helix.example', windowSeconds: 60, hopLifetimeSeconds: 10, demoUser: 'demo', serviceName: 'Orders' }, SERVICE, signer, () => verifier);
+    const holder: { verifier?: { verify: typeof verify } } = {};
+    const consent = consentFromSettings({ helixUrl: 'https://helix.example', windowSeconds: 60, hopLifetimeSeconds: 10, demoUser: 'demo', serviceName: 'Orders' }, SERVICE, signer, () => holder.verifier);
     const context = { agentDid: AGENT, tool: 'list_orders', scopes: ['orders:read'] };
     expect(await consent.authorizationUrl(context, { ...context })).toBe('https://helix.example/consent/x');
     await consent.authorizationUrl(context, { ...context, oauthSubject: 'alice' });
@@ -63,9 +63,9 @@ describe('consentFromSettings', () => {
     expect(users[0]!.display).toEqual({ serviceName: 'Orders' });
     const retry = { credential: { id: 'hop' }, token: { agentDid: AGENT, tool: 'list_orders', scopes: ['orders:read'], expiresAt: 0 }, agentDid: AGENT, tool: 'list_orders', scopes: ['orders:read'] };
     await expect(consent.authorizer(retry)).rejects.toThrow(/no local verifier/);
-    verifier = { verify };
+    holder.verifier = { verify };
     expect(await consent.authorizer(retry)).toEqual({ scopes: ['orders:read'] });
-    const bare = consentFromSettings({ helixUrl: 'https://helix.example', windowSeconds: 60 }, SERVICE, signer, () => verifier);
+    const bare = consentFromSettings({ helixUrl: 'https://helix.example', windowSeconds: 60 }, SERVICE, signer, () => holder.verifier);
     await bare.authorizationUrl(context, { ...context, oauthSubject: 'bob' });
     fetchMock.mockRestore();
   });

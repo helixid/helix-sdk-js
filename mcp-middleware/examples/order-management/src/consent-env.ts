@@ -1,7 +1,7 @@
 // Copyright 2026 DgVerse LLP
 // Licensed under the Apache License, Version 2.0
 
-import { consentRetryAuthorizer, createHelixConsent, type ChallengeInput, type LocalVerifier, type RetryAuthorizer } from '@helixid/mcp-middleware';
+import { consentRetryAuthorizer, createHelixConsent, type ChallengeInput, type LocalVerifier, type RetryAuthorization, type RetryAuthorizer } from '@helixid/mcp-middleware';
 import type { kyaos } from '@helixid/sdk-js';
 
 /** The variables `readConsentSettings` reads (story L3-H). */
@@ -80,7 +80,7 @@ export function consentFromSettings(
   });
   return {
     authorizationUrl: consent.authorizationUrl,
-    authorizer: async (input) => {
+    authorizer: async (input): Promise<RetryAuthorization> => {
       const verifier = verifierOf();
       if (verifier === undefined) throw new Error('no local verifier: the retry cannot be verified here');
       return consentRetryAuthorizer(verifier)(input);

@@ -135,7 +135,6 @@ describe('HelixClient Branch Coverage', () => {
   });
 
   describe('enterprise (apiKey) mode', () => {
-    const DID = 'did:web:helix.test:agents:a1';
     let enterprise: HelixClient;
 
     beforeEach(() => {
@@ -147,6 +146,27 @@ describe('HelixClient Branch Coverage', () => {
       const c2 = new HelixClient('http://localhost', { apiKey: 'hak_test' });
       expect(((c2 as any).http as HttpAdapter).hasApiKey()).toBe(true);
       expect(((c2 as any).http as HttpAdapter).hasAdminApiKey()).toBe(false);
+    });
+
+    it('createService and getStatusList go through the same adapter', async () => {
+      mockHttp.post.mockResolvedValue({ serviceDid: 'did:web:sp', serviceName: 'sp' });
+      expect(await enterprise.createService({ serviceName: 'sp', displayName: 'SP', verifiedDomain: 'https://sp.example' })).toEqual({ serviceDid: 'did:web:sp', serviceName: 'sp' });
+      expect(mockHttp.post).toHaveBeenCalledWith('/v1/services', expect.objectContaining({ serviceName: 'sp' }));
+      mockHttp.get.mockResolvedValue({ id: 'list' });
+      expect(await enterprise.getStatusList('iss list')).toEqual({ id: 'list' });
+      expect(mockHttp.get).toHaveBeenCalledWith('/v1/status-list/iss%20list');
+    });
+
+    it('records audit events only with an API key, and hands an audit sink to an AuditTrail', async () => {
+      mockHttp.post.mockResolvedValue({});
+      const event = { eventId: 'e1' } as never;
+      await enterprise.recordAuditEvent(event);
+      expect(mockHttp.post).toHaveBeenCalledWith('/v1/audit-log/events', event);
+      await enterprise.auditSink().append({ event } as never);
+      expect(mockHttp.post).toHaveBeenCalledTimes(2);
+      mockHttp.post.mockClear();
+      await client.recordAuditEvent(event);
+      expect(mockHttp.post).not.toHaveBeenCalled();
     });
 
     it('registerVC posts the signed credential', async () => {
