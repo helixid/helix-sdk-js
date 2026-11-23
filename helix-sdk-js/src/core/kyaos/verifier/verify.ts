@@ -12,7 +12,10 @@
  * answer, and nothing else:
  *
  * - `resolveDid` and `resolveDidKeys`: public DID documents;
- * - `fetchStatusList`: public status lists, already decoded;
+ * - `fetchStatusList`: public status lists, already decoded (each list's
+ *   proof verified first, story L3-C);
+ * - `checkRevocation`: one credential's `{revoked, fresh}`, cached and
+ *   keeper-aware (story L3-C); default one over `fetchStatusList`;
  * - `resolveCard`: the agent's Entity Card, for its attestations;
  * - `nonceStore`: the local replay store;
  * - `clock`: the time, injected, so the module holds no global clock;
@@ -31,7 +34,8 @@
  * detached JWS, `cnf` fusion); the chain's schema, attenuation, continuity
  * and windows; the leaf join `leafInvoker === proof.did`; trusted roots; the
  * invoked action; each hop's `eddsa-jcs-2022` proof by its own issuer; each
- * credential's status; the card, its `responsibleParty === issuer(rootVC)`
+ * credential's status, root to leaf, stopping at the first revoked hop
+ * (story L3-C); the card, its `responsibleParty === issuer(rootVC)`
  * gate and its attestations; the level per §9.4 and the demotion matrix. A
  * carried chain that fails is refused; nothing is ever looked up in its
  * place.
@@ -60,7 +64,8 @@ import {
 } from './credentials.js';
 import { verifyDataIntegrity } from './data-integrity.js';
 import type { ProofRequest } from './request-proof.js';
-import { checkStatusEntry, type FetchStatusList } from './status.js';
+import { checkChainRevocation, revocationCheckerOf, type RevocationChecker } from './revocation.js';
+import type { FetchStatusList, StatusListRead } from './status.js';
 import { verifyRequestProof, type NonceStoreSeam, type ProofAssurance } from './verify-request-proof.js';
 
 /** What the verifier is given: the proof, the chain the request carried, the request, and the card when the caller already holds it. */
@@ -82,6 +87,12 @@ export interface VerifierSeams {
   resolveDidKeys?: ((did: string) => Promise<Ed25519PublicJwk[]> | Ed25519PublicJwk[]) | undefined;
   /** A status list, decoded, by its URL. */
   fetchStatusList?: FetchStatusList | undefined;
+  /**
+   * The revocation check of one credential (story L3-C): `{revoked, fresh}`,
+   * fail-closed, cached, keeper-aware. Default: one built over
+   * `fetchStatusList` with no cache, every read live.
+   */
+  checkRevocation?: RevocationChecker | undefined;
   /** The Entity Card of an agent DID, or `undefined` when it publishes none. */
   resolveCard?: ((did: string) => Promise<unknown>) | undefined;
   nonceStore?: NonceStoreSeam | undefined;
@@ -120,6 +131,13 @@ export interface VerifierOptions {
    * the chain alone, with the proof floor unmet, so its level is at most L2.
    */
   requireProof?: boolean | undefined;
+  /**
+   * Read every status list live, past the status cache (story L3-C with
+   * C-C's levels): a call to a tool whose minimum Card level is L3 needs
+   * fresh revocation status, which a cached read is not. Default false: the
+   * cache serves, and a cached read is not fresh, so at most L2.
+   */
+  liveStatus?: boolean | undefined;
 }
 
 export interface ChainSummary {
@@ -161,6 +179,17 @@ export interface VerifierResult {
   fresh: boolean;
   /** Non-fatal diagnostics (`cnf_present_but_token_unfused`). */
   warnings: string[];
+}
+
+/** The revocation seam in force: the one given, else one over `fetchStatusList`, else none. */
+function revocationSeam(seams: VerifierSeams, options: VerifierOptions): RevocationChecker | undefined {
+  if (typeof seams.checkRevocation === 'function') return seams.checkRevocation;
+  return typeof seams.fetchStatusList === 'function' ? revocationCheckerOf(seams.fetchStatusList, options.maxClockSkewMs) : undefined;
+}
+
+/** The scopes a request touches, which pick the status cache TTL: the invoked action, else what the leaf allows. */
+function requestScopes(options: VerifierOptions, allowedAction: readonly string[]): readonly string[] {
+  return options.action === undefined ? allowedAction : [options.action];
 }
 
 const NO_CHAIN: ChainSummary = { depth: 0, allowedAction: [], fresh: true };
@@ -267,6 +296,9 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
     proved = { proofDid, proofAssurance: verdict.assurance, warnings: verdict.warnings, proofFloor: true };
   }
 
+  // Lists read live for this verification: a second credential on the same list stays a live read.
+  const reads = new Map<string, StatusListRead>();
+
   // 6. The chain: local rules first (§11.4 steps 1 to 4, 6), then each hop's proof (step 5), then status (step 7).
   let chainSummary: ChainSummary = { ...NO_CHAIN };
   let leafAllowedAction: string[] = [];
@@ -312,26 +344,23 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
         return refused(refusals, chainSummary, proved);
       }
     }
-    if (typeof seams.fetchStatusList !== 'function') {
+    const checker = revocationSeam(seams, options);
+    if (checker === undefined) {
       refusals.add(ReasonCodes.STATUS_SEAM_MISSING, 'no fetchStatusList seam: the hops\' status cannot be read');
       return refused(refusals, chainSummary, proved);
     }
-    for (let index = 0; index < chain.length; index += 1) {
-      const hop = chain[index]!;
-      let read;
-      try {
-        read = await seams.fetchStatusList(hop.credentialStatus.statusListCredential);
-      } catch (error) {
-        refusals.add(ReasonCodes.STATUS_UNAVAILABLE, `hop ${index}: status list could not be read: ${(error as Error).message}`);
-        return refused(refusals, chainSummary, proved);
-      }
-      const status = checkStatusEntry(hop.credentialStatus, hop.issuer, read, { now, maxClockSkewMs: options.maxClockSkewMs });
-      if (!status.ok) {
-        refusals.add(status.code, `hop ${index}: ${status.message}`);
-        return refused(refusals, chainSummary, proved);
-      }
-      chainFresh &&= status.fresh;
+    // Root to leaf, stopping at the first revoked or unresolvable hop (§6.5 cascade, story L3-C point 4).
+    const revocation = await checkChainRevocation(chain, checker, {
+      now,
+      scopes: requestScopes(options, evaluation.allowedAction),
+      reads,
+      ...(options.liveStatus === true ? { live: true } : {}),
+    });
+    if (revocation.revoked) {
+      refusals.add(revocation.code ?? ReasonCodes.STATUS_REVOKED, `hop ${String(revocation.index)}: ${revocation.message ?? 'revoked'}`);
+      return refused(refusals, chainSummary, proved);
     }
+    chainFresh = revocation.fresh;
     chainSummary = { ...chainSummary, fresh: chainFresh };
     leafAllowedAction = evaluation.allowedAction;
   }
@@ -374,6 +403,10 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
       now,
       maxClockSkewMs: options.maxClockSkewMs,
       fetchStatusList: seams.fetchStatusList,
+      checkRevocation: revocationSeam(seams, options),
+      scopes: requestScopes(options, leafAllowedAction),
+      reads,
+      ...(options.liveStatus === true ? { liveStatus: true } : {}),
     });
     capabilities = { verified: check.verified, unverified: check.unverified };
     capabilitiesFresh = check.fresh;

@@ -7,7 +7,11 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import { kyaos } from '@helixid/sdk-js';
 import type { AuditDeliverySink } from '@helixid/sdk-js';
 import {
+  RedisStatusCacheStore,
+  type RedisStatusCacheClient,
   createHelixAuditDelivery,
+  createRevocationSignalClient,
+  type RevocationSignalClient,
   createKyaOs,
   createMcpAuditTrail,
   createLocalVerifier,
@@ -57,6 +61,21 @@ import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './we
  *                           the card is fetched from the agent's DID document)
  *   KYAOS_ALLOW_LOOPBACK_HTTP=1  development only: read DID documents, cards and status lists over
  *                           http on loopback hosts
+ *   Revocation (story L3-C): every status list's proof is verified before a bit is read; lists and
+ *   verdicts are cached (in KYAOS_REDIS_URL when set, shared by every instance):
+ *   KYAOS_STATUS_CACHE_TTL      seconds a list or verdict is cached (default 300), for tools at L2 or below;
+ *                               a tool that demands L3 reads its lists live every call
+ *   KYAOS_HIGH_PRIVILEGE_SCOPES comma-separated scopes whose reads are cached at most
+ *   KYAOS_HIGH_PRIVILEGE_TTL      seconds (default 60, at most 60)
+ *   KYAOS_MAX_STALE_SECONDS     seconds a list may be served past its validUntil from the cache (default 60)
+ *   KYAOS_STATUS_LIST_ISSUERS   JSON object: issuer DID -> status-list URLs or https origins it keeps
+ *   KYAOS_SIGNAL_ISSUERS        comma-separated DIDs whose revocation signals (RFC 8417 SETs) are honoured;
+ *                               needed by either of:
+ *   KYAOS_REVOCATION_EVENTS_URL   Helix's SSE endpoint (<api>/v1/events/revocations): one outbound
+ *                                 connection, reconnecting on drop
+ *   KYAOS_REVOCATION_WEBHOOK_PATH a path on this server that receives pushed SETs (RFC 8935)
+ *   KYAOS_VERIFICATION_LOG      1: print each verification (level, fresh, reasons) and each revocation signal
+ *                               as one JSON line; a file path: append them there as JSON lines instead
  *   KYAOS_MINIMUM_LEVEL     the Card level every tool demands (story C-C): L1, L2 or L3 (default L3: a
  *                           verified request proof, every capability attested, status read live)
  *   KYAOS_TOOL_LEVELS       per-tool minimums, comma-separated tool=level (lookup_order=L2 accepts a
@@ -96,6 +115,8 @@ import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './we
  *                           dynamo: KYAOS_DYNAMO_TABLE, KYAOS_DYNAMO_KEY_ATTRIBUTE, KYAOS_DYNAMO_TTL_ATTRIBUTE,
  *                                   KYAOS_DYNAMO_REGION, KYAOS_DYNAMO_ENDPOINT (AWS credentials: the SDK's chain)
  *                           See .env.example.
+ *   KYAOS_REDIS_URL         also the status cache's Redis (story L3-C), whatever KYAOS_NONCE_STORE says: lists
+ *                           and verdicts shared by every instance; without it the cache is in memory
  *   KYAOS_AUTHORIZATION_URL KYA-OS (story L3-E): the consent page a caller without the authority for a
  *                         tool is sent to. Turns on the signed needs_authorization challenge and the
  *                         resume flow; the resume-token store follows KYAOS_NONCE_STORE (Redis on
@@ -383,6 +404,17 @@ function numberFromEnv(name: string, integer: boolean): number | undefined {
 }
 
 let kyaOs: KyaOsRuntime | undefined;
+const redisUrl = env['KYAOS_REDIS_URL'];
+if (redisUrl && !serviceDid) fail('KYAOS_REDIS_URL needs SERVICE_DID');
+// The status cache's Redis (story L3-C): an ioredis client of its own. The replay store's comes from nonceStoreFromEnv (story L2-A).
+let statusCacheRedis: (RedisStatusCacheClient & { quit(): Promise<unknown> }) | undefined;
+if (redisUrl) {
+  const { Redis } = await import('ioredis');
+  const client = new Redis(redisUrl);
+  // Without a listener ioredis prints its own unhandled-error line; ours carries no URL.
+  client.on('error', (error: Error) => console.warn(`status cache: redis error: ${error.message}`));
+  statusCacheRedis = client as unknown as RedisStatusCacheClient & { quit(): Promise<unknown> };
+}
 if (env['SERVICE_SIGNING_KEY']) {
   if (!serviceDid) fail('SERVICE_SIGNING_KEY needs SERVICE_DID (the DID whose document lists the key)');
   const skew = numberFromEnv('KYAOS_CLOCK_SKEW_SECONDS', true);
@@ -456,6 +488,42 @@ function didList(name: string): string[] | undefined {
   return dids;
 }
 
+/** A non-negative number of seconds from an optional variable. */
+function secondsFromEnv(name: string): number | undefined {
+  const raw = env[name];
+  if (raw === undefined || raw === '') return undefined;
+  const value = Number(raw);
+  if (!(value >= 0) || !Number.isFinite(value)) fail(`${name} must be a non-negative number of seconds`);
+  return value;
+}
+
+/** A JSON object from an optional variable. */
+function jsonFromEnv(name: string): Record<string, string[]> | undefined {
+  const raw = env[name];
+  if (!raw) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (asRecord(parsed) === undefined) fail(`${name} must be a JSON object`);
+    return parsed as Record<string, string[]>;
+  } catch {
+    return fail(`${name} is not valid JSON`);
+  }
+}
+
+let revocationSignals: RevocationSignalClient | undefined;
+const revocationWebhookPath = env['KYAOS_REVOCATION_WEBHOOK_PATH'];
+const L3C_SETTINGS = [
+  'KYAOS_STATUS_CACHE_TTL',
+  'KYAOS_HIGH_PRIVILEGE_SCOPES',
+  'KYAOS_HIGH_PRIVILEGE_TTL',
+  'KYAOS_MAX_STALE_SECONDS',
+  'KYAOS_STATUS_LIST_ISSUERS',
+  'KYAOS_SIGNAL_ISSUERS',
+  'KYAOS_REVOCATION_EVENTS_URL',
+  'KYAOS_REVOCATION_WEBHOOK_PATH',
+  'KYAOS_VERIFICATION_LOG',
+];
+
 // The KYA-OS door (story F-2): every request proof is verified here, in-process, with the Helix API never asked.
 if (serviceDid) {
   const trustedIssuers = didList('KYAOS_TRUSTED_ISSUERS');
@@ -469,14 +537,41 @@ if (serviceDid) {
       fail(`KYAOS_CARDS_FILE: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+  const highPrivilegeScopes = env['KYAOS_HIGH_PRIVILEGE_SCOPES']?.split(',').map((scope) => scope.trim()).filter((scope) => scope.length > 0);
+  const statusCacheTtl = numberFromEnv('KYAOS_STATUS_CACHE_TTL', false);
+  const highPrivilegeTtl = numberFromEnv('KYAOS_HIGH_PRIVILEGE_TTL', false);
+  const maxStaleSeconds = secondsFromEnv('KYAOS_MAX_STALE_SECONDS');
+  const statusListIssuers = jsonFromEnv('KYAOS_STATUS_LIST_ISSUERS');
+  const verificationLog = env['KYAOS_VERIFICATION_LOG'] || undefined;
+  /** One JSON line per verification or signal: on stdout, or appended to the file KYAOS_VERIFICATION_LOG names. */
+  const logEvent = (kind: string, report: unknown): void => {
+    if (verificationLog === '1') console.log(`[kya-os] ${kind} ${JSON.stringify(report)}`);
+    else if (verificationLog !== undefined) appendFileSync(verificationLog, `${JSON.stringify({ kind, ...(report as object) })}\n`);
+  };
+  let statusCache: kyaos.verifier.StatusCache;
+  try {
+    statusCache = new kyaos.verifier.StatusCache({
+      ...(statusCacheTtl === undefined ? {} : { statusCacheTtl }),
+      ...(highPrivilegeTtl === undefined ? {} : { highPrivilegeTtl }),
+      ...(highPrivilegeScopes === undefined ? {} : { highPrivilegeScopes }),
+      ...(maxStaleSeconds === undefined ? {} : { maxStaleSeconds }),
+      // Shared by every instance next to the replay store: one signal's delete is seen by all.
+      ...(statusCacheRedis ? { store: new RedisStatusCacheStore({ client: statusCacheRedis }) } : {}),
+    });
+  } catch (error) {
+    fail(`status cache: ${error instanceof Error ? error.message : String(error)}`);
+  }
   // Story C-C: the minimum Card level, per tool.
   try {
     Object.assign(auth, readLevelSettings(env, Object.keys(TOOL_SCOPES)));
   } catch (error) {
     fail((error as Error).message);
   }
-  auth.verifier = createLocalVerifier({
+  const localVerifier = createLocalVerifier({
     serviceDid,
+    statusCache,
+    ...(statusListIssuers === undefined ? {} : { statusListIssuers }),
+    ...(verificationLog ? { reportVerification: (report): void => logEvent('verification', report) } : {}),
     ...(trustedIssuers === undefined ? {} : { trustedIssuers }),
     ...(trustedRootIssuers === undefined ? {} : { trustedRootIssuers }),
     ...(maxChainLength === undefined ? {} : { maxChainLength }),
@@ -488,14 +583,33 @@ if (serviceDid) {
     // Story A-1 connects the audit trail here; until then each verification is logged once as unrecorded.
     log: (message) => console.warn(message),
   });
-} else if (
-  env['KYAOS_TRUSTED_ISSUERS'] ||
-  env['KYAOS_TRUSTED_ROOTS'] ||
-  env['KYAOS_MAX_CHAIN_LENGTH'] ||
-  env['KYAOS_CARDS_FILE'] ||
-  LEVEL_VARIABLES.some((name) => env[name])
-) {
-  fail('KYAOS_TRUSTED_ISSUERS / KYAOS_TRUSTED_ROOTS / KYAOS_MAX_CHAIN_LENGTH / KYAOS_CARDS_FILE / KYAOS_MINIMUM_LEVEL / KYAOS_TOOL_LEVELS / KYAOS_L3_MINUS_SATISFIES_L3 need SERVICE_DID');
+  auth.verifier = localVerifier;
+  const eventsUrl = env['KYAOS_REVOCATION_EVENTS_URL'];
+  const signalIssuers = didList('KYAOS_SIGNAL_ISSUERS');
+  if (eventsUrl || revocationWebhookPath) {
+    if (signalIssuers === undefined) fail('KYAOS_REVOCATION_EVENTS_URL / KYAOS_REVOCATION_WEBHOOK_PATH need KYAOS_SIGNAL_ISSUERS (the Helix issuer DID)');
+    if (revocationWebhookPath !== undefined && !revocationWebhookPath.startsWith('/')) fail('KYAOS_REVOCATION_WEBHOOK_PATH must be a path');
+    revocationSignals = createRevocationSignalClient(localVerifier, {
+      ...(eventsUrl ? { eventsUrl } : {}),
+      trustedIssuers: signalIssuers,
+      // Every signal, honoured or ignored, is one line: the sample's audit of the signal channel.
+      onSignal: (report) => {
+        console.log(`[kya-os] revocation-signal ${JSON.stringify(report)}`);
+        logEvent('revocation-signal', report);
+      },
+      onConnectionChange: (connected, error) => {
+        console.log(`[kya-os] revocation-events ${connected ? 'connected' : 'disconnected'}${error ? `: ${error instanceof Error ? error.message : String(error)}` : ''}`);
+        logEvent('revocation-events', { connected, ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}) });
+      },
+    });
+    if (eventsUrl) revocationSignals.start();
+  } else if (signalIssuers !== undefined) {
+    fail('KYAOS_SIGNAL_ISSUERS needs KYAOS_REVOCATION_EVENTS_URL or KYAOS_REVOCATION_WEBHOOK_PATH');
+  }
+  } else if (
+    ['KYAOS_TRUSTED_ISSUERS', 'KYAOS_TRUSTED_ROOTS', 'KYAOS_MAX_CHAIN_LENGTH', 'KYAOS_CARDS_FILE', ...L3C_SETTINGS, ...LEVEL_VARIABLES].some((name) => env[name])
+  ) {
+    fail('KYAOS_TRUSTED_ISSUERS / KYAOS_TRUSTED_ROOTS / KYAOS_MAX_CHAIN_LENGTH / KYAOS_CARDS_FILE / KYAOS_MINIMUM_LEVEL / KYAOS_TOOL_LEVELS / KYAOS_L3_MINUS_SATISFIES_L3 and the revocation settings need SERVICE_DID');
 }
 
 /** The discovery document (story L1-D): built once, validated against the schema, or the reason it is off. */
@@ -514,8 +628,14 @@ const server = createOrderServer({
   auth,
   ...(audit ? { audit } : {}),
   ...(kyaOs ? { kyaos: kyaOs } : {}),
+  ...(revocationSignals && revocationWebhookPath ? { revocationWebhook: { path: revocationWebhookPath, handle: revocationSignals.webhookHandler() } } : {}),
   ...(wellKnown ? { wellKnown } : {}),
   onServerError: (error) => console.error('server error:', error),
+});
+process.once('SIGTERM', () => {
+  void revocationSignals?.stop();
+  void statusCacheRedis?.quit();
+  server.close();
 });
 server.listen(port, host, () => {
   const modes = issuers.map((i) => {
@@ -531,6 +651,13 @@ server.listen(port, host, () => {
         : 'off (set SERVICE_DID)'
     }`,
   );
+  if (auth.verifier) {
+    console.log(
+      `  Revocation:  list proofs verified, cache ${redisUrl ? `redis ${redisUrl}` : 'in memory'}, signals ${
+        revocationSignals ? [env['KYAOS_REVOCATION_EVENTS_URL'] && `SSE ${env['KYAOS_REVOCATION_EVENTS_URL']}`, revocationWebhookPath && `webhook ${revocationWebhookPath}`].filter(Boolean).join(' + ') : 'off'
+      }`,
+    );
+  }
   console.log(`  OAuth:       ${demo ? 'DEMO tokens demo-reader, demo-admin, demo-agent, demo-agent-2' : modes.length ? modes.join(', ') : 'off'}`);
   console.log(
     `  Audit:       ${

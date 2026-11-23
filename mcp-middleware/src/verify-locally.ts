@@ -14,8 +14,13 @@
  *   through Redis or DynamoDB) as the replay store;
  * - DID documents over HTTPS (did:web) or offline (did:key), through an
  *   injected `fetch` where the host has a SafeFetch;
- * - status lists and Entity Cards over HTTPS, decoded here (story L3-C adds
- *   the list's own proof check at this seam);
+ * - status lists over HTTPS, each list's own proof verified before any bit
+ *   is read, through a revocation checker that fails closed and a
+ *   `StatusCache` (story L3-C: `statusCacheTtl`, `highPrivilegeScopes` held
+ *   to ≤ 60 s, cached reads reported `fresh: false`), which a
+ *   `RevocationSignalClient` invalidates at once on a revocation signal;
+ *   in multi-instance mode the cache lives in the shared Redis;
+ * - Entity Cards over HTTPS;
  * - `trustedIssuers` (default `'*'`) and `maxChainLength` (default 10).
  *
  * The Helix API is never asked: a call verifies with the API down, and a
@@ -28,6 +33,9 @@
 
 import { kyaos } from '@helixid/sdk-js';
 import { MemoryNonceStore, type NonceStore } from './kyaos/nonce-store.js';
+import { createResolutionFetch, type ResolverFetch } from './resolution-fetch.js';
+
+export type { ResolverFetch } from './resolution-fetch.js';
 
 /** What `reportVerification` receives for every local verification. */
 export interface VerificationReport {
@@ -53,8 +61,6 @@ export interface VerificationReport {
 
 export type ReportVerification = (report: VerificationReport) => void | Promise<void>;
 
-/** The `fetch` the resolvers use: the global one, or a SafeFetch the host injects. */
-export type ResolverFetch = (url: string) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 
 export interface LocalVerifierOptions {
   /** This service's DID: the proof's audience and, unless `resource` is set, the chain's resource. */
@@ -77,7 +83,11 @@ export interface LocalVerifierOptions {
   catalog?: readonly string[] | undefined;
   /** The replay store; default a `MemoryNonceStore` (this instance only). Share the runtime's store across instances. */
   nonceStore?: NonceStore | undefined;
-  /** How DID documents, status lists and cards are fetched; default the global `fetch`, `https:` only. */
+  /**
+   * How DID documents, status lists and cards are fetched: the host's
+   * SafeFetch (story C-A). Default: `createResolutionFetch` (https only,
+   * public IP literals only, same-origin redirects, 5 s, 1 MiB).
+   */
   fetch?: ResolverFetch | undefined;
   /** Development only: also read `http:` URLs on loopback hosts (a did:web on `127.0.0.1`, say). */
   allowLoopbackHttp?: boolean | undefined;
@@ -85,8 +95,18 @@ export interface LocalVerifierOptions {
   resolveDid?: kyaos.verifier.DidResolver | undefined;
   /** The `resolveDidKeys` seam; default: every Ed25519 key the resolved document publishes. */
   resolveDidKeys?: kyaos.verifier.VerifierSeams['resolveDidKeys'];
-  /** The status-list seam; default: fetch the list at its URL and decode it. */
+  /** The status-list seam; default: fetch the list at its URL, verify its proof, then decode it (story L3-C). */
   fetchStatusList?: kyaos.verifier.FetchStatusList | undefined;
+  /** The revocation seam; default: a checker over `fetchStatusList` with `statusCache`. */
+  checkRevocation?: kyaos.verifier.RevocationChecker | undefined;
+  /**
+   * The status cache (story L3-C point 6), or its options. Default: one in
+   * memory with `statusCacheTtl` 300 s; pass a `RedisStatusCacheStore` as
+   * `store` to share it between instances, next to the nonce store.
+   */
+  statusCache?: kyaos.verifier.StatusCache | kyaos.verifier.StatusCacheOptions | undefined;
+  /** Issuer DID to the status-list URLs or `https:` origins bound to it (SPEC.md §6.6 keeper rules 1 and 2). */
+  statusListIssuers?: Record<string, string[]> | undefined;
   /** Entity Cards by agent DID, from local config, read before `resolveCard`. */
   cards?: Record<string, unknown> | undefined;
   /** The card seam; default: the `KyaOsEntityCard` service of the agent's DID document, fetched. */
@@ -113,12 +133,16 @@ export interface LocalVerifierCall {
   tokenCnfJkt?: string | undefined;
   /** Default true. False: a call with a chain and no proof is verified on the chain alone, at most L2 (story C-C). */
   requireProof?: boolean | undefined;
+  /** Read every status list live, past the status cache: the guard sets it for a tool whose minimum level is L3 (story L3-C). */
+  liveStatus?: boolean | undefined;
 }
 
 export interface LocalVerifier {
   readonly serviceDid: string;
   readonly seams: kyaos.verifier.VerifierSeams;
   readonly nonceStore: NonceStore;
+  /** The status cache the revocation checker reads; a `RevocationSignalClient` invalidates it. */
+  readonly statusCache: kyaos.verifier.StatusCache;
   /** Verifies one tool call from its `_meta`; `undefined` when it carries neither a request proof nor a chain. */
   verifyCall(call: LocalVerifierCall): Promise<kyaos.verifier.VerifierResult | undefined>;
   /** The verifier on explicit input, with this service's seams and options. */
@@ -191,31 +215,44 @@ export function createLocalVerifier(options: LocalVerifierOptions): LocalVerifie
   const clock = options.clock ?? Date.now;
   const nonceStore = options.nonceStore ?? new MemoryNonceStore({ now: clock });
   const allowLoopbackHttp = options.allowLoopbackHttp ?? false;
-  const doFetch: ResolverFetch = options.fetch ?? ((url): ReturnType<ResolverFetch> => fetch(url));
+  // A host's own fetch (its SafeFetch) is held to the URL policy here; the default applies it itself.
+  const hostFetch = options.fetch;
+  const doFetch: ResolverFetch =
+    hostFetch === undefined
+      ? createResolutionFetch({ allowLoopbackHttp })
+      : async (url): ReturnType<ResolverFetch> => {
+          const target = resolutionUrl(url, allowLoopbackHttp);
+          // A URL that is not read is refused here; the caller reports it unresolved or unavailable.
+          if (target === undefined) throw new Error(`refusing to fetch ${url}: only https: URLs are read`);
+          return hostFetch(target);
+        };
   const fetchJson = async (url: string): Promise<unknown> => {
-    const target = resolutionUrl(url, allowLoopbackHttp);
-    if (target === undefined) throw new Error(`refusing to fetch ${url}: only https: URLs are read`);
-    const response = await doFetch(target);
+    const response = await doFetch(url);
     if (!response.ok) throw new Error(`${url} answered ${response.status}`);
     return response.json();
   };
-  const resolveDid: kyaos.verifier.DidResolver =
-    options.resolveDid ??
-    kyaos.verifier.createDidResolver({
-      fetch: async (url: string) => {
-        const target = resolutionUrl(url, allowLoopbackHttp);
-        // A URL that is not read is refused here; the verifier reports the DID unresolved.
-        if (target === undefined) throw new Error(`refusing to fetch ${url}: only https: URLs are read`);
-        return doFetch(target);
-      },
-    });
+  const resolveDid: kyaos.verifier.DidResolver = options.resolveDid ?? kyaos.verifier.createDidResolver({ fetch: doFetch });
   const resolveDidKeys = options.resolveDidKeys ?? kyaos.verifier.createDidKeysResolver(resolveDid);
-  const fetchStatusList: kyaos.verifier.FetchStatusList =
-    options.fetchStatusList ??
-    (async (url): Promise<kyaos.verifier.StatusListRead> => {
-      const list = await fetchJson(url);
-      // The list is read live from its issuer here; story L3-C adds its proof check and the cache that reports `fresh: false`.
-      return kyaos.verifier.decodeStatusListCredential(list, { fresh: true });
+  // Every list's proof is verified, by its issuer's assertionMethod key, before any bit is read (story L3-C point 2).
+  const fetchStatusList: kyaos.verifier.FetchStatusList = options.fetchStatusList ?? kyaos.verifier.createStatusListFetcher({ fetch: doFetch, resolveDid });
+  // A cache the host built (possibly from another copy of the SDK, so no instanceof), else one from the options.
+  const given = options.statusCache;
+  const statusCache: kyaos.verifier.StatusCache =
+    given !== undefined && typeof (given as kyaos.verifier.StatusCache).invalidate === 'function' && typeof (given as kyaos.verifier.StatusCache).getList === 'function'
+      ? (given as kyaos.verifier.StatusCache)
+      : new kyaos.verifier.StatusCache({
+          clock,
+          ...((given as kyaos.verifier.StatusCacheOptions | undefined) ?? {}),
+          ...(options.maxClockSkewMs === undefined ? {} : { maxClockSkewMs: options.maxClockSkewMs }),
+        });
+  const checkRevocation =
+    options.checkRevocation ??
+    kyaos.verifier.createRevocationChecker({
+      fetchStatusList,
+      cache: statusCache,
+      ...(options.maxClockSkewMs === undefined ? {} : { maxClockSkewMs: options.maxClockSkewMs }),
+      ...(options.statusListIssuers === undefined ? {} : { statusListIssuers: options.statusListIssuers }),
+      ...(options.resourceOwner === undefined ? {} : { trustedRootIssuer: options.resourceOwner }),
     });
   const resolveCard = async (did: string): Promise<unknown> => {
     const configured = options.cards?.[did];
@@ -231,6 +268,7 @@ export function createLocalVerifier(options: LocalVerifierOptions): LocalVerifie
     resolveDid,
     resolveDidKeys,
     fetchStatusList,
+    checkRevocation,
     resolveCard,
     nonceStore,
     clock,
@@ -260,6 +298,7 @@ export function createLocalVerifier(options: LocalVerifierOptions): LocalVerifie
       {
         ...(call.tokenCnfJkt === undefined ? {} : { tokenCnfJkt: call.tokenCnfJkt }),
         ...(call.requireProof === undefined ? {} : { requireProof: call.requireProof }),
+        ...(call.liveStatus === true ? { liveStatus: true } : {}),
       },
     );
     const entry: VerificationReport = {
@@ -286,5 +325,5 @@ export function createLocalVerifier(options: LocalVerifierOptions): LocalVerifie
     return result;
   };
 
-  return { serviceDid: options.serviceDid, seams, nonceStore, verifyCall, verify };
+  return { serviceDid: options.serviceDid, seams, nonceStore, statusCache, verifyCall, verify };
 }

@@ -347,4 +347,30 @@ describe('order-management sample server', () => {
     expect((await fetch(`${base}/elsewhere`)).status).toBe(404);
     expect(sink.eventTypes).toEqual([]);
   });
+
+  it('hands pushed revocation signals to the webhook receiver at its path, and a receiver that fails answers 500 (story L3-C)', async () => {
+    const pushed: string[] = [];
+    const errors: unknown[] = [];
+    const receiving = await listen({
+      revocationWebhook: {
+        path: '/revocations',
+        handle: async (req, res) => {
+          pushed.push(req.method ?? '');
+          if (req.headers['x-fail'] === '1') throw new Error('receiver down');
+          res.writeHead(202).end();
+        },
+      },
+      onServerError: (error) => errors.push(error),
+    });
+    try {
+      expect((await fetch(`${receiving.base}/revocations`, { method: 'POST', body: 'set' })).status).toBe(202);
+      expect((await fetch(`${receiving.base}/revocations`, { method: 'POST', body: 'set', headers: { 'x-fail': '1' } })).status).toBe(500);
+      expect(pushed).toEqual(['POST', 'POST']);
+      expect(errors).toHaveLength(1);
+      expect((await fetch(`${base}/revocations`, { method: 'POST' })).status).toBe(404);
+    } finally {
+      await new Promise<void>((resolve) => receiving.server.close(() => resolve()));
+    }
+    expect(sink.eventTypes).toEqual([]);
+  });
 });

@@ -50,6 +50,10 @@ export type { AuditedToolResult, HelixAuditDeliveryOptions, RunAuditedToolOption
 
 // The local verifier the guard runs in-process on every tool call (story F-2).
 export { createLocalVerifier, requestOf, unrecordedReporter, cardEndpointOf, resolutionUrl, KYA_OS_CARD_SERVICE_TYPE } from './verify-locally.js';
+export { createResolutionFetch, resolutionTarget, isPublicUnicastAddress, ResolutionRefusedError, RESOLUTION_MAX_BYTES, RESOLUTION_TIMEOUT_MS } from './resolution-fetch.js';
+export type { ResolutionFetchOptions } from './resolution-fetch.js';
+export { RevocationSignalClient, SseParser, createRevocationSignalClient } from './revocation-signals.js';
+export type { RevocationSignalClientOptions, SignalReport, SignalOutcome } from './revocation-signals.js';
 export type { LocalVerifier, LocalVerifierOptions, LocalVerifierCall, VerificationReport, ReportVerification, ResolverFetch } from './verify-locally.js';
 
 // KYA-OS session, replay store and server response proof (story L2-A).

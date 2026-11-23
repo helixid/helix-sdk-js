@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { EnvSigner, canonicalize, conformance } from '../../../../src/core/kyaos/index.js';
+import { EnvSigner, canonicalize, conformance, verifier } from '../../../../src/core/kyaos/index.js';
 import { buildDIDDocument } from '../../../../src/core/did.js';
 import { generateKeyPair } from '../../../../src/core/keys.js';
 
@@ -146,7 +146,7 @@ describe('legacy §6.2 reading', () => {
 });
 
 describe('status-list reading', () => {
-  it('refuses mistaken configuration and reads keepers, windows and indexes', () => {
+  it('refuses mistaken configuration and reads keepers, windows and indexes', async () => {
     expect(() => conformance.statusConfiguration({ trustedRootIssuer: '' })).toThrow(/non-empty/);
     expect(() => conformance.statusConfiguration({ statusListIssuers: 'x' as never })).toThrow(/does not map/);
     expect(() => conformance.statusConfiguration({ statusListIssuers: { a: 'x' as never } })).toThrow(/does not map/);
@@ -157,21 +157,26 @@ describe('status-list reading', () => {
     expect(() => conformance.statusConfiguration({ statusListIssuers: { a: ['https://x.example/a'], b: ['https://x.example/a'] } })).toThrow(/two issuers/);
     const config = conformance.statusConfiguration({ statusListIssuers: { 'did:web:svc': ['https://svc.example'] } });
     expect(conformance.keeper('https://svc.example/list', 'did:web:o', config)).toEqual({ did: 'did:web:svc', unbound: false });
-    expect(conformance.acceptsList(null, 'did:web:o', 'u', 'revocation', config)).toBe(false);
-    expect(conformance.acceptsList({ issuer: 42 }, 'did:web:o', 'u', 'revocation', config)).toBe(false);
-    const plain = conformance.statusConfiguration({});
-    expect(conformance.acceptsList({ issuer: 'did:web:o', id: 'u' }, 'did:web:o', 'u', 'revocation', plain)).toBe(false);
-    expect(conformance.withinWindow({ validUntil: '2026-01-01T00:00:00.123456789+05:00' }, Date.parse('2025-01-01T00:00:00Z'))).toBe(true);
-    expect(() => conformance.withinWindow({ validFrom: '2026-01-01' }, 0)).toThrow(/not a date/);
-    expect(() => conformance.withinWindow({ validFrom: '2026-02-30T00:00:00Z' }, 0)).toThrow(/not a date/);
-    expect(conformance.statusIndex(7)).toBeUndefined();
-    expect(conformance.statusIndex('0'.repeat(20) + '7')).toBe(7);
-    expect(conformance.statusIndex('99999999999999999')).toBeUndefined();
-    expect(() => conformance.listBits('u!!')).toThrow(/base64url/);
-    expect(conformance.listBits(gzipSync(Buffer.alloc(2)).toString('base64url'))).toHaveLength(2);
-    expect(conformance.statusListRefusal({ credential: { credentialStatus: 'x' }, statusLists: {}, didDocuments: {}, serverDid: 's' }, 0)).toMatch(/credentialStatus/);
-    expect(conformance.statusListRefusal({ credential: { credentialStatus: {} }, statusLists: {}, didDocuments: {}, serverDid: 's' }, 0)).toMatch(/names no list/);
-    expect(conformance.statusListRefusal({ credential: null, statusLists: {}, didDocuments: {}, serverDid: 's' }, 0)).toMatch(/unreadable/);
+    expect(conformance.keeper('https://other.example/list', 'did:web:o', config)).toEqual({ did: 'did:web:o', unbound: true });
+    expect(verifier.windowVerdict(undefined, '2026-01-01T00:00:00.123456789+05:00', Date.parse('2025-01-01T00:00:00Z'), 0)).toBe('inside');
+    expect(verifier.windowVerdict('2026-01-01', undefined, 0, 0)).toBe('malformed');
+    expect(verifier.isCalendarDateTime('2026-02-30T00:00:00Z')).toBe(false);
+    expect(verifier.isCalendarDateTime('2026-02-28T00:00:00Z')).toBe(true);
+    expect(verifier.isCalendarDateTime('2026-13-01T00:00:00Z')).toBe(false);
+    expect(verifier.parseStatusListIndex(7)).toBeUndefined();
+    expect(verifier.parseStatusListIndex('0'.repeat(10) + '7')).toBe(7);
+    expect(verifier.parseStatusListIndex('99999999999999999')).toBeUndefined();
+    expect(() => verifier.decodeStatusListBits('u!!')).toThrow(/GZIP/);
+    expect(verifier.decodeStatusListBits(gzipSync(Buffer.alloc(2)).toString('base64url'))).toHaveLength(2);
+    expect(await conformance.statusListRefusal({ credential: { credentialStatus: 'x' }, statusLists: {}, didDocuments: {}, serverDid: 's' }, 0)).toMatch(/credentialStatus/);
+    expect(await conformance.statusListRefusal({ credential: { credentialStatus: {} }, statusLists: {}, didDocuments: {}, serverDid: 's' }, 0)).toMatch(/names no list/);
+    expect(await conformance.statusListRefusal({ credential: null, statusLists: {}, didDocuments: {}, serverDid: 's' }, 0)).toMatch(/unreadable/);
+    expect(
+      await conformance.statusListRefusal(
+        { credential: { issuer: 'did:web:o', credentialStatus: { statusListCredential: 'https://o.example/l' } }, statusLists: {}, didDocuments: {}, serverDid: 's' },
+        0,
+      ),
+    ).toMatch(/no purpose/);
   });
 });
 
