@@ -1,5 +1,6 @@
 import { access } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { didWebFor } from '@helixid/sdk-js';
 import { buildDIDDocument } from '@helixid/cli/core/did';
 import { generateKeyPair } from '@helixid/cli/core/keys';
 import { requireHederaOperator, requirePassphrase } from '@helixid/cli/lib/env';
@@ -48,7 +49,8 @@ export async function didCreate(input: DidCreateInput): Promise<DidCreateResult>
     if (!input.domain) {
       throw new Error('domain is required for method "web"');
     }
-    const did = `did:web:${input.domain}`;
+    // domain is the raw host[:port]; didWebFor percent-encodes it once (a port's ':' is %3A).
+    const did = didWebFor(input.domain);
     const didDocument = buildDIDDocument(did, keyPair.publicKey);
     await saveNewWallet(input.wallet, passphrase, did, keyPair);
 

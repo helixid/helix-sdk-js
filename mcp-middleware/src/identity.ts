@@ -28,6 +28,7 @@ import {
   didWebFor,
   kyaOsCardServiceEntry,
   parseDidWeb,
+  ownDidWebProblem,
   parseEntityCard,
   resolveEntityCardFromServerMeta,
   serverCardMeta,
@@ -98,6 +99,8 @@ export function serveIdentity(options: ServeIdentityOptions): ServedIdentity {
   const did = options.did ?? didWebFor(origin.host, segments);
   const parsed = parseDidWeb(did);
   if (parsed === undefined) throw new Error(`serveIdentity: ${did} is not a did:web DID`);
+  const problem = ownDidWebProblem(did);
+  if (problem !== undefined) throw new Error(`serveIdentity: ${problem}`);
   const paths = pathsFor(parsed.path);
   const publicBase = `${origin.origin}`;
   const didDocumentUrl = origin.protocol === 'https:' && origin.origin === `https://${parsed.host}` ? didWebDocumentUrl(did) : `${publicBase}${paths.didDocument}`;

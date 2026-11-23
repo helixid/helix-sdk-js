@@ -90,6 +90,8 @@ describe('serveIdentity', () => {
     expect(() => serveIdentity({ publicOrigin: 'not a url' })).toThrow(/absolute URL/);
     expect(() => serveIdentity({ publicOrigin: 'ftp://mcp.example.com' })).toThrow(/http\(s\) origin/);
     expect(() => serveIdentity({ publicOrigin: 'https://mcp.example.com', did: 'did:key:z6Mk' })).toThrow(/did:web/);
+    expect(() => serveIdentity({ publicOrigin: 'http://localhost:3000', did: 'did:web:localhost:3000:mcp' }), 'a raw port names another URL').toThrow(/unencoded port/);
+    expect(serveIdentity({ publicOrigin: 'http://localhost:3000', path: '/mcp' }).did, 'the origin port is encoded once').toBe('did:web:localhost%3A3000:mcp');
     expect(() => serveIdentity({ publicOrigin: 'https://mcp.example.com', card: { name: 'X', proof: {} } as never })).toThrow(/proof/);
   });
 

@@ -70,6 +70,13 @@ describe('helix CLI', () => {
     expect(stdout.some((line) => line.includes('"id": "did:web:example.com"'))).toBe(true);
   });
 
+  it('helix did create --method web percent-encodes a port once and refuses an encoded or non-host --domain', async () => {
+    await runDidCreate({ method: 'web', domain: 'localhost:3680', wallet: join(tempDir, 'local.enc'), statusList: false });
+    expect(JSON.parse(await readFile(join(tempDir, 'local.enc'), 'utf8')).did).toBe('did:web:localhost%3A3680');
+    await expect(runDidCreate({ method: 'web', domain: 'localhost%3A3680', wallet: join(tempDir, 'bad.enc') })).rejects.toThrow(/--domain must be a host name/);
+    await expect(runDidCreate({ method: 'web', domain: 'https://issuer.example', wallet: join(tempDir, 'bad2.enc') })).rejects.toThrow(/--domain must be a host name/);
+  });
+
   it('helix did create --method web produces both the DID document and a status list by default', async () => {
     const walletPath = join(tempDir, 'sp-issuer.enc');
 
