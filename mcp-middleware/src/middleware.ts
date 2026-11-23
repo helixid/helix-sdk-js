@@ -1,4 +1,4 @@
-import type { kyaos } from '@helixid/sdk-js';
+import { kyaos } from '@helixid/sdk-js';
 import type { ToolAuditEvent } from './audit.js';
 import { extractCredential } from './credentials.js';
 import { AuthorizationServerUnavailableError, LevelError, MCPAuthError, ProofError, ToolScopeError } from './errors.js';
@@ -7,6 +7,9 @@ import { cnfJktOf, createOAuthValidator, type AuthResult } from './oauth.js';
 import { challengeFor, resumeRetry } from './needs-authorization-guard.js';
 import type { MCPToolCall, MCPMiddlewareOptions } from './types.js';
 import { createLocalVerifier, type LocalVerifier } from './verify-locally.js';
+import { hasDelegationHeaders } from './delegation/headers.js';
+import { verifyInboundDelegationHeaders } from './delegation/inbound.js';
+import { VerificationCache } from './delegation/verification-cache.js';
 
 /** Who a tool call came from, once the guard has identified and authorized them. */
 export interface AuthorizedCaller {
@@ -23,6 +26,10 @@ export interface AuthorizedCaller {
   proofFloor?: boolean;
   /** KYA-OS callers: the `cnf` diagnostics (`cnf_present_but_token_unfused`). */
   cnfDiagnostics?: string[];
+  /** KYA-OS callers with a delegation (story L3-D): the verified chain, root first, which `delegationContextOf` forwards. */
+  chain?: unknown[];
+  /** Downstream calls (story L3-D): the service that forwarded the agent's authority (the delegation proof's `iss`). */
+  forwardedBy?: string;
 }
 
 type Caller = AuthorizedCaller;
@@ -63,6 +70,17 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
             ...options.verifier,
             serviceDid: options.verifier.serviceDid ?? serviceDid ?? '',
           });
+
+  // Story L3-D: downstream calls carrying KYA-OS delegation headers, verified by the same local verifier.
+  const inbound = options.inboundDelegation === false ? undefined : (options.inboundDelegation ?? {});
+  const inboundCache =
+    inbound === undefined || localVerifier === undefined || inbound.cache === false
+      ? undefined
+      : inbound.cache instanceof VerificationCache
+        ? inbound.cache
+        : localVerifier.statusCache === undefined
+          ? new VerificationCache()
+          : VerificationCache.forStatusCache(localVerifier.statusCache);
 
   const audit = async (
     caller: Caller,
@@ -119,9 +137,13 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
   const authorize = async (toolCall: MCPToolCall): Promise<AuthorizedCaller> => {
     // Credentials come from Authorization or `_meta` only; tool arguments
     // are never consulted. Ambiguous credentials throw.
-    const credential = extractCredential(toolCall);
     const toolName = typeof toolCall.name === 'string' ? toolCall.name : undefined;
-    if (!credential) {
+    const forwarded = inbound !== undefined && hasDelegationHeaders(toolCall.headers);
+    const credential = forwarded ? undefined : extractCredential(toolCall);
+    if (forwarded && (kyaos.verifier.readRequestProof(toolCall._meta) !== undefined || kyaos.verifier.readCarriedChain(toolCall._meta) !== undefined)) {
+      throw new MCPAuthError('CREDENTIAL_CONFLICT', 'Downstream delegation headers and a KYA-OS request proof or chain were both provided; send one');
+    }
+    if (!credential && !forwarded) {
       throw new ProofError(
         'PROOF_MISSING',
         'No credentials: send a KYA-OS request proof in _meta["org.kya-os/request-proof"]' + (validateOAuth ? ', or Authorization: Bearer' : ''),
@@ -129,14 +151,41 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
     }
 
     let caller: Caller;
-    if (credential.kind === 'proof') {
+    if (forwarded) {
+      if (!localVerifier) {
+        throw new Error('helixidMCPMiddleware: `verifier` is required to verify KYA-OS delegation headers');
+      }
+      const result = await verifyInboundDelegationHeaders(toolCall.headers, {
+        verifier: localVerifier,
+        ...(inbound?.audience === undefined ? {} : { audience: inbound.audience }),
+        ...(inbound?.forwarders === undefined ? {} : { forwarders: inbound.forwarders }),
+        ...(inboundCache === undefined ? {} : { cache: inboundCache }),
+        ...(minimumLevelFor(levelPolicy, toolName) === 'L3' ? { liveStatus: true } : {}),
+      });
+      if (!result.ok) {
+        if (result.agentDid !== undefined) {
+          await audit({ authMethod: 'kyaos', scopes: [], agentDid: result.agentDid, level: result.level, fresh: result.fresh }, toolName, { reason: result.reasons.join(',') });
+        }
+        throw new ProofError('PROOF_INVALID', `The delegation headers were refused: ${result.reasons.join(', ')}`, result.reasons);
+      }
+      caller = {
+        authMethod: 'kyaos',
+        scopes: result.effectiveScopes,
+        agentDid: result.agentDid!,
+        level: result.level,
+        fresh: result.fresh,
+        proofFloor: false,
+        chain: result.chain!,
+        forwardedBy: result.forwarder!,
+      };
+    } else if (credential!.kind === 'proof') {
       if (!localVerifier) {
         throw new Error('helixidMCPMiddleware: `verifier` is required to verify KYA-OS request proofs');
       }
       // A bearer token next to a proof is its sender constraint: its cnf.jkt fuses with the proof's for L3 (§8.6).
       let tokenCnfJkt: string | undefined;
-      if (credential.bearer !== undefined) {
-        const auth = await validateBearer(credential.bearer);
+      if (credential!.bearer !== undefined) {
+        const auth = await validateBearer(credential!.bearer);
         tokenCnfJkt = auth.cnfJkt ?? cnfJktOf(auth.claims);
       }
       // A chain may come without a proof (story C-C): it verifies, at most at L2, and the level check below decides.
@@ -170,9 +219,10 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
         fresh: result.fresh,
         proofFloor: result.proofFloor,
         ...(cnfDiagnostics.length > 0 ? { cnfDiagnostics } : {}),
+        ...(Array.isArray(credential!.chain) && credential!.chain.length > 0 ? { chain: credential!.chain as unknown[] } : {}),
       };
     } else {
-      const auth = await validateBearer(credential.token);
+      const auth = await validateBearer(credential!.token);
       caller = { authMethod: 'oauth', scopes: auth.scopes ?? [], oauthSubject: auth.sub };
     }
 

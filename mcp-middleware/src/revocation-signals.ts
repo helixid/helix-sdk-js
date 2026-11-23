@@ -29,6 +29,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { kyaos } from '@helixid/sdk-js';
+import { revocationInvalidation } from './delegation/verification-cache.js';
 
 export interface SignalReport {
   /** ISO 8601 time the signal was handled. */
@@ -374,5 +375,6 @@ export function createRevocationSignalClient(
 ): RevocationSignalClient {
   const resolveDid = options.resolveDid ?? verifier.seams.resolveDid;
   if (resolveDid === undefined) throw new Error('createRevocationSignalClient: the verifier has no resolveDid seam');
-  return new RevocationSignalClient({ ...options, resolveDid, cache: options.cache ?? verifier.statusCache });
+  // Story L3-D: the default also drops the verdicts of every verification cache linked to the status cache.
+  return new RevocationSignalClient({ ...options, resolveDid, cache: options.cache ?? revocationInvalidation(verifier.statusCache) });
 }

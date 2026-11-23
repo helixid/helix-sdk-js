@@ -23,10 +23,16 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { OutboundAttachment, OutboundAudit } from './delegation/outbound.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import {
   AUDIT_BINDING_MCP,
   AuditTrail,
+  UNKNOWN_DELEGATION_REF,
+  credentialDigest,
+  delegationChainDigests,
+  delegationRef,
+  didWebFor,
   keyedCommitmentValue,
   pairwiseDid,
   publicDid,
@@ -363,6 +369,65 @@ export class McpAuditTrail {
     );
   }
 
+  /**
+   * Story L3-D (L3.26): one outbound delegation attachment, as
+   * `delegation.outbound_attached`: the chain string as the action name
+   * (verbatim up to 256 characters, else its digest), the target as the
+   * resource (its DID when given, else the did:web of the audience host),
+   * the forwarded credential's reference, digest and the chain's digests
+   * root first, the agent as actor and the Responsible Party.
+   */
+  outboundAttached(attachment: OutboundAttachment, options: { targetDid?: string; context?: McpAuditContext } = {}): Promise<AuditTrailEntry> {
+    const leaf = attachment.chain[attachment.chain.length - 1];
+    const parent = attachment.chain.length > 1 ? attachment.chain[attachment.chain.length - 2] : undefined;
+    const leafRef = delegationRef(leaf) ?? UNKNOWN_DELEGATION_REF;
+    const parentRef = parent === undefined ? undefined : delegationRef(parent);
+    const leafDigest = credentialDigest(leaf);
+    const chainDigests = delegationChainDigests(attachment.chain);
+    let target: string | undefined = options.targetDid;
+    if (target === undefined) {
+      try {
+        target = didWebFor(attachment.audience);
+      } catch {
+        target = undefined;
+      }
+    }
+    const authorization: AuthorizationEvidence = {
+      source: 'delegation',
+      decision: 'allowed',
+      delegationRef: leafRef,
+      ...(leafDigest === undefined ? {} : { delegationCredentialDigest: leafDigest }),
+      ...(chainDigests === undefined ? {} : { delegationChainDigests: chainDigests }),
+    };
+    return this.record(
+      {
+        eventType: 'delegation.outbound_attached',
+        action: { category: 'delegation.outbound', name: attachment.chainString },
+        outcome: 'succeeded',
+        details: { family: 'delegation', phase: 'outbound_attached', delegationRef: leafRef, ...(parentRef === undefined ? {} : { parentRef }) },
+      },
+      {
+        actor: pairwiseDid(attachment.agentDid),
+        responsibleParty: pairwiseDid(attachment.responsibleParty),
+        authorization,
+        ...(attachment.correlationId === undefined ? {} : { correlationId: attachment.correlationId }),
+        causationId: attachment.jti,
+        ...options.context,
+      },
+      undefined,
+      // An audience that names no host has no DID: the event then names no resource, never this server instead.
+      target === undefined ? null : publicDid(target),
+    );
+  }
+
+  /** `withDelegation`'s `audit` option: every outbound attachment recorded by `outboundAttached`. */
+  outboundAudit(options: { targetDid?: (attachment: OutboundAttachment) => string | undefined } = {}): OutboundAudit {
+    return async (attachment) => {
+      const targetDid = options.targetDid?.(attachment);
+      await this.outboundAttached(attachment, targetDid === undefined ? {} : { targetDid });
+    };
+  }
+
   tool(
     phase: ToolPhase,
     options: { toolName?: string; outcome: AuditOutcome; attempt?: string; reasonCode?: string; context?: McpAuditContext },
@@ -462,7 +527,7 @@ export class McpAuditTrail {
   }
 
   /** Fills the context (explicit members over the current call's) and the resource, applies the tool-name policy, records. */
-  private record(input: AuditEventInput, context: McpAuditContext | undefined, toolName?: string): Promise<AuditTrailEntry> {
+  private record(input: AuditEventInput, context: McpAuditContext | undefined, toolName?: string, resource?: PartyRef | null): Promise<AuditTrailEntry> {
     const call = this.calls.getStore();
     const correlationId = context?.correlationId ?? call?.correlationId;
     const actor = context?.actor ?? call?.actor;
@@ -472,7 +537,7 @@ export class McpAuditTrail {
       ...(context?.causationId !== undefined ? { causationId: context.causationId } : {}),
       ...(actor !== undefined ? { actor } : {}),
       ...(context?.responsibleParty !== undefined ? { responsibleParty: context.responsibleParty } : {}),
-      ...(this.serviceDid !== undefined ? { resource: publicDid(this.serviceDid) } : {}),
+      ...(resource === null ? {} : resource !== undefined ? { resource } : this.serviceDid !== undefined ? { resource: publicDid(this.serviceDid) } : {}),
       ...(context?.authorization !== undefined ? { authorization: context.authorization } : {}),
       action: { ...input.action, ...(toolName !== undefined && this.includeToolNames ? { name: toolName } : {}) },
     };
