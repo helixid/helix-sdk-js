@@ -522,6 +522,17 @@ describe('verify() with the revocation seam', () => {
     expect(live).toMatchObject({ ok: true, level: 'L3', fresh: true, chainSummary: { fresh: true } });
     const cached = await run({ ...fixtureSeams(env, fixture.seams, fixture.now), checkRevocation });
     expect(cached).toMatchObject({ ok: true, level: 'L2', fresh: false, chainSummary: { fresh: false } });
+    // liveStatus (a tool that demands L3): every hop and every attestation is read live, past the cache, so L3 again.
+    const contexts: verifier.RevocationContext[] = [];
+    const recording: verifier.RevocationChecker = (credential, context) => {
+      contexts.push(context);
+      return checkRevocation(credential, context);
+    };
+    const options = { ...(fixture.options as unknown as verifier.VerifierOptions), liveStatus: true };
+    const liveAgain = await verifier.verify(fixture.input as verifier.VerifierInput, { ...fixtureSeams(env, fixture.seams, fixture.now), checkRevocation: recording }, options);
+    expect(liveAgain).toMatchObject({ ok: true, level: 'L3', fresh: true, chainSummary: { fresh: true } });
+    expect(contexts.length).toBeGreaterThan((fixture.input.chain as unknown[]).length);
+    expect(contexts.every((context) => context.live === true)).toBe(true);
     const revokedRoot: verifier.RevocationChecker = async (hop) =>
       hop.id === (fixture.input.chain as Array<{ id: string }>)[0]!.id ? { revoked: true, fresh: false, code: ReasonCodes.STATUS_REVOKED, message: 'root revoked' } : { revoked: false, fresh: true };
     const refused = await run({ ...fixtureSeams(env, fixture.seams, fixture.now), checkRevocation: revokedRoot });
