@@ -40,9 +40,6 @@ export { HelixClient } from './client/HelixClient.js';
 export type {
   CreateStatusListOptions,
   CreateServiceInput,
-  IssueServiceDelegationGrantInput,
-  GetAgentScopesInput,
-  AgentScopesResult,
   AuditLogFilters,
   AuditLogEvent,
   AuditLogPage,

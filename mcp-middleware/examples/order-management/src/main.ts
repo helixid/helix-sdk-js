@@ -19,6 +19,7 @@ import {
   type AuditSink,
   type AuthResult,
   type KyaOsRuntime,
+  type LocalVerifier,
   type McpAuditTrail,
   type MCPMiddlewareOptions,
   type OAuthIntrospectionOptions,
@@ -34,6 +35,7 @@ import { TOOL_SCOPES } from './orders.js';
 import { FORWARD_TOOL, type DownstreamOptions } from './downstream.js';
 import { describeForwarders, forwardersFromEnv } from './delegation-env.js';
 import { LEVEL_VARIABLES, describeLevelSettings, readLevelSettings } from './levels.js';
+import { consentFromSettings, describeConsent, readConsentSettings, type ConsentSettings } from './consent-env.js';
 import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './well-known-env.js';
 
 /**
@@ -128,6 +130,14 @@ import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './we
  *                         demo-authorizer.ts); outside it every retry is refused until a verifier
  *                         (stories F-2, L3-H) is wired in. Optional:
  *   KYAOS_RESUME_TTL_SECONDS  resume-token lifetime (default 600)
+ *   KYAOS_HELIX_CONSENT_URL KYA-OS (story L3-H): Helix's API base. The challenge's consent page becomes
+ *                         Helix's, where the user's own did:key signs the root hop; a retry's credential is
+ *                         verified in full by the local verifier. Needs SERVICE_DID and SERVICE_SIGNING_KEY
+ *                         (the consent request is signed by this service). Optional:
+ *     KYAOS_CONSENT_WINDOW_SECONDS        the consented window (default 86400)
+ *     KYAOS_CONSENT_HOP_LIFETIME_SECONDS  each hop's lifetime inside it, renewed by the agent without a click
+ *     KYAOS_CONSENT_USER                  the service user for callers without an OAuth subject (one-user demo)
+ *     KYAOS_CONSENT_SERVICE_NAME          the consent page's branding
  *   AUDIT_LOG_FILE        append every audit event as one JSON line to this file, next to (or instead
  *                         of) the HelixID audit sink; for local runs and the e2e suite
  *   WELL_KNOWN_MCP        KYA-OS discovery (story L1-D): GET /.well-known/mcp is served whenever SERVICE_DID
@@ -477,7 +487,26 @@ if (downstreamUrl) {
 }
 
 const authorizationUrl = env['KYAOS_AUTHORIZATION_URL'];
-if (authorizationUrl) {
+let consentSettings: ConsentSettings | undefined;
+try {
+  consentSettings = readConsentSettings(env);
+} catch (error) {
+  fail((error as Error).message);
+}
+if (consentSettings && authorizationUrl) fail('set KYAOS_AUTHORIZATION_URL or KYAOS_HELIX_CONSENT_URL, not both');
+if (consentSettings) {
+  if (!serviceDid) fail('KYAOS_HELIX_CONSENT_URL needs SERVICE_DID (the consent request is for this service)');
+  const ttlSeconds = numberFromEnv('KYAOS_RESUME_TTL_SECONDS', false);
+  const consent = consentFromSettings(consentSettings, serviceDid, new kyaos.EnvSigner({ did: serviceDid, envVar: 'SERVICE_SIGNING_KEY' }), () => auth.verifier as LocalVerifier | undefined);
+  auth.needsAuthorization = createNeedsAuthorization({
+    authorizationUrl: consent.authorizationUrl,
+    authorizer: consent.authorizer,
+    ...(ttlSeconds !== undefined ? { ttlSeconds } : {}),
+    ...(auth.auditSink ? { auditSink: auth.auditSink } : {}),
+    onAuditError: (error) => console.error('audit write failed:', error),
+    serviceDid,
+  });
+} else if (authorizationUrl) {
   if (!serviceDid) fail('KYAOS_AUTHORIZATION_URL needs SERVICE_DID (the challenge binds the token to this service)');
   const ttlSeconds = numberFromEnv('KYAOS_RESUME_TTL_SECONDS', false);
   try {
@@ -500,7 +529,7 @@ if (authorizationUrl) {
     fail(`KYA-OS needs_authorization: ${error instanceof Error ? error.message : String(error)}`);
   }
 } else if (env['KYAOS_RESUME_TTL_SECONDS']) {
-  fail('KYAOS_RESUME_TTL_SECONDS needs KYAOS_AUTHORIZATION_URL');
+  fail('KYAOS_RESUME_TTL_SECONDS needs KYAOS_AUTHORIZATION_URL or KYAOS_HELIX_CONSENT_URL');
 }
 
 if (kyaOs) {
@@ -728,9 +757,11 @@ server.listen(port, host, () => {
   console.log(`  Identity:    ${identity ? `${identity.publicOrigin}${new URL(resource).pathname.replace(/\/$/, '')}/{did,card}.json` : 'off (set PUBLIC_ORIGIN)'}`);
   console.log(
     `  Consent:     ${
-      authorizationUrl
+      consentSettings
+        ? `needs_authorization challenges to Helix's consent page (story L3-H): ${describeConsent(consentSettings)}; retries verified by the local verifier`
+        : authorizationUrl
         ? `needs_authorization challenges to ${authorizationUrl}, resume tokens ${env['KYAOS_NONCE_STORE']?.trim().toLowerCase() === 'redis' ? 'in redis (KYAOS_REDIS_URL)' : 'in memory'}, retries ${demo ? 'checked structurally (DEMO_MODE, no signature verification)' : 'refused until a verifier is wired in'}`
-        : 'off (set KYAOS_AUTHORIZATION_URL)'
+        : 'off (set KYAOS_HELIX_CONSENT_URL or KYAOS_AUTHORIZATION_URL)'
     }`,
   );
   console.log(
