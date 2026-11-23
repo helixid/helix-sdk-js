@@ -1,6 +1,5 @@
 import type { AuditProducerEvent, AuditSink } from '../audit/index.js';
 import { generateKeyPair, type KeyPair } from '../core/keys.js';
-import { agentKeyRegistration, type AgentPublicKeyJwk } from '../core/agent-key.js';
 import { SDKOnlyModeNoAPIError } from '../errors/index.js';
 import { verifyJWT } from '../core/jwt.js';
 import type { HelixJWTPayload } from '../core/schemas/jwt.js';
@@ -129,9 +128,7 @@ export interface HelixClientOptions {
   /**
    * Enterprise (server-custody, account-scoped) mode: presence of this
    * option is what selects it. Every call then sends it as the bearer
-   * token (enterprise has no admin key), and delegateAuthority()
-   * talk to /v1/custodial-agents/:did/... instead of core's
-   * /v1/agents/:did/.... See helix-server-enterprise's
+   * token (enterprise has no admin key). See helix-server-enterprise's
    * POST /v1/account/api-keys. No email/password, no login call -- an
    * agent process holds only this, the same way an OSS agent holds only
    * `adminApiKey`.
@@ -360,7 +357,7 @@ export class HelixClient {
   // -- Service Providers ---------------------------------------------------
   // Services hold no keys: the server mints the service DID, keeps its key,
   // and signs consent grants on the service's behalf. Same custody model as
-  // agents (onboardAgent/delegateAuthority), so both are API calls.
+  // agents (onboardAgent), so both are API calls.
 
   /** Enroll a service (self-hosted servers; hosted accounts enroll through the console/account API). */
   async createService(input: CreateServiceInput): Promise<{ serviceDid: string; serviceName: string }> {
@@ -452,53 +449,6 @@ export class HelixClient {
     return this.http.post('/v1/onboard', { enrollmentToken, domains });
   }
 
-  /**
-   * Delegates a slice of a server-custody agent's authority to another DID —
-   * the custodial counterpart to the (now-defunct, see delegation.ts)
-   * wallet-based delegate(), which needed the delegator's own private key
-   * and so has had nothing legitimate to call since agent self-custody was
-   * retired. The caller never has, and never can have, the delegator's
-   * private key, so this is an API call
-   * that authorizes HelixID to sign on the delegator's behalf, not a local
-   * signature.
-   *
-   * Two modes: enterprise (this.apiKey set) hits the account-scoped
-   * custodial route; core/OSS hits the admin-key-gated
-   * route. Pass `vcId` to pin which of the delegator's active credentials to
-   * delegate from (e.g. it already holds more than one, ambiguous to the
-   * default subject-only lookup).
-   */
-  async delegateAuthority(
-    did: string,
-    to: string,
-    scopes: string[],
-    expiresIn: number,
-    options: { vcId?: string; revokeExisting?: boolean } = {},
-  ): Promise<SignedVC> {
-    this.assertAPIConfigured();
-    const body = {
-      to,
-      scopes,
-      expiresIn,
-      ...(options.vcId !== undefined ? { vcId: options.vcId } : {}),
-      // Same rule as every stored credential: the same scopes delegated
-      // again refresh the earlier delegation, other scopes stand beside it,
-      // revokeExisting clears the others.
-      ...(options.revokeExisting !== undefined ? { revokeExisting: options.revokeExisting } : {}),
-    };
-
-    const result = await this.http.post<{ delegatedVC: SignedVC }>(
-      `/v1/${this.agentRoutePrefix()}/${encodeURIComponent(did)}/delegate`,
-      body,
-    );
-    return result.delegatedVC;
-  }
-
-  /** Where custodial agent actions live: enterprise's account-scoped routes, or core's admin-key-gated ones. */
-  private agentRoutePrefix(): 'custodial-agents' | 'agents' {
-    return this.apiKey ? 'custodial-agents' : 'agents';
-  }
-
   async requestUserChallenge(
     userDid: string,
   ): Promise<{ challengeId: string; nonce: string; expiresAt: string }> {
@@ -532,25 +482,6 @@ export class HelixClient {
   /** An `AuditSink` for an `AuditTrail` whose events this client should report to the API. */
   auditSink(): AuditSink {
     return { append: (entry) => this.recordAuditEvent(entry.event) };
-  }
-
-  /**
-   * Registers the public half of a key the agent generated itself (KYA-OS
-   * story L1-A, `generateAgentKey()`): `POST /v1/agents/{did}/keys` with
-   * the public JWK and the verification-method fragment, nothing else. The
-   * body is checked for private material before it is sent (self-custody
-   * invariant: no API request from the SDK ever carries a private key).
-   * Helix republishes the agent's did:web document with the key as
-   * `<did>#<kid>`, the `kid` every JWS the agent signs must carry.
-   */
-  async registerAgentKey(
-    agentDid: string,
-    publicKey: string | Uint8Array | AgentPublicKeyJwk,
-    options: { kid?: string } = {},
-  ): Promise<{ did: string; kid: string; didKey: string; didDocument: Record<string, unknown> }> {
-    this.assertAPIConfigured();
-    const body = agentKeyRegistration(publicKey, options.kid);
-    return this.http.post(`/v1/agents/${encodeURIComponent(agentDid)}/keys`, body);
   }
 
   private assertAPIConfigured(): void {

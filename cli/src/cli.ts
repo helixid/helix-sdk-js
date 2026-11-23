@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { runAgentOnboard } from './commands/agent.js';
 import { runDidCreate } from './commands/did.js';
 import { runIssuerInit } from './commands/issuer.js';
+import { runActivate, runCustodyTake, runInit } from './commands/init.js';
 import { runRevoke } from './commands/revoke.js';
 import { runStatusListCreate } from './commands/status-list.js';
 import { runVcIssue } from './commands/vc.js';
@@ -142,6 +143,61 @@ export function createProgram(): Command {
         token: options.token,
         apiUrl: options.apiUrl,
         domains: options.domains,
+      });
+    });
+
+  // KYA-OS story F-3: self-custody onboarding and custody changes.
+  const apiUrlDefault = process.env.HELIX_API_URL ?? process.env.API_BASE_URL ?? 'http://localhost:3000';
+  program
+    .command('init')
+    .description('Self-custody onboarding: generate the agent key here, register only its public half, write did.json and card.json')
+    .requiredOption('--token <token>', 'Enrollment token from the console (POST /v1/agents with keyCustody self)')
+    .requiredOption('--out <dir>', 'Directory for did.json, card.json, signing-key.env and helix-agent.json')
+    .option('--api-url <url>', 'Helix API base URL', apiUrlDefault)
+    .option('--did <did>', 'Own hosting: the did:web you expect the token to be for')
+    .option('--kid <fragment>', 'Verification-method fragment for the new key (default key-1)')
+    .option('--no-activate', 'Own hosting: do not check resolution or activate yet')
+    .option('--env-var <name>', 'Variable name signing-key.env sets', 'HELIX_SIGNING_KEY')
+    .action(async (options) => {
+      await runInit({
+        token: options.token,
+        out: options.out,
+        apiUrl: options.apiUrl,
+        did: options.did,
+        kid: options.kid,
+        activate: options.activate,
+        envVar: options.envVar,
+      });
+    });
+  program
+    .command('activate')
+    .description('Own hosting: check the published documents resolve from your domain, then activate the agent')
+    .requiredOption('--token <token>', 'The enrollment token helix init used')
+    .requiredOption('--out <dir>', 'The directory helix init wrote')
+    .option('--api-url <url>', 'Helix API base URL', apiUrlDefault)
+    .action(async (options) => {
+      await runActivate({ token: options.token, out: options.out, apiUrl: options.apiUrl });
+    });
+  const custodyCmd = program.command('custody').description('Custody commands');
+  custodyCmd
+    .command('take')
+    .description('Change a custodial agent, service or owner to self-custody (a key rotation; the new key is generated here)')
+    .requiredOption('--did <did>', 'The DID whose custody changes')
+    .requiredOption('--out <dir>', 'Directory for the new signing-key.env')
+    .option('--api-url <url>', 'Helix API base URL', apiUrlDefault)
+    .option('--api-key <key>', 'Enterprise account API key', process.env.HELIX_API_KEY)
+    .option('--admin-key <key>', 'Admin API key (self-hosted)', process.env.HELIX_ADMIN_API_KEY)
+    .option('--subject <kind>', 'agent, service or owner', 'agent')
+    .option('--overlap <seconds>', 'How long both keys stay in the DID document', (value) => Number.parseInt(value, 10))
+    .action(async (options) => {
+      await runCustodyTake({
+        did: options.did,
+        out: options.out,
+        apiUrl: options.apiUrl,
+        apiKey: options.apiKey,
+        adminKey: options.adminKey,
+        subject: options.subject,
+        overlap: options.overlap,
       });
     });
 

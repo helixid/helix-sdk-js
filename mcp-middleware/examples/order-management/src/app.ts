@@ -13,11 +13,13 @@ import {
   buildProtectedResourceMetadata,
   helixidMCPMiddleware,
   protectedResourceMetadataUrl,
+  serveIdentity,
   toHttpErrorResponse,
   type DetachedProof,
   type KyaOsRuntime,
   type MCPMiddlewareOptions,
   type McpAuditTrail,
+  type ServeIdentityOptions,
   type WellKnownMcp,
 } from '@helixid/mcp-middleware';
 import { z } from 'zod';
@@ -54,6 +56,8 @@ export interface OrderServerOptions {
   store?: OrderStore;
   /** Called for errors that are not the caller's fault (they become a 500). */
   onServerError?: (error: unknown) => void;
+  /** KYA-OS story C-A: serve this server's own did.json and card.json from its origin. */
+  identity?: ServeIdentityOptions;
 }
 
 const MAX_BODY_BYTES = 1_000_000;
@@ -164,6 +168,8 @@ export function createOrderServer(options: OrderServerOptions): Server {
     resourceName: 'Order Management (HelixID sample)',
     ...(options.authorizationServers ? { authorizationServers: options.authorizationServers } : {}),
   });
+
+  const identity = options.identity ? serveIdentity(options.identity) : undefined;
 
   const serverError = (res: ServerResponse, error: unknown): void => {
     options.onServerError?.(error);
@@ -321,6 +327,7 @@ export function createOrderServer(options: OrderServerOptions): Server {
       sendJson(res, 200, metadata);
       return;
     }
+    if (req.method === 'GET' && identity?.handle(path, res)) return;
     if (path === mcpPath) {
       if (req.method !== 'POST') {
         // Stateless server: no SSE stream to open (GET) and no session to end (DELETE).

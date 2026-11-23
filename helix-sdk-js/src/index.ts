@@ -69,14 +69,12 @@ export {
   toDidKey,
   publicKeyFromDidKey,
   publicKeyJwkBytes,
-  agentKeyRegistration,
   assertNoPrivateMaterial,
   encodeBase58btc,
   decodeBase58btc,
   DEFAULT_AGENT_KEY_ID,
   type AgentKey,
   type AgentPublicKeyJwk,
-  type AgentKeyRegistration,
 } from './core/agent-key.js';
 export {
   generateKeyPair,
@@ -112,6 +110,67 @@ export type { SessionClaims, SessionIssueInput, SessionManagerOptions } from './
 // (session-bridge tokens come from POST /v1/vp/verify with session: true), so only
 // verification -- given the API's published session public key -- belongs here.
 export { verifyJWT } from './core/jwt.js';
+// KYA-OS story C-A: Entity Card discovery (did.json → KyaOsEntityCard → card.json)
+// through a SafeFetch, the strict card schema, and the server.json projection.
+export {
+  resolveEntityCard,
+  resolveEntityCardFromServerMeta,
+  fetchEntityCard,
+  parseEntityCard,
+  validateEntityCard,
+  buildEntityCard,
+  entityCardSummary,
+  serverCardMeta,
+  capabilityName,
+  createSafeFetch,
+  defaultOutboundFetch,
+  fetchTransport,
+  nodeTransport,
+  isPublicUnicastAddress,
+  parseDidWeb,
+  didWebFor,
+  didWebDocumentUrl,
+  didWebCardUrl,
+  isLoopbackHost,
+  normalizeDid,
+  sameDid,
+  cardEndpointOf,
+  kyaOsCardServiceEntry,
+  EntityCardError,
+  SafeFetchRefusedError,
+  ENTITY_TYPES,
+  KYA_OS_CARD_SERVICE_TYPE,
+  KYA_OS_CARD_SERVICE_ID,
+  KYA_OS_CARD_META_KEY,
+  KYA_OS_CARD_REF_KEY,
+  KYA_OS_CARD_WELL_KNOWN_PATH,
+  PROOF_PROFILE_V1,
+  SAFE_FETCH_MAX_BYTES,
+  SAFE_FETCH_TIMEOUT_MS,
+  SAFE_FETCH_MAX_REDIRECTS,
+  type EntityCard,
+  type EntityType,
+  type Capability,
+  type BitstringStatusListEntry,
+  type BuildEntityCardInput,
+  type EntityCardSummary,
+  type ServerCardMeta,
+  type ResolvedEntityCard,
+  type ResolveEntityCardOptions,
+  type SafeFetch,
+  type SafeFetchOptions,
+  type SafeFetchResponse,
+  type SafeFetchTransport,
+  type TransportRequest,
+  type DnsLookup,
+} from './core/entity-card.js';
+
+// KYA-OS story F-3: custody preference. `helix init` (self-custody onboarding),
+// HelixCustodialSigner (custodial agents sign through the API), the Signer the
+// agent runtime takes (a request proof: kyaos.verifier.signRequestProof), and the custody API client.
+export * as custody from './core/custody/index.js';
+export { EnvSigner, HelixCustodialSigner, HelixCustodyClient, helixInit, activateAgent, checkOwnHosting, changeToSelfCustody, rotationProof } from './core/custody/index.js';
+export type { Signer, HelixInitOptions, HelixInitResult, HelixCustodialSignerOptions, KeyCustodyMode, DidHostingMode, CustodyLabel } from './core/custody/index.js';
 
 // KYA-OS (stories rule 24): canonical JSON hashing, EdDSA JWS and the Signer,
 // the session handshake and the client side of the detached response proof.

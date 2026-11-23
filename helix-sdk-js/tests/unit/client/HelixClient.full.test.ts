@@ -168,11 +168,4 @@ describe('HelixClient Full Unit Tests', () => {
       code: 'SDK_ONLY_MODE_NO_API',
     });
   });
-
-  it('throws SDK_ONLY_MODE_NO_API for delegateAuthority calls without an API URL', async () => {
-    const sdkOnly = new HelixClient();
-    await expect(sdkOnly.delegateAuthority('did:key:zAgent', 'did:key:zChild', ['read:orders'], 60)).rejects.toMatchObject({
-      code: 'SDK_ONLY_MODE_NO_API',
-    });
-  });
 });

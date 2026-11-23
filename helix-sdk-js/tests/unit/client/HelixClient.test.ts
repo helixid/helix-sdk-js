@@ -149,22 +149,6 @@ describe('HelixClient Branch Coverage', () => {
       expect(((c2 as any).http as HttpAdapter).hasAdminApiKey()).toBe(false);
     });
 
-    it('delegateAuthority goes through the adapter to the custodial route', async () => {
-      mockHttp.post.mockResolvedValue({ delegatedVC: { id: 'vc-child' } });
-      const vc = await enterprise.delegateAuthority(DID, 'did:key:z6Mkchild', ['read:orders'], 3600);
-      expect(vc).toEqual({ id: 'vc-child' });
-      expect(mockHttp.post).toHaveBeenCalledWith(
-        `/v1/custodial-agents/${encodeURIComponent(DID)}/delegate`,
-        { to: 'did:key:z6Mkchild', scopes: ['read:orders'], expiresIn: 3600 },
-      );
-    });
-
-    it('core mode keeps the admin-gated agent routes', async () => {
-      mockHttp.post.mockResolvedValue({ delegatedVC: { id: 'vc-child' } });
-      await client.delegateAuthority(DID, 'did:key:z6Mkchild', ['read:orders'], 3600);
-      expect(mockHttp.post).toHaveBeenCalledWith(`/v1/agents/${encodeURIComponent(DID)}/delegate`, { to: 'did:key:z6Mkchild', scopes: ['read:orders'], expiresIn: 3600 });
-    });
-
     it('issueServiceDelegationGrant uses the same adapter (and so the same credential)', async () => {
       mockHttp.post.mockResolvedValue({ grantVC: { id: 'vc-grant' } });
       const vc = await enterprise.issueServiceDelegationGrant({

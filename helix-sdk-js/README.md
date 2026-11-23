@@ -16,9 +16,8 @@ DID resolution, and status checks are all API calls made through
 
 **Agents and Service Providers hold no keys.** The server generates the
 keypair when an agent is onboarded or a service is enrolled and holds the
-private key, so onboarding, presenting, delegating and issuing consent
-grants are all API calls (`HelixClient.onboardAgent()`,
-`delegateAuthority()`, `createService()`, `issueServiceDelegationGrant()`).
+private key, so onboarding and issuing consent grants are API calls
+(`HelixClient.onboardAgent()`, `createService()`, `issueServiceDelegationGrant()`).
 `AgentWallet` remains for an issuer's own key material only.
 
 ## Modules
@@ -35,6 +34,7 @@ grants are all API calls (`HelixClient.onboardAgent()`,
 | `core/kyaos/verifier/` | `kyaos.verifier.verify(input, seams, options)` — the local verifier (story F-2): a KYA-OS request proof plus its carried delegation chain, verified in-process from public DID documents, status lists and the agent's card through injected seams, never a Helix database. Mirrored by `helix_sdk.verifier` in helix-sdk-py |
 | `core/kyaos/request-proof.ts` | `kyaos.mintRequestProof(call, signer, {audience, cnfJkt?})`, `kyaos.requestHashContentDigest(call)` (`sha-256=:<b64>:`), `kyaos.attachChain(hops)` and `kyaos.withRequestProof(call, signer, options)` — the per-request holder-of-key proof (story C-C): every tool call carries an `org.kya-os/proof.v1` signed by the agent's own Signer at `_meta["org.kya-os/request-proof"]`, with its delegation chain at `_meta["org.kya-os/delegation-chain"]`. The Helix VP is gone: no `VPBuilder`, `signVP()`, `verifyVP()` or X-Helix-VP carrier |
 | `core/kyaos/conformance/` | `kyaos.conformance.HelixConformanceAdapter` — the KYA-OS `ConformanceAdapter` and a runner for the vendored vector categories |
+| `core/custody/` | KYA-OS story F-3: `helixInit` (self-custody onboarding: the key is generated here, only the public JWK is sent), `activateAgent`, `changeToSelfCustody`, `EnvSigner` and `HelixCustodialSigner` (a custodial agent signs through the API; same `Signer` shape, so application code, such as a request proof from `kyaos.verifier.signRequestProof`, does not change), `HelixCustodyClient`. Custodial agents are labelled `custody: helix` and are not counted in KYA-OS conformance claims; their proofs still verify |
 
 `HelixClient` is the primary entry point for the API-backed flows
 (onboarding, delegation, DID/VC lifecycle), but the package also exports

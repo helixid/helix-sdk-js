@@ -76,6 +76,12 @@ import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './we
  *                         or custom { issuer, jwksUri?, introspection?: { clientId, clientSecret, endpoint? } }
  *   DEMO_MODE=1           local demo only: accept the fixed bearer tokens below instead of an
  *                         authorization server. Refused unless HOST is loopback.
+ *   PUBLIC_ORIGIN         KYA-OS story C-A: serve this server's did.json and card.json (its did:web is
+ *                         derived from the origin and MCP path). Optional with it:
+ *   SERVICE_NAME            the card's display name (default "Order Management (HelixID sample)")
+ *   SERVICE_PUBLIC_KEY_JWK  the service key's public JWK, {"kty":"OKP","crv":"Ed25519","x":...}
+ *   SERVICE_KID             its verification-method fragment (default key-1)
+ *   SERVICE_RESPONSIBLE_PARTY  the accountable org DID, when there is one
  *   SERVICE_SIGNING_KEY   KYA-OS (story L2-A): this server's Ed25519 private key (hex), the key
  *                         SERVICE_DID's document lists as key-1. Turns on the _kyaos_handshake tool,
  *                         sessions and a server-signed proof on every tool call outcome. Optional:
@@ -341,6 +347,30 @@ if (!serviceDid && !auth.validateOAuthToken && !auth.oauth) {
   fail('no way to authenticate callers: set SERVICE_DID (KYA-OS request proofs), OAUTH_ISSUER / OAUTH_ISSUERS, or DEMO_MODE=1');
 }
 
+const publicOrigin = env['PUBLIC_ORIGIN'];
+let identity: Parameters<typeof createOrderServer>[0]['identity'];
+if (publicOrigin) {
+  let publicKeyJwk: { kty: 'OKP'; crv: 'Ed25519'; x: string } | undefined;
+  if (env['SERVICE_PUBLIC_KEY_JWK']) {
+    try {
+      publicKeyJwk = JSON.parse(env['SERVICE_PUBLIC_KEY_JWK']) as { kty: 'OKP'; crv: 'Ed25519'; x: string };
+    } catch {
+      fail('SERVICE_PUBLIC_KEY_JWK is not valid JSON');
+    }
+  }
+  identity = {
+    publicOrigin,
+    path: new URL(resource).pathname,
+    ...(serviceDid ? { did: serviceDid } : {}),
+    card: {
+      name: env['SERVICE_NAME'] ?? 'Order Management (HelixID sample)',
+      capabilities: ['tools/list', 'tools/call', ...Object.keys(TOOL_SCOPES)],
+      ...(publicKeyJwk ? { publicKeyJwk, kid: env['SERVICE_KID'] ?? 'key-1' } : {}),
+      ...(env['SERVICE_RESPONSIBLE_PARTY'] ? { responsibleParty: env['SERVICE_RESPONSIBLE_PARTY'] } : {}),
+    },
+  };
+}
+
 /** A positive number from an optional variable; `integer` demands a whole one. */
 function numberFromEnv(name: string, integer: boolean): number | undefined {
   const raw = env[name];
@@ -479,6 +509,7 @@ const wellKnown = discovery.wellKnown;
 
 const server = createOrderServer({
   resource,
+  ...(identity ? { identity } : {}),
   ...(issuers.length > 0 ? { authorizationServers: issuers.map((i) => i.issuer) } : {}),
   auth,
   ...(audit ? { audit } : {}),
@@ -513,6 +544,7 @@ server.listen(port, host, () => {
         .join(' + ') || 'off (set HELIX_API_URL + HELIX_API_KEY + SERVICE_DID, or AUDIT_LOG_FILE)'
     }`,
   );
+  console.log(`  Identity:    ${identity ? `${identity.publicOrigin}${new URL(resource).pathname.replace(/\/$/, '')}/{did,card}.json` : 'off (set PUBLIC_ORIGIN)'}`);
   console.log(
     `  Consent:     ${
       authorizationUrl

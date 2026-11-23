@@ -128,6 +128,39 @@ auditToolHandlers(server, call); // before the tools are registered
 
 The order-management sample reads `AUDIT_DELIVERY`, `AUDIT_OUTBOX_DIR` and `AUDIT_ACCEPT_AAP1`.
 
+## Serving the service's KYA-OS identity (Entity Card, story C-A)
+
+A KYA-OS service has a did:web whose DID document anchors its Entity Card (`KyaOsEntityCard`
+service entry). `serveIdentity` builds both documents from the middleware's own configuration
+and answers them at the paths the did:web derives, from the origin agents connect to:
+
+```ts
+import { serveIdentity } from '@helixid/mcp-middleware';
+
+const identity = serveIdentity({
+  publicOrigin: 'https://mcp.example.com',   // what the documents name; behind a proxy, not the bind address
+  path: '/mcp',                              // did:web:mcp.example.com:mcp → /mcp/did.json and /mcp/card.json
+  card: { name: 'Orders', kid: 'key-1', publicKeyJwk, capabilities: ['tools/list', 'tools/call'] },
+});
+// In the HTTP handler, before the MCP transport:
+if (req.method === 'GET' && identity.handle(new URL(req.url, publicOrigin).pathname, res)) return;
+// On server.json / catalog.json:
+const serverJson = identity.projectServerJson({ name: 'orders', version: '1.0.0' });
+// _meta["org.kya-os/card"] = claim-minimal summary + "org.kya-os/cardRef" (the canonical card.json)
+```
+
+Hosting follows the `/.well-known/mcp` cases: route `/{path}/did.json` and `/{path}/card.json` at
+the origin root to the middleware (a proxy path rule), mount `handle()` in whichever app serves the
+root, or write `identity.didDocument` and `identity.card` out as static files. A service whose
+`helix init` already wrote the files hands them in as `documents`. The card never carries a
+`conformanceLevel` (a verifier recomputes it) nor a proof (it rides per request).
+
+Verifier side, `resolveServerCard(serverJson, { did })` dereferences the projection to the canonical
+card through the SDK's SafeFetch (https only, public addresses only, pinned connection, same-origin
+redirects, 1 MiB, 5 s); a stripped projection falls back to the two-step resolution of `did`
+(`did.json` → `KyaOsEntityCard` → `card.json`). The sample server enables all of this with
+`PUBLIC_ORIGIN` (see `examples/order-management/src/main.ts`).
+
 ## KYA-OS session, replay store and response proof (story L2-A)
 
 `createKyaOs()` adds the KYA-OS session layer around the gate above: a `_kyaos_handshake` tool, optional sessions, a replay store, and a detached proof signed by the service on every tool call outcome, so an agent or auditor can verify what the server received and returned without trusting anyone in between.

@@ -44,6 +44,7 @@ async function listen(options: Partial<OrderServerOptions> = {}): Promise<{ serv
       },
       auditSink: audit.toolAuditSink(),
     },
+    identity: { publicOrigin: 'http://localhost', path: '/mcp', did: 'did:web:orders.example', card: { name: 'Orders (test)', capabilities: ['tools/list', 'tools/call'] } },
     audit,
     ...options,
   });
@@ -90,6 +91,18 @@ function expectNothingLeaked(secrets: string[]): void {
 }
 
 describe('order-management sample server', () => {
+  it('serves its own did.json and card.json (KYA-OS story C-A) and the card projection names the canonical card', async () => {
+    const did = await fetch(`${base}/.well-known/did.json`);
+    expect(did.status).toBe(200);
+    const document = (await did.json()) as { id: string; service: { type: string; serviceEndpoint: string }[] };
+    expect(document.id).toBe('did:web:orders.example');
+    expect(document.service).toEqual([{ id: '#kya-os-card', type: 'KyaOsEntityCard', serviceEndpoint: 'http://localhost/.well-known/kya-os-card.json' }]);
+    const card = await fetch(`${base}/.well-known/kya-os-card.json`);
+    expect(card.status).toBe(200);
+    expect(await card.json()).toEqual({ id: 'did:web:orders.example', entityType: 'mcp', name: 'Orders (test)', capabilities: ['tools/list', 'tools/call'], didDocument: 'http://localhost/.well-known/did.json', proofProfile: 'org.kya-os/proof.v1' });
+    expect((await fetch(`${base}/.well-known/did.json`, { method: 'POST' })).status).toBe(404);
+  });
+
   it('serves RFC 9728 metadata at the well-known path for /mcp', async () => {
     const res = await fetch(`${base}/.well-known/oauth-protected-resource/mcp`);
     expect(res.status).toBe(200);
