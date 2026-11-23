@@ -11,7 +11,10 @@
  *
  *  1. schema (`malformed_proof`);
  *  2. `kid` names a key of `did` (`kid_did_mismatch`);
- *  3. the signing key resolved from `did`'s document (`key_unresolvable`);
+ *  3. the signing key resolved from `did`'s document (`key_unresolvable`;
+ *     a document older than one already seen, `did_document_stale`), and
+ *     (story C-E) valid at `created`: never `revoked` (`key_revoked`), not
+ *     past its `validUntil` (`key_superseded`);
  *  4. its RFC 7638 thumbprint is among the keys the DID publishes
  *     (`kid_not_in_did_document`; no `resolveDidKeys` seam fails closed with
  *     `did_membership_unverifiable`);
@@ -35,6 +38,14 @@
 import { InvalidJWSError } from '../../HelixError.js';
 import { base64UrlDecodeStrict, selectAssertionMethod, verificationMethodToJwk, type DidResolver, type Ed25519PublicJwk } from '../jws.js';
 import { ReasonCodes, type ReasonCode } from './codes.js';
+import { keyValidityProblem, type KeyValidityReason } from '../key-validity.js';
+import { StaleDidDocumentError } from './rotation.js';
+
+const KEY_VALIDITY_CODES: Record<KeyValidityReason, ReasonCode> = {
+  key_revoked: ReasonCodes.KEY_REVOKED,
+  key_superseded: ReasonCodes.KEY_SUPERSEDED,
+  key_validity_malformed: ReasonCodes.KEY_VALIDITY_MALFORMED,
+};
 import {
   DEFAULT_PROOF_SKEW_SECONDS,
   MAX_PROOF_TTL_SECONDS,
@@ -138,14 +149,20 @@ export async function verifyRequestProof(
   try {
     const document = await seams.resolveDid(proof.did);
     if (document === null || document === undefined) return refusedAt(ReasonCodes.DID_UNRESOLVED, `${proof.did} did not resolve`, proof);
+    let method: ReturnType<typeof selectAssertionMethod>;
     try {
-      const jwk = verificationMethodToJwk(selectAssertionMethod(document, proof.did, proof.kid));
+      method = selectAssertionMethod(document, proof.did, proof.kid);
+      const jwk = verificationMethodToJwk(method);
       key = { jwk: { kty: 'OKP', crv: 'Ed25519', x: jwk.x, kid: proof.kid }, publicKey: base64UrlDecodeStrict(jwk.x)! };
     } catch (error) {
       const reason = error instanceof InvalidJWSError ? `${error.reason}: ` : '';
       return refusedAt(ReasonCodes.KEY_UNRESOLVABLE, `${reason}${(error as Error).message}`, proof);
     }
+    // 3b. Story C-E point 3: the key kid names was valid when the proof was created (a revoked key never is).
+    const validity = keyValidityProblem(method, proof.created * 1000, seams.clock());
+    if (validity) return refusedAt(KEY_VALIDITY_CODES[validity.reason], validity.message, proof);
   } catch (error) {
+    if (error instanceof StaleDidDocumentError) return refusedAt(ReasonCodes.DID_DOCUMENT_STALE, error.message, proof);
     return refusedAt(ReasonCodes.DID_UNRESOLVED, `could not resolve ${proof.did}: ${(error as Error).message}`, proof);
   }
 

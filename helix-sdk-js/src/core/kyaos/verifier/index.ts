@@ -26,3 +26,4 @@ export * from './card.js';
 export * from './resolve.js';
 export * from './verify-request-proof.js';
 export * from './verify.js';
+export * from './rotation.js';

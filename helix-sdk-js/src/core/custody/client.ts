@@ -28,7 +28,8 @@ export type CustodyLabel = 'custody: self' | 'custody: helix';
 export interface CustodyKeyView {
   kid: string;
   location: KeyCustodyMode;
-  status: 'active' | 'retiring' | 'revoked';
+  /** `retired`: superseded, kept in the DID document with `validUntil`; `revoked`: compromised (story C-E). */
+  status: 'active' | 'retiring' | 'retired' | 'revoked';
   createdAt: string;
   retiresAt: string | null;
   revokedAt: string | null;
@@ -81,11 +82,24 @@ export interface SignResponse {
   signature: string;
 }
 
+/** What a rotation did to the agent's delegation hops (story C-E point 4). */
+export interface HopReissueResult {
+  reissued: number;
+  pending: boolean;
+  /** Old hop id to the new hop id, for every hop Helix reissued. */
+  reissuedHops?: Record<string, string>;
+  /** Hops whose issuer holds its own key: that issuer reissues them through its SDK (`reissueHop`). */
+  pendingIssuers?: { hopId: string; issuer: string }[];
+  note?: string;
+}
+
 export interface ChangeCustodyResult extends CustodyView {
   previousKid: string;
   previousKeyShredded: boolean;
   retiresAt: string;
-  hopReissue: { reissued: number; pending: boolean; note?: string };
+  /** The DID document's version after the rotation (story C-E point 2). */
+  rotationSequence: number;
+  hopReissue: HopReissueResult;
   documents: PublishedDocuments;
   publishRequired: boolean;
   vcId?: string;
@@ -239,8 +253,37 @@ export class HelixCustodyClient {
     return this.request('POST', `/v1/${pathOf(kind)}/${encodeURIComponent(did)}/custody`, input);
   }
 
-  finalizeRotation(did: string, input: { force?: boolean } = {}, kind: CustodySubjectKind = 'agent'): Promise<CustodyView & { revoked: string[] }> {
+  /** Ends a rotation's overlap now: the old key is retired (kept in the DID document with `validUntil`). */
+  finalizeRotation(did: string, input: { force?: boolean } = {}, kind: CustodySubjectKind = 'agent'): Promise<CustodyView & { retired: string[] }> {
     return this.request('POST', `/v1/${pathOf(kind)}/${encodeURIComponent(did)}/custody/finalize`, input);
+  }
+
+  /**
+   * Story C-E: rotates the key in place. A self-custody key sends only the
+   * new public half and its proof of possession; with `currentKeyProof` the
+   * current key authorises the rotation itself (no account key needed). A
+   * custodial subject sends `{}` and Helix rotates inside its KeyStore.
+   */
+  rotateKey(
+    did: string,
+    input: {
+      publicKeyJwk?: AgentPublicKeyJwk;
+      kid?: string;
+      proof?: { issuedAt: string; signature: string };
+      currentKeyProof?: { signature: string };
+      overlapSeconds?: number;
+    } = {},
+    kind: CustodySubjectKind = 'agent',
+  ): Promise<ChangeCustodyResult> {
+    return this.request('POST', `/v1/${pathOf(kind)}/${encodeURIComponent(did)}/keys/rotate`, input);
+  }
+
+  /**
+   * Story C-E point 5: a compromised superseded key is revoked at once;
+   * every hop bound to it is revoked and the card's credential reissued.
+   */
+  revokeKey(did: string, kid: string, kind: CustodySubjectKind = 'agent'): Promise<CustodyView & { revokedKid: string; revokedHops: string[]; rotationSequence: number; documents: PublishedDocuments }> {
+    return this.request('POST', `/v1/${pathOf(kind)}/${encodeURIComponent(did)}/keys/revoke`, { kid });
   }
 
   defaults(): Promise<{ custody: { defaultKeyCustody: KeyCustodyMode; defaultDidHosting: DidHostingMode }; source: 'account' | 'built-in' }> {

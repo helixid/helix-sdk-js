@@ -17,6 +17,7 @@ import {
   base64UrlEncode,
   changeToSelfCustody,
   checkOwnHosting,
+  rotateKey,
   enrollmentProofMessage,
   helixInit,
   kidFragment,
@@ -430,5 +431,73 @@ describe('changeToSelfCustody (custody change to self, a rotation)', () => {
     });
     const second = await changeToSelfCustody({ client: new HelixCustodyClient({ apiUrl: 'https://helix.example', fetch: helixHosted.fetch }), did: DID, outDir: await tempDir(), subject: 'service' });
     expect(second.result.kid).toMatch(new RegExp(`^${DID}#key-`));
+  });
+});
+
+describe('rotateKey (story C-E point 1)', () => {
+  const CURRENT_HEX = '17'.repeat(32);
+  const currentPublic = Buffer.from(ed25519.getPublicKey(Buffer.from(CURRENT_HEX, 'hex'))).toString('hex');
+
+  it('generates the new key here, sends only its public half, its proof and the current key\'s signature, and writes signing-key.env', async () => {
+    const out = await tempDir();
+    let sent: Record<string, unknown> = {};
+    const api = fakeApi({
+      [`POST /v1/agents/${DID}/keys/rotate`]: (body) => {
+        sent = body;
+        return {
+          body: {
+            did: DID,
+            keyCustody: 'self',
+            didHosting: 'helix',
+            kid: `${DID}#${String(body['kid'])}`,
+            previousKid: `${DID}#key-1`,
+            rotationSequence: 2,
+            retiresAt: '2026-11-24T00:00:00.000Z',
+            hopReissue: { reissued: 1, pending: false, reissuedHops: { a: 'b' }, pendingIssuers: [{ hopId: 'c', issuer: 'did:web:issuer.example' }] },
+            publishRequired: false,
+            documents: documentsFor(DID, `${DID}#${String(body['kid'])}`, (body['publicKeyJwk'] as { x: string }).x, 'https://helix.example'),
+          },
+        };
+      },
+    });
+    const client = new HelixCustodyClient({ apiUrl: 'https://helix.example', fetch: api.fetch });
+    const currentSigner = new EnvSigner({ did: DID, kid: 'key-1', envVar: 'K', env: { K: CURRENT_HEX } });
+    const now = new Date('2026-11-23T00:00:00.000Z');
+    const { result, files } = await rotateKey({ client, did: DID, currentSigner, outDir: out, kid: 'key-2', overlapSeconds: 3600, generateKey: agentKeyFrom(SEED_HEX), now: () => now });
+    expect(result).toMatchObject({ kid: `${DID}#key-2`, rotationSequence: 2, hopReissue: { pendingIssuers: [{ hopId: 'c' }] } });
+    expect(Object.keys(sent).sort()).toEqual(['currentKeyProof', 'kid', 'overlapSeconds', 'proof', 'publicKeyJwk']);
+    const message = rotationProofMessage({ did: DID, kid: `${DID}#key-2`, issuedAt: now.toISOString() });
+    expect(ed25519.verify(base64UrlDecode((sent['proof'] as { signature: string }).signature)!, message, publicKeyHex)).toBe(true);
+    expect(ed25519.verify(base64UrlDecode((sent['currentKeyProof'] as { signature: string }).signature)!, message, currentPublic)).toBe(true);
+    assertNoPrivateKeyMaterialSent(api.calls, [...PRIVATE_FORMS, CURRENT_HEX]);
+    expect(api.calls[0]!.headers).not.toHaveProperty('authorization');
+    expect(await readFile(files.signingKey, 'utf8')).toContain(`HELIX_SIGNING_KEY=${SEED_HEX}`);
+    expect(existsSync(join(out, 'did.json'))).toBe(false);
+  });
+
+  it('without a current signer relies on the account key; refuses a signer of another DID; writes own-hosted documents', async () => {
+    const out = await tempDir();
+    const api = fakeApi({
+      [`POST /v1/agents/${DID}/keys/rotate`]: (body) => ({
+        body: { did: DID, kid: `${DID}#${String(body['kid'])}`, didHosting: 'own', publishRequired: true, documents: documentsFor(DID, `${DID}#${String(body['kid'])}`, 'x', 'https://owner.example') },
+      }),
+    });
+    const client = new HelixCustodyClient({ apiUrl: 'https://helix.example', apiKey: 'acct', fetch: api.fetch });
+    const { result } = await rotateKey({ client, did: DID, outDir: out });
+    expect(result.kid).toMatch(new RegExp(`^${DID}#key-`));
+    expect(JSON.parse(api.calls[0]!.body!)).not.toHaveProperty('currentKeyProof');
+    expect(JSON.parse(await readFile(join(out, 'did.json'), 'utf8'))).toMatchObject({ id: DID });
+    const stranger = new EnvSigner({ did: 'did:web:other.example', envVar: 'K', env: { K: CURRENT_HEX } });
+    await expect(rotateKey({ client, did: DID, currentSigner: stranger, outDir: out })).rejects.toThrow(/not did:web:helix.example/);
+  });
+
+  it('the client reaches revokeKey and finalizeRotation', async () => {
+    const api = fakeApi({
+      [`POST /v1/agents/${DID}/keys/revoke`]: (body) => ({ body: { revokedKid: `${DID}#${String(body['kid'])}`, revokedHops: [], rotationSequence: 3 } }),
+      [`POST /v1/services/${DID}/custody/finalize`]: () => ({ body: { retired: [`${DID}#key-1`] } }),
+    });
+    const client = new HelixCustodyClient({ apiUrl: 'https://helix.example', adminApiKey: 'admin', fetch: api.fetch });
+    expect(await client.revokeKey(DID, 'key-1')).toMatchObject({ revokedKid: `${DID}#key-1`, rotationSequence: 3 });
+    expect(await client.finalizeRotation(DID, { force: true }, 'service')).toEqual({ retired: [`${DID}#key-1`] });
   });
 });

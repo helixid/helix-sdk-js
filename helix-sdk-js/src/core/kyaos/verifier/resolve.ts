@@ -16,6 +16,7 @@
 
 import { base64UrlDecodeStrict, verificationMethodToJwk, type Ed25519PublicJwk, type JwsDidDocument, type JwsVerificationMethod } from '../jws.js';
 import { base58btcDecode } from '../../vp-crypto.js';
+import { RotationSequenceGuard } from './rotation.js';
 
 const ED25519_MULTICODEC = [0xed, 0x01] as const;
 const ED25519_KEY_LENGTH = 32;
@@ -92,15 +93,24 @@ export interface DidResolverOptions {
   fetch?: JsonFetch | undefined;
   /** Rewrites a resolution URL before the fetch (a loopback `http:` host in development, say). Default: none. */
   rewriteUrl?: ((url: string) => string) | undefined;
+  /**
+   * Story C-E point 2: refuses (throws `StaleDidDocumentError`) a did:web
+   * document whose `rotationSequence` is lower than one this resolver has
+   * seen. Default: a guard of its own, in memory; pass one over a shared
+   * store (Redis) so every instance refuses the same replay.
+   */
+  sequenceGuard?: RotationSequenceGuard | undefined;
 }
 
 /**
  * A `resolveDid` seam: did:key offline, did:web through `fetch`. Resolves
  * to `null` for a DID of another method, a document that cannot be
- * fetched, or one whose `id` is not the DID (a substitution).
+ * fetched, or one whose `id` is not the DID (a substitution); throws
+ * `StaleDidDocumentError` for a document older than one already seen.
  */
 export function createDidResolver(options: DidResolverOptions = {}): (did: string) => Promise<JwsDidDocument | null> {
   const doFetch = options.fetch ?? ((url: string): ReturnType<JsonFetch> => fetch(url));
+  const guard = options.sequenceGuard ?? new RotationSequenceGuard();
   return async (did: string): Promise<JwsDidDocument | null> => {
     if (did.startsWith('did:key:')) return didKeyDocument(did) ?? null;
     const url = didWebDocumentUrl(did);
@@ -109,6 +119,7 @@ export function createDidResolver(options: DidResolverOptions = {}): (did: strin
     if (!response.ok) return null;
     const document = (await response.json()) as JwsDidDocument;
     if (document === null || typeof document !== 'object' || document.id !== did) return null;
+    await guard.assertCurrent(did, document);
     return document;
   };
 }
