@@ -165,6 +165,24 @@ describe('HelixCustodyClient', () => {
     expect(api.calls).toEqual([]);
   });
 
+  it('refuses an own-hosted DID with an unencoded port before any request', async () => {
+    const api = fakeApi({});
+    const client = new HelixCustodyClient({ apiUrl: 'https://helix.example', fetch: api.fetch });
+    for (const call of [
+      () => client.createAgent({ name: 'a', didHosting: 'own', did: 'did:web:localhost:3000:a' }),
+      () => client.createService({ name: 's', domain: 'd', requiredScopes: ['x'], didHosting: 'own', did: 'did:web:localhost:3000:s' }),
+      () => client.createOwner({ name: 'o', didHosting: 'own', did: 'did:web:localhost:3000' }),
+    ]) {
+      await expect(call()).rejects.toMatchObject({ name: 'CustodyApiError', status: 400, code: 'VALIDATION_ERROR' });
+    }
+    expect(api.calls).toEqual([]);
+    const ok = fakeApi({ 'POST /v1/agents': (body) => ({ status: 201, body: { did: DID, ...body } }) });
+    const sending = new HelixCustodyClient({ apiUrl: 'https://helix.example', fetch: ok.fetch });
+    await sending.createAgent({ name: 'a', didHosting: 'own', did: 'did:web:localhost%3A3000:a' });
+    await sending.createAgent({ name: 'b', didHosting: 'own' });
+    expect(ok.calls).toHaveLength(2);
+  });
+
   it('sends requestedDomains and maxDelegationDepth with createAgent as given', async () => {
     const api = fakeApi({ 'POST /v1/agents': (body) => ({ status: 201, body: { did: DID, ...body } }) });
     const client = new HelixCustodyClient({ apiUrl: 'https://helix.example', adminApiKey: 'admin', fetch: api.fetch });

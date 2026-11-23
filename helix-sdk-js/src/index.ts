@@ -129,6 +129,8 @@ export {
   isPublicUnicastAddress,
   parseDidWeb,
   didWebFor,
+  isRawDidWebHost,
+  ownDidWebProblem,
   didWebDocumentUrl,
   didWebCardUrl,
   isLoopbackHost,

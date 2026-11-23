@@ -21,6 +21,8 @@ import {
   didWebCardUrl,
   didWebDocumentUrl,
   didWebFor,
+  isRawDidWebHost,
+  ownDidWebProblem,
   entityCardSummary,
   fetchEntityCard,
   fetchTransport,
@@ -78,6 +80,19 @@ const AGENT = 'did:web:helix.test:acme:ledger-agent';
 describe('did:web helpers', () => {
   it('derive both URLs, with the well-known fallback for a bare host, and compare DIDs by one spelling', () => {
     expect(didWebFor('Helix.Test', ['acme', 'a b'])).toBe('did:web:helix.test:acme:a%20b');
+    expect(didWebFor('localhost:3680', ['agents', '0a1b']), 'the raw host is encoded once').toBe('did:web:localhost%3A3680:agents:0a1b');
+    expect(() => didWebFor('localhost%3A3680'), 'never a pre-encoded host').toThrow(/raw host/);
+    expect(() => didWebFor('https://helix.test')).toThrow(/raw host/);
+    expect(() => didWebFor('helix.test', ['accounts', 'acct:f61a']), 'no colon inside a segment').toThrow(/segment/);
+    expect(() => didWebFor('helix.test', [''])).toThrow(/segment/);
+    expect(isRawDidWebHost('[::1]:3000')).toBe(true);
+    expect(isRawDidWebHost(7 as never)).toBe(false);
+    expect(ownDidWebProblem('did:web:acme.example:bot')).toBeUndefined();
+    expect(ownDidWebProblem('did:web:acme.example')).toBeUndefined();
+    expect(ownDidWebProblem('did:web:localhost%3A3000:x')).toBeUndefined();
+    expect(ownDidWebProblem('did:web:localhost:3000:x')).toMatch(/unencoded port.*localhost%3A3000/);
+    expect(ownDidWebProblem('did:key:z6Mk')).toMatch(/not a did:web/);
+    expect(ownDidWebProblem(1)).toMatch(/string/);
     expect(parseDidWeb('did:web:localhost%3A3000:acme:a%20b')).toEqual({ host: 'localhost:3000', path: ['acme', 'a b'] });
     expect(parseDidWeb('did:web:helix.test:acme:agent#key-1')).toBeUndefined();
     expect(parseDidWeb('did:web:helix.test::x')).toBeUndefined();

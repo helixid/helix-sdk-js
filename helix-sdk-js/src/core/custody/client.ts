@@ -18,6 +18,7 @@
  */
 
 import { assertNoPrivateMaterial, type AgentPublicKeyJwk } from '../agent-key.js';
+import { ownDidWebProblem } from '../entity-card.js';
 
 export type KeyCustodyMode = 'self' | 'helix';
 export type DidHostingMode = 'own' | 'helix';
@@ -118,6 +119,18 @@ export class CustodyApiError extends Error {
   }
 }
 
+/**
+ * Own hosting: the DID on the owner's domain may have any path, but no
+ * unencoded port (`did:web:localhost:3000:x` names another URL); refused
+ * here before any request, as the API refuses it (one did:web shape,
+ * 2026-11-23).
+ */
+function assertOwnDid(input: { didHosting?: DidHostingMode | undefined; did?: string | undefined }): void {
+  if (input.didHosting !== 'own' || input.did === undefined) return;
+  const problem = ownDidWebProblem(input.did);
+  if (problem !== undefined) throw new CustodyApiError(400, 'VALIDATION_ERROR', problem);
+}
+
 function pathOf(kind: CustodySubjectKind): string {
   return `${kind}s`;
 }
@@ -163,7 +176,7 @@ export class HelixCustodyClient {
    * `requestedDomains` (bare hosts or http(s) URLs) become `#domain-N` LinkedDomains entries in the agent's
    * DID document; `maxDelegationDepth` (0 to 5, default 0) is written on its identity credential.
    */
-  createAgent(input: {
+  async createAgent(input: {
     name: string;
     scopes?: string[];
     keyCustody?: KeyCustodyMode;
@@ -174,10 +187,11 @@ export class HelixCustodyClient {
     requestedDomains?: string[];
     maxDelegationDepth?: number;
   }): Promise<OnboardingResult> {
+    assertOwnDid(input);
     return this.request('POST', '/v1/agents', input);
   }
 
-  createService(input: {
+  async createService(input: {
     name: string;
     domain: string;
     requiredScopes: string[];
@@ -188,10 +202,12 @@ export class HelixCustodyClient {
     description?: string;
     framework?: string;
   }): Promise<OnboardingResult & { id: string; domain: string; requiredScopes: string[] }> {
+    assertOwnDid(input);
     return this.request('POST', '/v1/services', input);
   }
 
-  createOwner(input: { name: string; keyCustody?: KeyCustodyMode; didHosting?: DidHostingMode; did?: string; publicKeyJwk?: AgentPublicKeyJwk; entityType?: string }): Promise<OnboardingResult> {
+  async createOwner(input: { name: string; keyCustody?: KeyCustodyMode; didHosting?: DidHostingMode; did?: string; publicKeyJwk?: AgentPublicKeyJwk; entityType?: string }): Promise<OnboardingResult> {
+    assertOwnDid(input);
     return this.request('POST', '/v1/owners', input);
   }
 

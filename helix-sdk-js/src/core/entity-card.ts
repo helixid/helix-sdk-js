@@ -93,9 +93,47 @@ function requireDidWeb(did: string): ParsedDidWeb {
   return parsed;
 }
 
-/** `did:web:<host>:<seg>…`, every segment percent-encoded, the host lowercased. */
+/** A raw `host[:port]`: a DNS name, an IPv4 address or a bracketed IPv6 address, with an optional port; nothing percent-encoded. */
+const RAW_HOST = /^(?:\[[0-9a-f:.]+\]|[a-z0-9_](?:[a-z0-9_.-]*[a-z0-9_])?)(?::\d{1,5})?$/i;
+
+/** Whether `host` is a raw `host[:port]` (not percent-encoded, no scheme or path). */
+export function isRawDidWebHost(host: string): boolean {
+  return typeof host === 'string' && RAW_HOST.test(host);
+}
+
+/**
+ * `did:web:<host>:<seg>…`, the raw `host[:port]` lowercased and
+ * percent-encoded once (a port's `:` is `%3A`), every segment
+ * percent-encoded; a segment holds no `:` of its own. Same rule as core's
+ * `didWebFor` (one did:web shape, 2026-11-23).
+ */
 export function didWebFor(host: string, segments: readonly string[] = []): string {
+  if (!isRawDidWebHost(host)) {
+    throw new EntityCardError('malformed_did', `did:web host must be a raw host name, optionally with a port (host or host:port, not percent-encoded): ${JSON.stringify(host)}`);
+  }
+  for (const segment of segments) {
+    if (typeof segment !== 'string' || segment.length === 0 || /[/#?:]/.test(segment) || segment === '.' || segment === '..') {
+      throw new EntityCardError('malformed_did', `did:web path segment is not one segment: ${JSON.stringify(segment)}`);
+    }
+  }
   return ['did:web', encodeURIComponent(host.toLowerCase()), ...segments.map(encodeURIComponent)].join(':');
+}
+
+/**
+ * Why `did` cannot be a DID on its owner's own domain, or undefined when it
+ * can: any path, with or without a kind segment, but no unencoded port
+ * (`did:web:localhost:3000:x` is host `localhost`, path `3000/x`).
+ */
+export function ownDidWebProblem(did: unknown): string | undefined {
+  if (typeof did !== 'string') return 'did must be a string';
+  const parsed = parseDidWeb(did);
+  if (parsed === undefined) return `${did} is not a did:web DID that names a URL`;
+  const first = parsed.path[0];
+  const rawFirst = did.slice('did:web:'.length).split(':')[1];
+  if (first !== undefined && rawFirst === first && /^\d{1,5}$/.test(first) && !parsed.host.includes(':')) {
+    return `${did} has an unencoded port: write the host as ${encodeURIComponent(`${parsed.host}:${first}`)} (did:web percent-encodes the port's colon)`;
+  }
+  return undefined;
 }
 
 /** A loopback host (a local stack) serves plain http; SafeFetch admits it only in development mode. */
