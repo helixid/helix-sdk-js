@@ -16,11 +16,14 @@
  * follows from the entry and the bits alone, fail-closed:
  *
  * - the entry names a whole decimal index, a `statusSize` of 1 or none;
- * - the list's `issuer`, when the seam reports it, is the credential's own
- *   (the keeper rule's last case; configured bindings are L3-C's);
+ * - the list's `issuer`, when the seam reports it, is the URL's keeper
+ *   (./keeper.ts: configured bindings, the pinned root, else the
+ *   credential's own issuer), and a list may leave out its `id` only when
+ *   the credential's own issuer keeps the URL and nobody else keeps any;
  * - the list's `statusPurpose` includes the entry's; its `id`, when
  *   stated, is the URL it was read from;
- * - the list is inside the window it states (else `status_stale`);
+ * - a live read is inside the window it states (else `status_stale`); a
+ *   cached read was held to its window by the cache (story L3-C);
  * - the bit at the index is clear (else `status_revoked`).
  *
  * `decodeStatusListCredential` is what a seam uses to turn a fetched
@@ -49,6 +52,8 @@ export interface StatusListRead {
   validUntil?: string | undefined;
   /** True when the list was read live from its issuer for this verification; false for a cached copy. Default true. */
   fresh?: boolean | undefined;
+  /** True when the reader verified the list's own proof before decoding its bits (story L3-C's readers always do). */
+  proofVerified?: boolean | undefined;
 }
 
 /** Resolves a `statusListCredential` URL to its decoded list; `undefined` when it cannot be read. */
@@ -124,6 +129,16 @@ export interface CheckStatusOptions {
   now: number;
   /** Clock tolerance on the list's window; default 120,000 ms. */
   maxClockSkewMs?: number | undefined;
+  /** The one issuer whose list is read at the entry's URL (SPEC.md §6.6, ./keeper.ts); default the credential's issuer. */
+  keeper?: string | undefined;
+  /** False when the list must state the entry's URL as its `id` (a keeper other than the credential's issuer, say); default true. */
+  mayOmitId?: boolean | undefined;
+  /**
+   * False for a cached read the cache already held to its window: kept only
+   * when read inside it, served past its end no longer than the staleness
+   * window (story L3-C point 6). Default true: a live read is held to the window.
+   */
+  checkWindow?: boolean | undefined;
 }
 
 /**
@@ -149,8 +164,14 @@ export function checkStatusEntry(
   if (read === undefined) {
     return refuse(ReasonCodes.STATUS_UNAVAILABLE, `status list ${entry.statusListCredential} could not be read`);
   }
-  if (read.issuer !== undefined && read.issuer !== credentialIssuer) {
-    return refuse(ReasonCodes.STATUS_LIST_MISMATCH, `status list is signed by ${read.issuer}, not the credential issuer ${credentialIssuer}`);
+  const keeper = options.keeper ?? credentialIssuer;
+  if (read.issuer !== undefined && read.issuer !== keeper) {
+    return refuse(
+      ReasonCodes.STATUS_LIST_MISMATCH,
+      keeper === credentialIssuer
+        ? `status list is signed by ${read.issuer}, not the credential issuer ${credentialIssuer}`
+        : `status list is signed by ${read.issuer}, not ${keeper}, who keeps ${entry.statusListCredential}`,
+    );
   }
   if (read.statusPurpose !== undefined) {
     const purposes = Array.isArray(read.statusPurpose) ? read.statusPurpose : [read.statusPurpose];
@@ -161,9 +182,14 @@ export function checkStatusEntry(
   if (read.id !== undefined && read.id !== entry.statusListCredential) {
     return refuse(ReasonCodes.STATUS_LIST_MISMATCH, `status list id ${read.id} is not the URL it was read from`);
   }
-  const window = windowVerdict(read.validFrom, read.validUntil, options.now, options.maxClockSkewMs);
-  if (window !== 'inside') {
-    return refuse(ReasonCodes.STATUS_STALE, `status list is outside the window it states (${window})`);
+  if (read.id === undefined && options.mayOmitId === false) {
+    return refuse(ReasonCodes.STATUS_LIST_MISMATCH, `status list states no id, and only the credential issuer's own list may leave it out`);
+  }
+  if (options.checkWindow !== false) {
+    const window = windowVerdict(read.validFrom, read.validUntil, options.now, options.maxClockSkewMs);
+    if (window !== 'inside') {
+      return refuse(ReasonCodes.STATUS_STALE, `status list is outside the window it states (${window})`);
+    }
   }
   const bit = readStatusBit(read.bits, index);
   if (bit === undefined) {

@@ -140,6 +140,8 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
         tokenCnfJkt = auth.cnfJkt ?? cnfJktOf(auth.claims);
       }
       // A chain may come without a proof (story C-C): it verifies, at most at L2, and the level check below decides.
+      // A tool that demands L3 needs fresh revocation status: its lists are read live, past the status cache (story L3-C).
+      const liveStatus = minimumLevelFor(levelPolicy, toolName) === 'L3';
       const result = await localVerifier.verifyCall({
         ...(toolName === undefined ? {} : { name: toolName }),
         ...(toolCall.input === undefined ? {} : { input: toolCall.input }),
@@ -147,6 +149,7 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
         ...(toolCall.request === undefined ? {} : { request: toolCall.request }),
         ...(tokenCnfJkt === undefined ? {} : { tokenCnfJkt }),
         requireProof: false,
+        ...(liveStatus ? { liveStatus } : {}),
       });
       /* c8 ignore next */
       if (result === undefined) throw new ProofError('PROOF_MISSING', 'The request carries no KYA-OS request proof');

@@ -66,6 +66,10 @@ SERVICE_DID=did:web:orders.example pnpm --filter @helixid/example-mcp-order-mana
 - `KYAOS_TRUSTED_ISSUERS` (default `*`), `KYAOS_TRUSTED_ROOTS`, `KYAOS_MAX_CHAIN_LENGTH` (default 10) and
   `KYAOS_CARDS_FILE` (agent DID to Entity Card, read before the card is fetched) tune the verifier;
   `KYAOS_ALLOW_LOOPBACK_HTTP=1` reads loopback documents over http in development.
+- Status lists (story L3-C): each list's proof is verified before a bit is read, and an unreachable, unsigned, badly
+  signed, wrong-purpose or out-of-range list reads as revoked. Lists and verdicts are cached (`KYAOS_STATUS_CACHE_TTL`,
+  in Redis with `KYAOS_REDIS_URL`); `KYAOS_REVOCATION_EVENTS_URL` + `KYAOS_SIGNAL_ISSUERS` drop a cached verdict the moment
+  Helix signals the revocation.
 - Every tool demands Card level L3 by default (story C-C): a verified request proof, every capability on the
   agent's card attested, status read live. `KYAOS_MINIMUM_LEVEL`, `KYAOS_TOOL_LEVELS` (`lookup_order=L2`) and
   `KYAOS_L3_MINUS_SATISFIES_L3=0` change that; a call below a tool's minimum answers 401 with `derivedLevel`
@@ -135,6 +139,15 @@ received. The tools themselves (`src/orders.ts`) contain no auth code.
 | `KYAOS_TRUSTED_ISSUERS`, `KYAOS_TRUSTED_ROOTS` | `*`, any | Attestation issuers and root-hop issuers the verifier trusts (comma-separated DIDs) |
 | `KYAOS_MAX_CHAIN_LENGTH` | `10` | Longest carried chain read |
 | `KYAOS_CARDS_FILE` | none | JSON map of agent DID to Entity Card |
+| `KYAOS_STATUS_CACHE_TTL` | `300` | Seconds a status list or verdict is cached (story L3-C), for tools at L2 or below; a cached read is not fresh (Card L3 → L2). A tool that demands L3 reads its lists live every call |
+| `KYAOS_HIGH_PRIVILEGE_SCOPES`, `KYAOS_HIGH_PRIVILEGE_TTL` | none, `60` | Scopes whose reads are cached at most that long (≤ 60 s) |
+| `KYAOS_MAX_STALE_SECONDS` | `60` | How long a list read inside its window may be served past its `validUntil` from the cache |
+| `KYAOS_STATUS_LIST_ISSUERS` | none | JSON: issuer DID to the status-list URLs or `https:` origins it keeps |
+| `KYAOS_SIGNAL_ISSUERS` | none | DIDs whose revocation SETs are honoured (the Helix issuer) |
+| `KYAOS_REVOCATION_EVENTS_URL` | none | Helix's `/v1/events/revocations`: one SSE connection, reconnecting |
+| `KYAOS_REVOCATION_WEBHOOK_PATH` | none | A path here that receives pushed SETs (RFC 8935) |
+| `KYAOS_REDIS_URL` | none | The status cache's Redis, shared by every instance (and the replay store's when `KYAOS_NONCE_STORE=redis`) |
+| `KYAOS_VERIFICATION_LOG` | off | `1`: each verification and signal as one JSON line on stdout; a path: appended there |
 | `KYAOS_MINIMUM_LEVEL` | `L3` | Card level every tool demands (story C-C): `L1`, `L2` or `L3` |
 | `KYAOS_TOOL_LEVELS` | none | Per-tool minimums, `tool=level,...`; `lookup_order=L2` accepts a chain without a proof there |
 | `KYAOS_L3_MINUS_SATISFIES_L3` | `1` | `0` refuses L3-minus (no token `cnf` to fuse) for L3 tools |
