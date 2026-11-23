@@ -1,5 +1,5 @@
 ---
-"@helixid/sdk-js": minor
+"@helixid/sdk-js": major
 "@helixid/mcp-middleware": minor
 ---
 
