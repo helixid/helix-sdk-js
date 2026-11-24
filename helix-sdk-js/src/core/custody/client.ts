@@ -188,7 +188,9 @@ export class HelixCustodyClient {
   /**
    * Custodial agents are created in one call; self-custody returns the enrollment token for `helix init`.
    * `requestedDomains` (bare hosts or http(s) URLs) become `#domain-N` LinkedDomains entries in the agent's
-   * DID document; `maxDelegationDepth` (0 to 5, default 0) is written on its identity credential.
+   * DID document. `maxDelegationDepth` (0 to 5, default 0) stays on Helix's custody record, never on a
+   * credential: how many hops may sit below the agent in a chain. Helix enforces it on the hops it signs
+   * (`POST /v1/grants`, `/v1/grants/:id/hops`); 0 means the agent cannot delegate.
    */
   async createAgent(input: {
     name: string;
