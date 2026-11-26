@@ -1,9 +1,9 @@
 export {
   HelixIDToolWrapper,
-  currentHelixVPHeaders,
-  encodeBase64UrlJson,
+  signCurrentRequest,
   type HelixIDToolWrapperOptions,
   type LangChainMiddlewareOptions,
+  type RequestSigner,
   type StructuredToolLike,
 } from './middleware.js';
 

@@ -1,6 +1,5 @@
 import { generateKeyPairSync, sign as cryptoSign, type KeyObject } from 'node:crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { encodeHelixVP, verifyVP as verifyVPExport, type HelixClient, type SignedVP } from '@helixid/sdk-js';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildProtectedResourceMetadata,
   createHelixAuditSink,
@@ -10,78 +9,46 @@ import {
   toHttpErrorResponse,
   type ToolAuditEvent,
 } from '../src/index.js';
+import { fixtureVerifier, makeAgent, proofMeta } from './proof-helpers.js';
 
-vi.mock('@helixid/sdk-js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@helixid/sdk-js')>();
-  return { ...actual, verifyVP: vi.fn(actual.verifyVP) };
-});
-
-const verifyVP = vi.mocked(verifyVPExport);
-beforeEach(() => {
-  verifyVP.mockReset();
-});
-const client = {} as unknown as HelixClient;
-const vpA = encodeHelixVP({ id: 'vp:a' } as unknown as SignedVP);
-const vpB = encodeHelixVP({ id: 'vp:b' } as unknown as SignedVP);
-
-const validResult = (scopes: string[]) => ({
-  valid: true as const,
-  agentDid: 'did:agent',
-  privilegeScopes: scopes,
-  effectiveScopes: scopes,
-  vpId: 'vp:a',
-  delegationChain: [],
-});
+const SERVICE = 'did:web:svc.helix.test';
+const agent = makeAgent();
+/**
+ * A guard whose verifier resolves the test agent offline (story F-2: never the Helix API). The agent has no
+ * card, so its calls come to L1: these tests are about credentials, scopes and audit, so every tool asks L1
+ * (story C-C's level check has its own tests in level.test.ts).
+ */
+const guard = (options: Omit<Parameters<typeof helixidMCPMiddleware>[0], 'verifier'> = {}) =>
+  helixidMCPMiddleware({ verifier: fixtureVerifier(SERVICE, { documents: { [agent.did]: agent.document } }), minimumLevel: 'L1', ...options });
+const proofFor = (name: string, input?: Record<string, unknown>) => proofMeta(agent.signer, SERVICE, { name, ...(input ? { input } : {}) });
 
 describe('credential extraction', () => {
-  it('accepts Authorization: HelixVP (any scheme case)', async () => {
-    verifyVP.mockResolvedValueOnce(validResult([]));
-    const mw = helixidMCPMiddleware({ client });
-    const call = { name: 't', headers: { authorization: `helixvp ${vpA}` } };
+  it('accepts a request proof in _meta under the canonical key', async () => {
+    const mw = guard({ requiredScopes: [] });
+    const call = { name: 't', _meta: await proofFor('t') };
     await expect(mw(call)).resolves.toBe(call);
-    expect(verifyVP).toHaveBeenLastCalledWith({ id: 'vp:a' }, client, expect.anything());
   });
 
-  it('accepts a Headers instance', async () => {
-    verifyVP.mockResolvedValueOnce(validResult([]));
-    const mw = helixidMCPMiddleware({ client });
-    await expect(mw({ name: 't', headers: new Headers({ Authorization: `HelixVP ${vpA}` }) })).resolves.toBeDefined();
+  it('accepts a Headers instance for the bearer token', async () => {
+    const mw = guard({ validateOAuthToken: async () => ({ sub: 'u' }) });
+    await expect(mw({ name: 't', headers: new Headers({ Authorization: 'Bearer tok' }) })).resolves.toBeDefined();
   });
 
-  it('accepts the same VP in several places', async () => {
-    verifyVP.mockResolvedValueOnce(validResult([]));
-    const mw = helixidMCPMiddleware({ client });
-    await expect(
-      mw({
-        name: 't',
-        headers: { authorization: `HelixVP ${vpA}`, 'X-Helix-VP': vpA },
-        _meta: { 'x-helix-vp': vpA },
-      }),
-    ).resolves.toBeDefined();
+  it('rejects a chain without a proof together with a bearer token, and duplicate Authorization headers', async () => {
+    const mw = guard({ validateOAuthToken: async () => ({ sub: 'u' }) });
+    // A proof with a bearer token is the §8.6 fusion (story C-C); a bare chain with one is two callers.
+    await expect(mw({ name: 't', headers: { authorization: 'Bearer tok' }, _meta: { 'org.kya-os/delegation-chain': [{}] } })).rejects.toMatchObject({ code: 'CREDENTIAL_CONFLICT' });
+    await expect(mw({ name: 't', headers: { authorization: ['Bearer a', 'Bearer b'] } })).rejects.toMatchObject({ code: 'CREDENTIAL_CONFLICT' });
+    await expect(mw({ name: 't', headers: { authorization: 'Bearer' } })).rejects.toMatchObject({ code: 'CREDENTIAL_CONFLICT' });
   });
 
-  it('rejects different VPs across locations', async () => {
-    const mw = helixidMCPMiddleware({ client });
-    await expect(
-      mw({ name: 't', headers: { authorization: `HelixVP ${vpA}`, 'x-helix-vp': vpB } }),
-    ).rejects.toMatchObject({ code: 'CREDENTIAL_CONFLICT' });
-    await expect(
-      mw({ name: 't', headers: { 'x-helix-vp': vpA }, _meta: { 'x-helix-vp': vpB } }),
-    ).rejects.toMatchObject({ code: 'CREDENTIAL_CONFLICT' });
-  });
-
-  it('rejects a VP together with a bearer token, and duplicate Authorization headers', async () => {
-    const mw = helixidMCPMiddleware({ client, validateOAuthToken: async () => ({ sub: 'u' }) });
-    await expect(
-      mw({ name: 't', headers: { authorization: 'Bearer tok', 'x-helix-vp': vpA } }),
-    ).rejects.toMatchObject({ code: 'CREDENTIAL_CONFLICT' });
-    await expect(
-      mw({ name: 't', headers: { authorization: [`HelixVP ${vpA}`, 'Bearer tok'] } }),
-    ).rejects.toMatchObject({ code: 'CREDENTIAL_CONFLICT' });
+  it('ignores an Authorization scheme that is not Bearer, and the retired VP carriers', async () => {
+    const mw = guard({ requiredScopes: [] });
+    await expect(mw({ name: 't', headers: { authorization: 'HelixVP abc', 'x-helix-vp': 'abc' }, _meta: { 'x-helix-vp': 'abc' } })).rejects.toMatchObject({ code: 'PROOF_MISSING' });
   });
 
   it('rejects a bearer token when OAuth is not configured', async () => {
-    const mw = helixidMCPMiddleware({ client });
+    const mw = guard();
     await expect(mw({ name: 't', headers: { authorization: 'Bearer tok' } })).rejects.toMatchObject({
       code: 'OAUTH_TOKEN_INVALID',
     });
@@ -90,35 +57,29 @@ describe('credential extraction', () => {
 
 describe('per-tool scopes', () => {
   const toolScopes = { execute_query: ['read'], update_record: ['write'] };
+  const oauth = (scopes: string[]) => ({ validateOAuthToken: async () => ({ sub: 'u', scopes }) });
+  const bearer = { headers: { authorization: 'Bearer x' } };
 
   it('allows a listed tool with its scope', async () => {
-    verifyVP.mockResolvedValueOnce(validResult(['read']));
-    const mw = helixidMCPMiddleware({ client, toolScopes });
-    await expect(mw({ name: 'execute_query', _meta: { 'x-helix-vp': vpA } })).resolves.toBeDefined();
+    const mw = guard({ toolScopes, ...oauth(['read']) });
+    await expect(mw({ name: 'execute_query', ...bearer })).resolves.toBeDefined();
   });
 
   it('denies an unlisted tool, including Object.prototype names and a missing name', async () => {
-    const mw = helixidMCPMiddleware({ client, toolScopes });
+    const mw = guard({ toolScopes, ...oauth(['read', 'write', 'admin']) });
     for (const name of ['delete_record', 'constructor', 'toString', undefined]) {
-      verifyVP.mockResolvedValueOnce(validResult(['read', 'write', 'admin']));
-      await expect(mw({ ...(name ? { name } : {}), _meta: { 'x-helix-vp': vpA } })).rejects.toMatchObject({
-        code: 'TOOL_NOT_PERMITTED',
-      });
+      await expect(mw({ ...(name ? { name } : {}), ...bearer })).rejects.toMatchObject({ code: 'TOOL_NOT_PERMITTED' });
     }
   });
 
   it('denies a listed tool when the scope is missing', async () => {
-    verifyVP.mockResolvedValueOnce(validResult(['read']));
-    const mw = helixidMCPMiddleware({ client, toolScopes });
-    await expect(mw({ name: 'update_record', _meta: { 'x-helix-vp': vpA } })).rejects.toMatchObject({
-      code: 'INSUFFICIENT_SCOPE',
-    });
+    const mw = guard({ toolScopes, ...oauth(['read']) });
+    await expect(mw({ name: 'update_record', ...bearer })).rejects.toMatchObject({ code: 'INSUFFICIENT_SCOPE' });
   });
 
   it('toolScopes takes precedence over the global requiredScopes', async () => {
-    verifyVP.mockResolvedValueOnce(validResult(['read']));
-    const mw = helixidMCPMiddleware({ client, toolScopes, requiredScopes: ['admin'] });
-    await expect(mw({ name: 'execute_query', _meta: { 'x-helix-vp': vpA } })).resolves.toBeDefined();
+    const mw = guard({ toolScopes, requiredScopes: ['admin'], ...oauth(['read']) });
+    await expect(mw({ name: 'execute_query', ...bearer })).resolves.toBeDefined();
   });
 });
 
@@ -135,7 +96,6 @@ describe('OAuth callback validator', () => {
     await expect(mw({ name: 't', headers: { authorization: 'Bearer bad' } })).rejects.toMatchObject({
       code: 'OAUTH_TOKEN_INVALID',
     });
-    expect(verifyVP).not.toHaveBeenCalled();
   });
 
   it('refuses both oauth and validateOAuthToken', () => {
@@ -251,12 +211,12 @@ describe('RFC 9728 metadata and HTTP errors', () => {
   const opts = { resourceMetadataUrl: 'https://mcp.example.com/.well-known/oauth-protected-resource/mcp' };
 
   it('missing credentials: 401 with both challenges and no error attribute', async () => {
-    const mw = helixidMCPMiddleware({ client });
+    const mw = guard();
     const err = await mw({ name: 't' }).catch((e: unknown) => e);
     const res = toHttpErrorResponse(err, opts);
     expect(res?.status).toBe(401);
     expect(res?.headers['WWW-Authenticate']).toBe(
-      `Bearer resource_metadata="${opts.resourceMetadataUrl}", HelixVP resource_metadata="${opts.resourceMetadataUrl}"`,
+      `Bearer resource_metadata="${opts.resourceMetadataUrl}", KyaOS resource_metadata="${opts.resourceMetadataUrl}"`,
     );
   });
 
@@ -265,12 +225,12 @@ describe('RFC 9728 metadata and HTTP errors', () => {
     expect(toHttpErrorResponse({ code: 'CREDENTIAL_CONFLICT', message: 'x' }, opts)?.status).toBe(400);
     expect(toHttpErrorResponse({ code: 'INSUFFICIENT_SCOPE', message: 'x' }, opts)?.status).toBe(403);
     expect(toHttpErrorResponse({ code: 'TOOL_NOT_PERMITTED', message: 'x' }, opts)?.status).toBe(403);
-    expect(toHttpErrorResponse({ code: 'VP_VERIFICATION_FAILED', message: 'x' }, opts)?.status).toBe(401);
+    expect(toHttpErrorResponse({ code: 'PROOF_INVALID', message: 'x' }, opts)?.status).toBe(401);
+    expect(toHttpErrorResponse({ code: 'PROOF_MISSING', message: 'x' }, opts)?.body.error).toBe('unauthorized');
   });
 
   it('names the missing scope in the 403 challenge', async () => {
-    const mw = helixidMCPMiddleware({
-      client,
+    const mw = guard({
       validateOAuthToken: async () => ({ sub: 'u', scopes: ['read'] }),
       toolScopes: { t: ['read', 'admin', 'export'] },
     });
@@ -282,7 +242,7 @@ describe('RFC 9728 metadata and HTTP errors', () => {
       'error="insufficient_scope", error_description="Required scope: admin", scope="read admin export"',
     );
     // Header values are confined to the RFC 6750 charset.
-    const odd = toHttpErrorResponse(Object.assign(new Error('bad \u00e9\u0007 "quote" \\slash'), { code: 'VP_VERIFICATION_FAILED' }), opts);
+    const odd = toHttpErrorResponse(Object.assign(new Error('bad \u00e9\u0007 "quote" \\slash'), { code: 'PROOF_INVALID' }), opts);
     expect(odd?.headers['WWW-Authenticate']).toContain('error_description="bad     quote   slash"');
     // An error that does not name the scope gets no scope attribute rather than a guess.
     expect(toHttpErrorResponse({ code: 'INSUFFICIENT_SCOPE', message: 'x' }, opts)?.headers['WWW-Authenticate']).not.toContain(
@@ -301,26 +261,23 @@ describe('RFC 9728 metadata and HTTP errors', () => {
 });
 
 describe('audit', () => {
-  it('emits allowed and denied events with agentDid for VP callers', async () => {
+  it('emits allowed and denied events with agentDid for KYA-OS callers', async () => {
     const events: ToolAuditEvent[] = [];
-    const mw = helixidMCPMiddleware({
-      client,
-      toolScopes: { ok: ['read'], needs_write: ['write'] },
+    const mw = guard({
+      toolScopes: { ok: [], needs_write: ['write'] },
       auditSink: (e) => void events.push(e),
-      serviceDid: 'did:web:svc',
+      serviceDid: SERVICE,
     });
-    verifyVP.mockResolvedValue(validResult(['read']));
-    await mw({ name: 'ok', _meta: { 'x-helix-vp': vpA } });
-    await mw({ name: 'needs_write', _meta: { 'x-helix-vp': vpA } }).catch(() => undefined);
-    await mw({ name: 'unlisted', _meta: { 'x-helix-vp': vpA } }).catch(() => undefined);
-
+    await mw({ name: 'ok', _meta: await proofFor('ok') });
+    await mw({ name: 'needs_write', _meta: await proofFor('needs_write') }).catch(() => undefined);
+    await mw({ name: 'unlisted', _meta: await proofFor('unlisted') }).catch(() => undefined);
 
     expect(events.map((e) => [e.event, e.toolName, e.requiredScope])).toEqual([
       ['AUTHZ_GRANTED', 'ok', undefined],
       ['AUTHZ_DENIED', 'needs_write', 'write'],
       ['AUTHZ_DENIED', 'unlisted', undefined],
     ]);
-    expect(events[0]).toMatchObject({ agentDid: 'did:agent', authMethod: 'helixvp', serviceDid: 'did:web:svc' });
+    expect(events[0]).toMatchObject({ agentDid: agent.did, authMethod: 'kyaos', level: 'L1', fresh: true, serviceDid: SERVICE });
   });
 
   it('logs the OAuth subject for OAuth callers', async () => {
@@ -336,7 +293,7 @@ describe('audit', () => {
     expect(events[0]?.agentDid).toBeUndefined();
   });
 
-  it('does not log unidentified callers, and survives a failing sink', async () => {
+  it('logs unidentified callers as anonymous refusals (gap 2), and survives a failing sink', async () => {
     const sink = vi.fn(async () => {
       throw new Error('audit down');
     });
@@ -347,13 +304,13 @@ describe('audit', () => {
       onAuditError,
     });
     await mw({ name: 't' }).catch(() => undefined);
-    expect(sink).not.toHaveBeenCalled();
+    expect(sink).toHaveBeenCalledWith(expect.objectContaining({ event: 'AUTHZ_DENIED', authMethod: 'none', method: 'tools/call', toolName: 't', reasonCode: 'proof_missing' }));
     const call = { name: 't', headers: { authorization: 'Bearer x' } };
     await expect(mw(call)).resolves.toBe(call);
-    expect(onAuditError).toHaveBeenCalledTimes(1);
+    expect(onAuditError).toHaveBeenCalledTimes(2);
   });
 
-  it('createHelixAuditSink posts to /v1/audit-log/events with the account key', async () => {
+  it('createHelixAuditSink posts typed events to /v1/audit-log/events with the account key', async () => {
     const f = vi.fn(async () => new Response('{}', { status: 201 }));
     const sink = createHelixAuditSink({
       baseUrl: 'http://localhost:3680/',
@@ -365,21 +322,61 @@ describe('audit', () => {
       event: 'AUTHZ_DENIED', result: 'denied', timestamp: '2026-01-01T00:00:00.000Z', authMethod: 'oauth',
       oauthSubject: 'user-9', toolName: 't', requiredScope: 'read', effectiveScopes: [],
     });
+    expect(f).toHaveBeenCalledTimes(1);
     const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('http://localhost:3680/v1/audit-log/events');
     expect((init.headers as Record<string, string>)['authorization']).toBe('Bearer hak_test');
-    expect(JSON.parse(init.body as string)).toMatchObject({
-      event: 'AUTHZ_DENIED', serviceDid: 'did:web:svc', toolName: 't', requiredScope: 'read',
-      result: 'denied', oauthSubject: 'user-9', source: 'mcp-middleware',
+    const body = JSON.parse(init.body as string);
+    expect(body).toMatchObject({
+      eventType: 'authorization.denied',
+      binding: 'urn:kya-os:audit-binding:mcp:2025-11-25',
+      outcome: 'denied',
+      reason: { code: 'insufficient_scope' },
+      resource: { kind: 'public_did', did: 'did:web:svc' },
+      source: { producer: { kind: 'pairwise_did', did: 'did:web:svc' }, sourceId: 'mcp-middleware:did:web:svc' },
+      actor: { kind: 'keyed_commitment', keyId: 'oauth-subject-v1' },
+      authorization: { source: 'policy', decision: 'denied', scopeId: 'read' },
+      details: { family: 'authorization', phase: 'denied' },
     });
-    // The subject goes only in oauthSubject, never in a field every viewer sees.
-    expect(JSON.parse(init.body as string)).not.toHaveProperty('resultSummary');
+    // The subject never enters an event; the tool name is withheld by default.
+    expect(init.body as string).not.toContain('user-9');
+    expect(body.action).toEqual({ category: 'authorization' });
   });
 
-  it('createHelixAuditSink refuses an event with no agentDid and no serviceDid', async () => {
-    const sink = createHelixAuditSink({ baseUrl: 'http://localhost:1', apiKey: 'k', fetch: vi.fn() as unknown as typeof fetch });
-    await expect(
-      sink({ event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: 't', authMethod: 'oauth', effectiveScopes: [] }),
-    ).rejects.toThrow(/serviceDid/);
+  it('createHelixAuditSink needs the server DID to name a producer', () => {
+    expect(() => createHelixAuditSink({ baseUrl: 'http://localhost:1', apiKey: 'k', fetch: vi.fn() as unknown as typeof fetch })).toThrow(/serviceDid/);
+  });
+
+  it('createHelixAuditSink records a KYA-OS caller as proof.verified at its level, then the decision (story F-2)', async () => {
+    const f = vi.fn(async () => new Response('{}', { status: 201 }));
+    const sink = createHelixAuditSink({ baseUrl: 'http://localhost:3680', apiKey: 'hak_test', serviceDid: 'did:web:svc', fetch: f as unknown as typeof fetch });
+    await sink({
+      event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: '2026-01-01T00:00:00.000Z', authMethod: 'kyaos',
+      agentDid: 'did:key:z6Mkagent', level: 'L3', fresh: false, effectiveScopes: ['orders:read'],
+    });
+    const bodies = f.mock.calls.map((call) => JSON.parse((call as unknown as [string, RequestInit])[1].body as string));
+    expect(bodies.map((b) => b.eventType)).toEqual(['proof.verified', 'authorization.approved']);
+    expect(bodies[0]).toMatchObject({ actor: { kind: 'pairwise_did', did: 'did:key:z6Mkagent' }, details: { verificationCode: 'KYAOS_PROOF_L3_CACHED' } });
+    expect(bodies[1]).toMatchObject({ authorization: { source: 'delegation', decision: 'allowed' } });
+  });
+
+  it('createHelixAuditSink carries the story C-C L3-minus and cnf diagnostic in the verification code, and a level refusal as its own reason', async () => {
+    const f = vi.fn(async () => new Response('{}', { status: 201 }));
+    const sink = createHelixAuditSink({ baseUrl: 'http://localhost:3680', apiKey: 'hak_test', serviceDid: 'did:web:svc', fetch: f as unknown as typeof fetch });
+    await sink({
+      event: 'AUTHZ_DENIED', result: 'denied', timestamp: 't', authMethod: 'kyaos', agentDid: 'did:key:z6Mkagent', level: 'L3', fresh: true,
+      proofAssurance: 'L3-minus', l3Minus: true, cnfDiagnostics: ['cnf_present_but_token_unfused'], requiredLevel: 'L3',
+      reason: 'level_insufficient: L3-minus < L3', effectiveScopes: [],
+    });
+    await sink({ event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: 't', authMethod: 'kyaos', agentDid: 'did:key:z6Mkagent', level: 'L3', proofAssurance: 'L3', cnfDiagnostics: [], effectiveScopes: [] });
+    await sink({ event: 'AUTHZ_GRANTED', result: 'allowed', timestamp: 't', authMethod: 'kyaos', agentDid: 'did:key:z6Mkagent', level: 'L3', proofAssurance: 'L3-minus', fresh: false, effectiveScopes: [] });
+    const bodies = f.mock.calls.map((call) => JSON.parse((call as unknown as [string, RequestInit])[1].body as string));
+    expect(bodies.map((b) => b.eventType)).toEqual(['proof.verified', 'authorization.denied', 'proof.verified', 'authorization.approved', 'proof.verified', 'authorization.approved']);
+    expect(bodies[0].details.verificationCode).toBe('KYAOS_PROOF_L3_MINUS_CNF_UNFUSED');
+    expect(bodies[1]).toMatchObject({ reason: { code: 'proof_level_insufficient' }, authorization: { source: 'delegation', decision: 'denied' } });
+    expect(bodies[2].details.verificationCode).toBe('KYAOS_PROOF_L3');
+    expect(bodies[4].details.verificationCode).toBe('KYAOS_PROOF_L3_MINUS_CACHED');
+    // A-1's strict events hold no C-C member of their own.
+    for (const body of bodies) for (const key of ['proofAssurance', 'l3Minus', 'cnfDiagnostics', 'requiredLevel']) expect(JSON.stringify(body)).not.toContain(key);
   });
 });

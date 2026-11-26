@@ -17,9 +17,7 @@ export interface AgentOnboardOptions {
  *
  * Agent self-custody has been retired: the server generates and holds the
  * private key itself. No local keypair, no wallet file, no passphrase —
- * only `{ agentDid, vcId }` comes back. To act as this agent afterward
- * (present a VP), use HelixClient.signVP(agentDid, targetService) — also an
- * API call, since there's no local key to sign with.
+ * only `{ agentDid, vcId }` comes back.
  */
 export async function runAgentOnboard(options: AgentOnboardOptions): Promise<void> {
   const domains = options.domains

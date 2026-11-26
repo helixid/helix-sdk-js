@@ -317,12 +317,6 @@ export class InsufficientScopeError extends HelixError {
   }
 }
 
-export class VPMissingError extends HelixError {
-  constructor(message = 'No Verifiable Presentation in the X-Helix-VP header or MCP _meta["x-helix-vp"]') {
-    super('VP_MISSING', message, 401);
-  }
-}
-
 export class VPNotFoundError extends HelixError {
   constructor(message = 'VP not found') {
     super('VP_NOT_FOUND', message, 404);
@@ -404,6 +398,67 @@ export class InvalidJWTError extends HelixError {
 export class JWTExpiredError extends HelixError {
   constructor(message = 'JWT has expired') {
     super('JWT_EXPIRED', message, 401);
+  }
+}
+
+/**
+ * A compact JWS that does not verify (KYA-OS L1.3 to L1.5). `reason` is one
+ * of `JwsReasons` in core/kyaos/jws.ts, the same strings helix-core and
+ * helix-sdk-py use.
+ */
+export class InvalidJWSError extends HelixError {
+  public readonly reason: string;
+  constructor(reason: string, message = 'JWS is invalid') {
+    super('JWS_INVALID', message, 400, { reason });
+    this.name = 'InvalidJWSError';
+    this.reason = reason;
+  }
+}
+
+/**
+ * A KYA-OS detached response proof that does not bind the call it answers
+ * (story L2-A). `reason` is one of `ProofReasons` in core/kyaos/response-proof.ts.
+ */
+export class ResponseProofError extends HelixError {
+  public readonly reason: string;
+  constructor(reason: string, message = 'Response proof is invalid') {
+    super('RESPONSE_PROOF_INVALID', message, 400, { reason });
+    this.name = 'ResponseProofError';
+    this.reason = reason;
+  }
+}
+
+/**
+ * A KYA-OS `needs_authorization` challenge that cannot be acted on (story
+ * L3-E): the proof verified but is not a challenge's, or the challenge is
+ * malformed, its `authorizationUrl` is not http(s), or it has expired.
+ * `reason` is one of `ChallengeReasons` in core/kyaos/needs-authorization.ts.
+ */
+export class NeedsAuthorizationError extends HelixError {
+  public readonly reason: string;
+  constructor(reason: string, message = 'needs_authorization challenge is invalid') {
+    super('NEEDS_AUTHORIZATION_INVALID', message, 400, { reason });
+    this.name = 'NeedsAuthorizationError';
+    this.reason = reason;
+  }
+}
+
+/**
+ * A step of the consent flow (KYA-OS story L3-H) that did not go through: a
+ * consent request, the signed root hop the consent page returned, a renewal
+ * or a withdrawal. `reason` is one of `ConsentReasons` in
+ * core/kyaos/consent.ts (`step_up_required` among them), `status` the HTTP
+ * status Helix answered with, when it answered.
+ */
+export class ConsentFlowError extends HelixError {
+  public readonly reason: string;
+  /** The error code Helix answered with (`CONSENT_GRANT_SCOPE_NOT_ALLOWED`, say), when it answered with one. */
+  public readonly helixCode: string | undefined;
+  constructor(reason: string, message = 'consent flow failed', status = 400, helixCode?: string) {
+    super('CONSENT_FLOW_FAILED', message, status, { reason, ...(helixCode === undefined ? {} : { helixCode }) });
+    this.name = 'ConsentFlowError';
+    this.reason = reason;
+    this.helixCode = helixCode;
   }
 }
 

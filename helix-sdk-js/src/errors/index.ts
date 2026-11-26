@@ -50,7 +50,6 @@ import {
   VCNotYetValidError,
   VCSignatureInvalidError,
   SelfSignedVCNotAllowedError,
-  VPMissingError,
   VPExpiredError,
   VPVerificationFailedError,
   VPSignatureInvalidError,
@@ -154,8 +153,6 @@ export function mapApiError(body: unknown): HelixError {
       return new VCSignatureInvalidError(message);
     case ErrorCode.SELF_SIGNED_VC_NOT_ALLOWED:
       return new SelfSignedVCNotAllowedError(message);
-    case ErrorCode.VP_MISSING:
-      return new VPMissingError(message);
     case ErrorCode.VP_EXPIRED:
       return new VPExpiredError(message);
     case ErrorCode.VP_VERIFICATION_FAILED:

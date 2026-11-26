@@ -3,10 +3,26 @@
 
 /* eslint-disable no-console -- command-line entry point: startup and error output is the point */
 
-import { HelixClient } from '@helixid/sdk-js';
+import { appendFileSync, readFileSync } from 'node:fs';
+import { kyaos } from '@helixid/sdk-js';
+import type { AuditDeliverySink } from '@helixid/sdk-js';
 import {
-  createHelixAuditSink,
+  RedisStatusCacheStore,
+  RedisRotationSequenceStore,
+  type RedisRotationSequenceClient,
+  type RedisStatusCacheClient,
+  createHelixAuditDelivery,
+  createRevocationSignalClient,
+  type RevocationSignalClient,
+  createKyaOs,
+  createMcpAuditTrail,
+  createLocalVerifier,
+  createNeedsAuthorization,
+  type AuditSink,
   type AuthResult,
+  type KyaOsRuntime,
+  type LocalVerifier,
+  type McpAuditTrail,
   type MCPMiddlewareOptions,
   type OAuthIntrospectionOptions,
   type OAuthIssuerOptions,
@@ -16,14 +32,62 @@ import {
   okta,
 } from '@helixid/mcp-middleware';
 import { createOrderServer } from './app.js';
+import { demoRetryAuthorizer } from './demo-authorizer.js';
+import { TOOL_SCOPES } from './orders.js';
+import { FORWARD_TOOL, type DownstreamOptions } from './downstream.js';
+import { describeForwarders, forwardersFromEnv } from './delegation-env.js';
+import { LEVEL_VARIABLES, describeLevelSettings, readLevelSettings } from './levels.js';
+import { consentFromSettings, describeConsent, readConsentSettings, type ConsentSettings } from './consent-env.js';
+import { describeWellKnown, wellKnownFromEnv, type WellKnownFromEnv } from './well-known-env.js';
 
 /**
  * Configuration (environment):
  *   PORT, HOST            listen address (default 3700 on 127.0.0.1)
  *   MCP_RESOURCE          public URL of the MCP endpoint (default http://localhost:$PORT/mcp); the OAuth audience
- *   HELIX_API_URL         HelixID API to verify VPs and write audit events. Required whenever
- *   HELIX_API_KEY         HELIX_API_KEY is set: there is deliberately no default URL.
- *   SERVICE_DID           this server's DID: VPs for other services are rejected
+ *   HELIX_API_URL         HelixID API the audit trail writes to. Required whenever HELIX_API_KEY is
+ *   HELIX_API_KEY         set: there is deliberately no default URL. Never on the request path. The key
+ *                         turns on the audit trail (KYA-OS typed events to the recorder, POST /v1/audit/submissions),
+ *                         which names this server as its producer, so it also needs SERVICE_DID.
+ *   AUDIT_INCLUDE_TOOL_NAMES=1
+ *                         record tool names in audit events (withheld by default: often sensitive)
+ *   AUDIT_DELIVERY        required (default): each event's recorder receipt is obtained before the call
+ *                         goes on; buffered: events go to a durable outbox (AUDIT_OUTBOX_DIR) and are
+ *                         delivered in the background; best-effort: only with AUDIT_ACCEPT_AAP1=1
+ *   AUDIT_OUTBOX_DIR      buffered delivery's durable outbox directory (AUDIT_OUTBOX=memory asks for the
+ *                         ephemeral one, which buffered delivery refuses at startup)
+ *   SERVICE_DID           this server's DID: the KYA-OS door (story F-2). Every tool call that carries
+ *                         a request proof in _meta["org.kya-os/request-proof"] (and its delegation chain
+ *                         in _meta["org.kya-os/delegation-chain"]) is verified in-process against this
+ *                         DID as audience and resource, from public DID documents, status lists and the
+ *                         agent's Entity Card alone. Optional:
+ *   KYAOS_TRUSTED_ISSUERS   comma-separated attestation issuers, or * (default: allow all)
+ *   KYAOS_TRUSTED_ROOTS     comma-separated DIDs the root hop may be issued by (default: any)
+ *   KYAOS_MAX_CHAIN_LENGTH  longest carried chain read (default 10)
+ *   KYAOS_CARDS_FILE        JSON file mapping agent DIDs to their Entity Cards (local config, read before
+ *                           the card is fetched from the agent's DID document)
+ *   KYAOS_ALLOW_LOOPBACK_HTTP=1  development only: read DID documents, cards and status lists over
+ *                           http on loopback hosts
+ *   Revocation (story L3-C): every status list's proof is verified before a bit is read; lists and
+ *   verdicts are cached (in KYAOS_REDIS_URL when set, shared by every instance):
+ *   KYAOS_STATUS_CACHE_TTL      seconds a list or verdict is cached (default 300), for tools at L2 or below;
+ *                               a tool that demands L3 reads its lists live every call
+ *   KYAOS_HIGH_PRIVILEGE_SCOPES comma-separated scopes whose reads are cached at most
+ *   KYAOS_HIGH_PRIVILEGE_TTL      seconds (default 60, at most 60)
+ *   KYAOS_MAX_STALE_SECONDS     seconds a list may be served past its validUntil from the cache (default 60)
+ *   KYAOS_STATUS_LIST_ISSUERS   JSON object: issuer DID -> status-list URLs or https origins it keeps
+ *   KYAOS_SIGNAL_ISSUERS        comma-separated DIDs whose revocation signals (RFC 8417 SETs) are honoured;
+ *                               needed by either of:
+ *   KYAOS_REVOCATION_EVENTS_URL   Helix's SSE endpoint (<api>/v1/events/revocations): one outbound
+ *                                 connection, reconnecting on drop
+ *   KYAOS_REVOCATION_WEBHOOK_PATH a path on this server that receives pushed SETs (RFC 8935)
+ *   KYAOS_VERIFICATION_LOG      1: print each verification (level, fresh, reasons) and each revocation signal
+ *                               as one JSON line; a file path: append them there as JSON lines instead
+ *   KYAOS_MINIMUM_LEVEL     the Card level every tool demands (story C-C): L1, L2 or L3 (default L3: a
+ *                           verified request proof, every capability attested, status read live)
+ *   KYAOS_TOOL_LEVELS       per-tool minimums, comma-separated tool=level (lookup_order=L2 accepts a
+ *                           delegation chain without a request proof for lookup_order)
+ *   KYAOS_L3_MINUS_SATISFIES_L3=0  refuse L3-minus (a proof with no token cnf to fuse) for L3 tools
+ *                           (default: accepted, as SPEC-ENTITY-CARD.md §9.4 allows)
  *   OAUTH_ISSUER          OAuth door, one authorization server. The issuer alone is enough: its keys are
  *                         read from its metadata (aud must be MCP_RESOURCE). Optional:
  *   OAUTH_JWKS_URI          its jwks_uri, to skip discovery
@@ -37,10 +101,72 @@ import { createOrderServer } from './app.js';
  *                         or custom { issuer, jwksUri?, introspection?: { clientId, clientSecret, endpoint? } }
  *   DEMO_MODE=1           local demo only: accept the fixed bearer tokens below instead of an
  *                         authorization server. Refused unless HOST is loopback.
+ *   PUBLIC_ORIGIN         KYA-OS story C-A: serve this server's did.json and card.json (its did:web is
+ *                         derived from the origin and MCP path). Optional with it:
+ *   SERVICE_NAME            the card's display name (default "Order Management (HelixID sample)")
+ *   SERVICE_PUBLIC_KEY_JWK  the service key's public JWK, {"kty":"OKP","crv":"Ed25519","x":...}
+ *   SERVICE_KID             its verification-method fragment (default key-1)
+ *   SERVICE_RESPONSIBLE_PARTY  the accountable org DID, when there is one
+ *   SERVICE_SIGNING_KEY   KYA-OS (story L2-A): this server's Ed25519 private key (hex), the key
+ *                         SERVICE_DID's document lists as key-1. Turns on the _kyaos_handshake tool,
+ *                         sessions and a server-signed proof on every tool call outcome. Optional:
+ *   KYAOS_PUBLIC_ORIGIN     the origin agents connect to, accepted as handshake audience next to the
+ *                           DID (default: the origin of MCP_RESOURCE)
+ *   KYAOS_CLOCK_SKEW_SECONDS  30 to 600 (default 120)
+ *   KYAOS_SESSIONS=0        no sessions: the handshake is refused, calls are proven without one
+ *   KYAOS_SESSION_TTL_MINUTES idle TTL (default 30; fractions allowed)
+ *   KYAOS_NONCE_STORE       the replay store: memory (default, this instance only), redis or dynamo,
+ *                           read by @helixid/mcp-middleware itself (nonceStoreFromEnv); with it:
+ *                           redis: KYAOS_REDIS_URL, KYAOS_NONCE_KEY_PREFIX
+ *                           dynamo: KYAOS_DYNAMO_TABLE, KYAOS_DYNAMO_KEY_ATTRIBUTE, KYAOS_DYNAMO_TTL_ATTRIBUTE,
+ *                                   KYAOS_DYNAMO_REGION, KYAOS_DYNAMO_ENDPOINT (AWS credentials: the SDK's chain)
+ *                           See .env.example.
+ *   KYAOS_REDIS_URL         also the status cache's Redis (story L3-C), whatever KYAOS_NONCE_STORE says: lists
+ *                           and verdicts shared by every instance; without it the cache is in memory
+ *   KYAOS_AUTHORIZATION_URL KYA-OS (story L3-E): the consent page a caller without the authority for a
+ *                         tool is sent to. Turns on the signed needs_authorization challenge and the
+ *                         resume flow; the resume-token store follows KYAOS_NONCE_STORE (Redis on
+ *                         KYAOS_REDIS_URL, key prefix KYAOS_RESUME_KEY_PREFIX, when the replay store is
+ *                         Redis; memory otherwise), chosen by @helixid/mcp-middleware itself. In
+ *                         DEMO_MODE the retry's DelegationCredential is checked structurally only (see
+ *                         demo-authorizer.ts); outside it every retry is refused until a verifier
+ *                         (stories F-2, L3-H) is wired in. Optional:
+ *   KYAOS_RESUME_TTL_SECONDS  resume-token lifetime (default 600)
+ *   KYAOS_HELIX_CONSENT_URL KYA-OS (story L3-H): Helix's API base. The challenge's consent page becomes
+ *                         Helix's, where the user's own did:key signs the root hop; a retry's credential is
+ *                         verified in full by the local verifier. Needs SERVICE_DID and SERVICE_SIGNING_KEY
+ *                         (the consent request is signed by this service). Optional:
+ *     KYAOS_CONSENT_WINDOW_SECONDS        the consented window (default 86400)
+ *     KYAOS_CONSENT_HOP_LIFETIME_SECONDS  each hop's lifetime inside it, renewed by the agent without a click
+ *     KYAOS_CONSENT_USER                  the service user for callers without an OAuth subject (one-user demo)
+ *     KYAOS_CONSENT_SERVICE_NAME          the consent page's branding
+ *   AUDIT_LOG_FILE        append every audit event as one JSON line to this file, next to (or instead
+ *                         of) the HelixID audit sink; for local runs and the e2e suite
+ *   WELL_KNOWN_MCP        KYA-OS discovery (story L1-D): GET /.well-known/mcp is served whenever SERVICE_DID
+ *                         is a did:web or did:key (the document's serverDid), with endpoints at
+ *                         KYAOS_PUBLIC_ORIGIN (default: the origin of MCP_RESOURCE) and the KYA-OS values
+ *                         above. 0 turns the route off (404); 1 makes a SERVICE_DID the document cannot
+ *                         carry a startup error instead of a notice. Optional:
+ *   STATUS_LIST_CREDENTIAL  URL of this server's status list credential, advertised in the document
+ *
+ * Downstream delegation (KYA-OS story L3-D, SPEC.md §8):
+ *   KYAOS_DOWNSTREAM_URL  another order service's MCP endpoint: adds forward_lookup_order (orders:read),
+ *                         which looks the order up there on the calling agent's behalf, forwarding the
+ *                         chain it presented with a delegation proof this server signs (needs
+ *                         SERVICE_SIGNING_KEY). Each attachment is audited (the typed trail when on,
+ *                         and a line in KYAOS_VERIFICATION_LOG).
+ *   KYAOS_DELEGATION_ADVISORY=1  also send the advisory KYA-OS-Delegation-Chain / KYA-OS-Granted-Scopes
+ *   KYAOS_FORWARDERS      the services whose forwarded chains this server honours (their own resource as
+ *                         the chain's target): * (default), comma-separated DIDs, or none
+ *   KYAOS_DELEGATION_AUDIENCE  this server's host(s), as forwarders name it in the proof's aud;
+ *                         default the host of a did:web SERVICE_DID
  */
 const DEMO_TOKENS: Record<string, AuthResult> = {
   'demo-reader': { sub: 'demo-reader', scopes: ['orders:read'] },
   'demo-admin': { sub: 'demo-admin', scopes: ['orders:read', 'orders:admin'] },
+  // Agents with a DID as subject, for the needs_authorization flow (story L3-E): read only until a delegation grants more.
+  'demo-agent': { sub: 'did:key:z6MkdemoAgentOrdersRead', scopes: ['orders:read'] },
+  'demo-agent-2': { sub: 'did:key:z6MkdemoAgentTwoOrdersRead', scopes: ['orders:read'] },
 };
 
 function fail(message: string): never {
@@ -58,7 +184,7 @@ const serviceDid = env['SERVICE_DID'];
 const demo = env['DEMO_MODE'] === '1';
 
 if (apiKey && !apiUrl) {
-  // HelixClient given only an API key talks to the hosted production API.
+  // An audit sink given only an API key would talk to the hosted production API.
   fail('HELIX_API_KEY is set but HELIX_API_URL is not; set HELIX_API_URL explicitly (e.g. a local server)');
 }
 if (demo && !['127.0.0.1', 'localhost', '::1'].includes(host)) {
@@ -222,11 +348,38 @@ const auth: Omit<MCPMiddlewareOptions, 'toolScopes' | 'requiredScopes'> = {
   ...(serviceDid ? { expectedTargetService: serviceDid, serviceDid } : {}),
   onAuditError: (error) => console.error('audit write failed:', error),
 };
-if (apiUrl) {
-  auth.client = new HelixClient(apiUrl, apiKey ? { apiKey } : {});
-  if (apiKey) {
-    auth.auditSink = createHelixAuditSink({ baseUrl: apiUrl, apiKey, ...(serviceDid ? { serviceDid } : {}) });
+let audit: McpAuditTrail | undefined;
+if (apiUrl && apiKey) {
+  // The audit trail is the only thing that talks to the Helix API, and never on the request path.
+  if (!serviceDid) fail('HELIX_API_KEY turns on the audit trail, whose events name this server: set SERVICE_DID');
+  // A-2: delivery to the HelixID recorder (POST /v1/audit/submissions).
+  const delivery = env['AUDIT_DELIVERY'] || 'required';
+  if (delivery !== 'required' && delivery !== 'buffered' && delivery !== 'best-effort') {
+    fail(`AUDIT_DELIVERY must be required, buffered or best-effort (got ${delivery})`);
   }
+  let reporter: AuditDeliverySink;
+  try {
+    reporter = createHelixAuditDelivery({
+      baseUrl: apiUrl,
+      apiKey,
+      delivery,
+      ...(env['AUDIT_OUTBOX'] === 'memory' ? { outbox: 'memory' as const } : {}),
+      ...(env['AUDIT_OUTBOX_DIR'] ? { outboxDir: env['AUDIT_OUTBOX_DIR'] } : {}),
+      acceptAap1: env['AUDIT_ACCEPT_AAP1'] === '1',
+      onDeliveryFailure: (error) => console.error('audit delivery failed:', error instanceof Error ? error.message : error),
+    });
+  } catch (error) {
+    fail(`audit delivery refused: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  audit = createMcpAuditTrail({ reporter, serviceDid, includeToolNames: env['AUDIT_INCLUDE_TOOL_NAMES'] === '1' });
+  // The guard's decisions and the call lifecycle share one trail (one source, one sequence).
+  auth.auditSink = audit.toolAuditSink();
+}
+const auditLogFile = env['AUDIT_LOG_FILE'];
+if (auditLogFile) {
+  const helixSink = auth.auditSink;
+  const fileSink: AuditSink = (event) => appendFileSync(auditLogFile, `${JSON.stringify(event)}\n`);
+  auth.auditSink = helixSink ? async (event): Promise<void> => (fileSink(event), helixSink(event)) : fileSink;
 }
 if (demo) {
   auth.validateOAuthToken = async (token): Promise<AuthResult> => {
@@ -237,15 +390,339 @@ if (demo) {
 } else if (issuers.length > 0) {
   auth.oauth = issuers;
 }
-if (!auth.client && !auth.validateOAuthToken && !auth.oauth) {
-  fail('no way to authenticate callers: set HELIX_API_URL (HelixID VPs), OAUTH_ISSUER / OAUTH_ISSUERS, or DEMO_MODE=1');
+if (!serviceDid && !auth.validateOAuthToken && !auth.oauth) {
+  fail('no way to authenticate callers: set SERVICE_DID (KYA-OS request proofs), OAUTH_ISSUER / OAUTH_ISSUERS, or DEMO_MODE=1');
 }
+
+const publicOrigin = env['PUBLIC_ORIGIN'];
+let identity: Parameters<typeof createOrderServer>[0]['identity'];
+if (publicOrigin) {
+  let publicKeyJwk: { kty: 'OKP'; crv: 'Ed25519'; x: string } | undefined;
+  if (env['SERVICE_PUBLIC_KEY_JWK']) {
+    try {
+      publicKeyJwk = JSON.parse(env['SERVICE_PUBLIC_KEY_JWK']) as { kty: 'OKP'; crv: 'Ed25519'; x: string };
+    } catch {
+      fail('SERVICE_PUBLIC_KEY_JWK is not valid JSON');
+    }
+  }
+  identity = {
+    publicOrigin,
+    path: new URL(resource).pathname,
+    ...(serviceDid ? { did: serviceDid } : {}),
+    card: {
+      name: env['SERVICE_NAME'] ?? 'Order Management (HelixID sample)',
+      capabilities: ['tools/list', 'tools/call', ...Object.keys(TOOL_SCOPES)],
+      ...(publicKeyJwk ? { publicKeyJwk, kid: env['SERVICE_KID'] ?? 'key-1' } : {}),
+      ...(env['SERVICE_RESPONSIBLE_PARTY'] ? { responsibleParty: env['SERVICE_RESPONSIBLE_PARTY'] } : {}),
+    },
+  };
+}
+
+/** A positive number from an optional variable; `integer` demands a whole one. */
+function numberFromEnv(name: string, integer: boolean): number | undefined {
+  const raw = env[name];
+  if (!raw) return undefined;
+  const value = Number(raw);
+  if (!(value > 0) || !Number.isFinite(value) || (integer && !Number.isInteger(value))) {
+    fail(`${name} must be a positive ${integer ? 'integer' : 'number'}`);
+  }
+  return value;
+}
+
+let kyaOs: KyaOsRuntime | undefined;
+const redisUrl = env['KYAOS_REDIS_URL'];
+if (redisUrl && !serviceDid) fail('KYAOS_REDIS_URL needs SERVICE_DID');
+// The status cache's Redis (story L3-C): an ioredis client of its own. The replay store's comes from nonceStoreFromEnv (story L2-A).
+let statusCacheRedis: (RedisStatusCacheClient & { quit(): Promise<unknown> }) | undefined;
+if (redisUrl) {
+  const { Redis } = await import('ioredis');
+  const client = new Redis(redisUrl);
+  // Without a listener ioredis prints its own unhandled-error line; ours carries no URL.
+  client.on('error', (error: Error) => console.warn(`status cache: redis error: ${error.message}`));
+  statusCacheRedis = client as unknown as RedisStatusCacheClient & { quit(): Promise<unknown> };
+}
+if (env['SERVICE_SIGNING_KEY']) {
+  if (!serviceDid) fail('SERVICE_SIGNING_KEY needs SERVICE_DID (the DID whose document lists the key)');
+  const skew = numberFromEnv('KYAOS_CLOCK_SKEW_SECONDS', true);
+  const ttlMinutes = numberFromEnv('KYAOS_SESSION_TTL_MINUTES', false);
+  try {
+    kyaOs = createKyaOs({
+      // The key is read from the environment at every signature; the server never holds it.
+      signer: new kyaos.EnvSigner({ did: serviceDid, envVar: 'SERVICE_SIGNING_KEY' }),
+      publicOrigin: env['KYAOS_PUBLIC_ORIGIN'] || new URL(resource).origin,
+      ...(skew !== undefined ? { clockSkewSeconds: skew } : {}),
+      session: { enabled: env['KYAOS_SESSIONS'] !== '0', ...(ttlMinutes !== undefined ? { ttlMinutes } : {}) },
+      toolsEndpoint: resource,
+    });
+  } catch (error) {
+    fail(`KYA-OS: ${error instanceof Error ? error.message : String(error)}`);
+  }
+} else if (env['KYAOS_NONCE_STORE'] || env['KYAOS_PUBLIC_ORIGIN'] || env['KYAOS_CLOCK_SKEW_SECONDS'] || env['KYAOS_SESSIONS'] || env['KYAOS_SESSION_TTL_MINUTES']) {
+  fail('KYAOS_* settings need SERVICE_SIGNING_KEY');
+}
+
+// Story L3-D: forward_lookup_order calls another order service on the agent's behalf.
+let downstream: DownstreamOptions | undefined;
+const downstreamUrl = env['KYAOS_DOWNSTREAM_URL'];
+if (downstreamUrl) {
+  if (!serviceDid || !env['SERVICE_SIGNING_KEY']) fail('KYAOS_DOWNSTREAM_URL needs SERVICE_DID and SERVICE_SIGNING_KEY (the delegation proof is signed by this server)');
+  try {
+    new URL(downstreamUrl);
+  } catch {
+    fail('KYAOS_DOWNSTREAM_URL must be a URL');
+  }
+  const outboundLog = env['KYAOS_VERIFICATION_LOG'] || undefined;
+  downstream = {
+    url: downstreamUrl,
+    signer: new kyaos.EnvSigner({ did: serviceDid, envVar: 'SERVICE_SIGNING_KEY' }),
+    advisoryHeaders: env['KYAOS_DELEGATION_ADVISORY'] === '1',
+    // Every attachment: the typed trail (delegation.outbound_attached, once the trail exists) and one log line.
+    audit: async (attachment): Promise<void> => {
+      const { chain: _chain, ...line } = attachment;
+      if (outboundLog === '1') console.log(`[kya-os] outbound-delegation ${JSON.stringify(line)}`);
+      else if (outboundLog !== undefined) appendFileSync(outboundLog, `${JSON.stringify({ kind: 'outbound-delegation', ...line })}\n`);
+      if (audit) await audit.outboundAttached(attachment);
+    },
+  };
+} else if (env['KYAOS_DELEGATION_ADVISORY']) {
+  fail('KYAOS_DELEGATION_ADVISORY needs KYAOS_DOWNSTREAM_URL');
+}
+
+const authorizationUrl = env['KYAOS_AUTHORIZATION_URL'];
+let consentSettings: ConsentSettings | undefined;
+try {
+  consentSettings = readConsentSettings(env);
+} catch (error) {
+  fail((error as Error).message);
+}
+if (consentSettings && authorizationUrl) fail('set KYAOS_AUTHORIZATION_URL or KYAOS_HELIX_CONSENT_URL, not both');
+if (consentSettings) {
+  if (!serviceDid) fail('KYAOS_HELIX_CONSENT_URL needs SERVICE_DID (the consent request is for this service)');
+  const ttlSeconds = numberFromEnv('KYAOS_RESUME_TTL_SECONDS', false);
+  const consent = consentFromSettings(consentSettings, serviceDid, new kyaos.EnvSigner({ did: serviceDid, envVar: 'SERVICE_SIGNING_KEY' }), () => auth.verifier as LocalVerifier | undefined);
+  auth.needsAuthorization = createNeedsAuthorization({
+    authorizationUrl: consent.authorizationUrl,
+    authorizer: consent.authorizer,
+    ...(ttlSeconds !== undefined ? { ttlSeconds } : {}),
+    ...(auth.auditSink ? { auditSink: auth.auditSink } : {}),
+    onAuditError: (error) => console.error('audit write failed:', error),
+    serviceDid,
+  });
+} else if (authorizationUrl) {
+  if (!serviceDid) fail('KYAOS_AUTHORIZATION_URL needs SERVICE_DID (the challenge binds the token to this service)');
+  const ttlSeconds = numberFromEnv('KYAOS_RESUME_TTL_SECONDS', false);
+  try {
+    auth.needsAuthorization = createNeedsAuthorization({
+      // The consent page, with the binding in its query so the page knows what to show (the token stays out of the URL).
+      authorizationUrl: (c) => {
+        const url = new URL(authorizationUrl);
+        url.searchParams.set('agent', c.agentDid);
+        url.searchParams.set('tool', c.tool);
+        url.searchParams.set('scope', c.scopes.join(' '));
+        return url.toString();
+      },
+      ...(ttlSeconds !== undefined ? { ttlSeconds } : {}),
+      ...(demo ? { authorizer: demoRetryAuthorizer(serviceDid) } : {}),
+      ...(auth.auditSink ? { auditSink: auth.auditSink } : {}),
+      onAuditError: (error) => console.error('audit write failed:', error),
+      serviceDid,
+    });
+  } catch (error) {
+    fail(`KYA-OS needs_authorization: ${error instanceof Error ? error.message : String(error)}`);
+  }
+} else if (env['KYAOS_RESUME_TTL_SECONDS']) {
+  fail('KYAOS_RESUME_TTL_SECONDS needs KYAOS_AUTHORIZATION_URL or KYAOS_HELIX_CONSENT_URL');
+}
+
+if (kyaOs) {
+  // redis and dynamo load their client package in the background: a missing one stops the server here, not at the first call.
+  try {
+    await kyaOs.ready();
+  } catch (error) {
+    fail(`KYA-OS: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+if (auth.needsAuthorization) {
+  // The resume-token store follows the replay store; a Redis one loads ioredis in the background, like it.
+  try {
+    await auth.needsAuthorization.ready();
+  } catch (error) {
+    fail(`KYA-OS needs_authorization: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** A comma-separated list of DIDs, or undefined when the variable is unset or `*`. */
+function didList(name: string): string[] | undefined {
+  const raw = env[name]?.trim();
+  if (!raw || raw === '*') return undefined;
+  const dids = raw.split(',').map((did) => did.trim()).filter((did) => did.length > 0);
+  if (dids.some((did) => !did.startsWith('did:'))) fail(`${name} must list DIDs`);
+  return dids;
+}
+
+/** A non-negative number of seconds from an optional variable. */
+function secondsFromEnv(name: string): number | undefined {
+  const raw = env[name];
+  if (raw === undefined || raw === '') return undefined;
+  const value = Number(raw);
+  if (!(value >= 0) || !Number.isFinite(value)) fail(`${name} must be a non-negative number of seconds`);
+  return value;
+}
+
+/** A JSON object from an optional variable. */
+function jsonFromEnv(name: string): Record<string, string[]> | undefined {
+  const raw = env[name];
+  if (!raw) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (asRecord(parsed) === undefined) fail(`${name} must be a JSON object`);
+    return parsed as Record<string, string[]>;
+  } catch {
+    return fail(`${name} is not valid JSON`);
+  }
+}
+
+let revocationSignals: RevocationSignalClient | undefined;
+const revocationWebhookPath = env['KYAOS_REVOCATION_WEBHOOK_PATH'];
+const L3C_SETTINGS = [
+  'KYAOS_STATUS_CACHE_TTL',
+  'KYAOS_HIGH_PRIVILEGE_SCOPES',
+  'KYAOS_HIGH_PRIVILEGE_TTL',
+  'KYAOS_MAX_STALE_SECONDS',
+  'KYAOS_STATUS_LIST_ISSUERS',
+  'KYAOS_SIGNAL_ISSUERS',
+  'KYAOS_REVOCATION_EVENTS_URL',
+  'KYAOS_REVOCATION_WEBHOOK_PATH',
+  'KYAOS_VERIFICATION_LOG',
+];
+
+// The KYA-OS door (story F-2): every request proof is verified here, in-process, with the Helix API never asked.
+if (serviceDid) {
+  const trustedIssuers = didList('KYAOS_TRUSTED_ISSUERS');
+  const trustedRootIssuers = didList('KYAOS_TRUSTED_ROOTS');
+  const maxChainLength = numberFromEnv('KYAOS_MAX_CHAIN_LENGTH', true);
+  let cards: Record<string, unknown> | undefined;
+  if (env['KYAOS_CARDS_FILE']) {
+    try {
+      cards = JSON.parse(readFileSync(env['KYAOS_CARDS_FILE'], 'utf8')) as Record<string, unknown>;
+    } catch (error) {
+      fail(`KYAOS_CARDS_FILE: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const highPrivilegeScopes = env['KYAOS_HIGH_PRIVILEGE_SCOPES']?.split(',').map((scope) => scope.trim()).filter((scope) => scope.length > 0);
+  const statusCacheTtl = numberFromEnv('KYAOS_STATUS_CACHE_TTL', false);
+  const highPrivilegeTtl = numberFromEnv('KYAOS_HIGH_PRIVILEGE_TTL', false);
+  const maxStaleSeconds = secondsFromEnv('KYAOS_MAX_STALE_SECONDS');
+  const statusListIssuers = jsonFromEnv('KYAOS_STATUS_LIST_ISSUERS');
+  const verificationLog = env['KYAOS_VERIFICATION_LOG'] || undefined;
+  /** One JSON line per verification or signal: on stdout, or appended to the file KYAOS_VERIFICATION_LOG names. */
+  const logEvent = (kind: string, report: unknown): void => {
+    if (verificationLog === '1') console.log(`[kya-os] ${kind} ${JSON.stringify(report)}`);
+    else if (verificationLog !== undefined) appendFileSync(verificationLog, `${JSON.stringify({ kind, ...(report as object) })}\n`);
+  };
+  let statusCache: kyaos.verifier.StatusCache;
+  try {
+    statusCache = new kyaos.verifier.StatusCache({
+      ...(statusCacheTtl === undefined ? {} : { statusCacheTtl }),
+      ...(highPrivilegeTtl === undefined ? {} : { highPrivilegeTtl }),
+      ...(highPrivilegeScopes === undefined ? {} : { highPrivilegeScopes }),
+      ...(maxStaleSeconds === undefined ? {} : { maxStaleSeconds }),
+      // Shared by every instance next to the replay store: one signal's delete is seen by all.
+      ...(statusCacheRedis ? { store: new RedisStatusCacheStore({ client: statusCacheRedis }) } : {}),
+    });
+  } catch (error) {
+    fail(`status cache: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  // Story C-C: the minimum Card level, per tool.
+  try {
+    Object.assign(auth, readLevelSettings(env, [...Object.keys(TOOL_SCOPES), ...(env['KYAOS_DOWNSTREAM_URL'] ? [FORWARD_TOOL] : [])]));
+  } catch (error) {
+    fail((error as Error).message);
+  }
+  const localVerifier = createLocalVerifier({
+    serviceDid,
+    statusCache,
+    ...(statusListIssuers === undefined ? {} : { statusListIssuers }),
+    ...(verificationLog ? { reportVerification: (report): void => logEvent('verification', report) } : {}),
+    ...(trustedIssuers === undefined ? {} : { trustedIssuers }),
+    ...(trustedRootIssuers === undefined ? {} : { trustedRootIssuers }),
+    ...(maxChainLength === undefined ? {} : { maxChainLength }),
+    ...(cards === undefined ? {} : { cards }),
+    allowLoopbackHttp: env['KYAOS_ALLOW_LOOPBACK_HTTP'] === '1',
+    // Story C-E: in multi-instance mode the last-seen DID document version is shared too.
+    ...(statusCacheRedis ? { rotationSequenceStore: new RedisRotationSequenceStore({ client: statusCacheRedis as unknown as RedisRotationSequenceClient }) } : {}),
+    catalog: [...new Set(Object.values(TOOL_SCOPES).flat())],
+    // One replay store for the handshake, the response proofs and the request proofs.
+    ...(kyaOs ? { nonceStore: kyaOs.nonceStore } : {}),
+    // Story A-1 connects the audit trail here; until then each verification is logged once as unrecorded.
+    log: (message) => console.warn(message),
+  });
+  auth.verifier = localVerifier;
+  // Story L3-D: downstream calls forwarding an agent's delegation, verified by the same verifier.
+  let forwarders: ReturnType<typeof forwardersFromEnv>;
+  try {
+    forwarders = forwardersFromEnv(env['KYAOS_FORWARDERS']);
+  } catch (error) {
+    fail((error as Error).message);
+  }
+  const delegationAudience = env['KYAOS_DELEGATION_AUDIENCE']?.split(',').map((host) => host.trim()).filter((host) => host.length > 0);
+  auth.inboundDelegation = {
+    ...(forwarders === undefined ? {} : { forwarders }),
+    ...(delegationAudience === undefined || delegationAudience.length === 0 ? {} : { audience: delegationAudience }),
+  };
+  const eventsUrl = env['KYAOS_REVOCATION_EVENTS_URL'];
+  const signalIssuers = didList('KYAOS_SIGNAL_ISSUERS');
+  if (eventsUrl || revocationWebhookPath) {
+    if (signalIssuers === undefined) fail('KYAOS_REVOCATION_EVENTS_URL / KYAOS_REVOCATION_WEBHOOK_PATH need KYAOS_SIGNAL_ISSUERS (the Helix issuer DID)');
+    if (revocationWebhookPath !== undefined && !revocationWebhookPath.startsWith('/')) fail('KYAOS_REVOCATION_WEBHOOK_PATH must be a path');
+    revocationSignals = createRevocationSignalClient(localVerifier, {
+      ...(eventsUrl ? { eventsUrl } : {}),
+      trustedIssuers: signalIssuers,
+      // Every signal, honoured or ignored, is one line: the sample's audit of the signal channel.
+      onSignal: (report) => {
+        console.log(`[kya-os] revocation-signal ${JSON.stringify(report)}`);
+        logEvent('revocation-signal', report);
+      },
+      onConnectionChange: (connected, error) => {
+        console.log(`[kya-os] revocation-events ${connected ? 'connected' : 'disconnected'}${error ? `: ${error instanceof Error ? error.message : String(error)}` : ''}`);
+        logEvent('revocation-events', { connected, ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}) });
+      },
+    });
+    if (eventsUrl) revocationSignals.start();
+  } else if (signalIssuers !== undefined) {
+    fail('KYAOS_SIGNAL_ISSUERS needs KYAOS_REVOCATION_EVENTS_URL or KYAOS_REVOCATION_WEBHOOK_PATH');
+  }
+  } else if (
+    ['KYAOS_TRUSTED_ISSUERS', 'KYAOS_TRUSTED_ROOTS', 'KYAOS_MAX_CHAIN_LENGTH', 'KYAOS_CARDS_FILE', 'KYAOS_FORWARDERS', 'KYAOS_DELEGATION_AUDIENCE', ...L3C_SETTINGS, ...LEVEL_VARIABLES].some((name) => env[name])
+  ) {
+    fail('KYAOS_TRUSTED_ISSUERS / KYAOS_TRUSTED_ROOTS / KYAOS_MAX_CHAIN_LENGTH / KYAOS_CARDS_FILE / KYAOS_MINIMUM_LEVEL / KYAOS_TOOL_LEVELS / KYAOS_L3_MINUS_SATISFIES_L3 and the revocation settings need SERVICE_DID');
+}
+
+/** The discovery document (story L1-D): built once, validated against the schema, or the reason it is off. */
+let discovery: WellKnownFromEnv = { wellKnown: undefined, off: undefined };
+try {
+  discovery = wellKnownFromEnv(env, resource, serviceDid, kyaOs);
+} catch (error) {
+  fail(`/.well-known/mcp: ${error instanceof Error ? error.message : String(error)}`);
+}
+const wellKnown = discovery.wellKnown;
 
 const server = createOrderServer({
   resource,
+  ...(identity ? { identity } : {}),
   ...(issuers.length > 0 ? { authorizationServers: issuers.map((i) => i.issuer) } : {}),
   auth,
+  ...(audit ? { audit } : {}),
+  ...(kyaOs ? { kyaos: kyaOs } : {}),
+  ...(revocationSignals && revocationWebhookPath ? { revocationWebhook: { path: revocationWebhookPath, handle: revocationSignals.webhookHandler() } } : {}),
+  ...(wellKnown ? { wellKnown } : {}),
+  ...(downstream ? { downstream } : {}),
   onServerError: (error) => console.error('server error:', error),
+});
+process.once('SIGTERM', () => {
+  void revocationSignals?.stop();
+  void statusCacheRedis?.quit();
+  server.close();
 });
 server.listen(port, host, () => {
   const modes = issuers.map((i) => {
@@ -254,7 +731,54 @@ server.listen(port, host, () => {
     return `${i.issuer} (${how}${discovered ? ', endpoints from its metadata' : ''})`;
   });
   console.log(`order-management MCP server on ${resource}`);
-  console.log(`  HelixID VPs: ${auth.client ? `verified via ${apiUrl}` : 'off (set HELIX_API_URL)'}`);
-  console.log(`  OAuth:       ${demo ? 'DEMO tokens demo-reader, demo-admin' : modes.length ? modes.join(', ') : 'off'}`);
-  console.log(`  Audit:       ${auth.auditSink ? `${apiUrl}/v1/audit-log/events` : 'off (set HELIX_API_URL + HELIX_API_KEY)'}`);
+  console.log(
+    `  KYA-OS proofs: ${
+      auth.verifier
+        ? `verified in-process for ${serviceDid}, trusted issuers ${env['KYAOS_TRUSTED_ISSUERS'] || '*'}, chain length <= ${env['KYAOS_MAX_CHAIN_LENGTH'] || 10}, ${describeLevelSettings(auth)}`
+        : 'off (set SERVICE_DID)'
+    }`,
+  );
+  if (auth.verifier) {
+    console.log(
+      `  Revocation:  list proofs verified, cache ${redisUrl ? `redis ${redisUrl}` : 'in memory'}, signals ${
+        revocationSignals ? [env['KYAOS_REVOCATION_EVENTS_URL'] && `SSE ${env['KYAOS_REVOCATION_EVENTS_URL']}`, revocationWebhookPath && `webhook ${revocationWebhookPath}`].filter(Boolean).join(' + ') : 'off'
+      }`,
+    );
+  }
+  console.log(`  OAuth:       ${demo ? 'DEMO tokens demo-reader, demo-admin, demo-agent, demo-agent-2' : modes.length ? modes.join(', ') : 'off'}`);
+  console.log(
+    `  Audit:       ${
+      [
+        audit
+          ? `${apiUrl}/v1/audit/submissions (KYA-OS recorder, ${env['AUDIT_DELIVERY'] || 'required'} delivery; tool names ${audit.includeToolNames ? 'recorded' : 'withheld'})`
+          : '',
+        auditLogFile ? `file ${auditLogFile}` : '',
+      ]
+        .filter(Boolean)
+        .join(' + ') || 'off (set HELIX_API_URL + HELIX_API_KEY + SERVICE_DID, or AUDIT_LOG_FILE)'
+    }`,
+  );
+  console.log(`  Identity:    ${identity ? `${identity.publicOrigin}${new URL(resource).pathname.replace(/\/$/, '')}/{did,card}.json` : 'off (set PUBLIC_ORIGIN)'}`);
+  console.log(
+    `  Consent:     ${
+      consentSettings
+        ? `needs_authorization challenges to Helix's consent page (story L3-H): ${describeConsent(consentSettings)}; retries verified by the local verifier`
+        : authorizationUrl
+        ? `needs_authorization challenges to ${authorizationUrl}, resume tokens ${env['KYAOS_NONCE_STORE']?.trim().toLowerCase() === 'redis' ? 'in redis (KYAOS_REDIS_URL)' : 'in memory'}, retries ${demo ? 'checked structurally (DEMO_MODE, no signature verification)' : 'refused until a verifier is wired in'}`
+        : 'off (set KYAOS_HELIX_CONSENT_URL or KYAOS_AUTHORIZATION_URL)'
+    }`,
+  );
+  console.log(
+    `  KYA-OS:      ${
+      kyaOs
+        ? `proofs by ${kyaOs.serverDid}, sessions ${kyaOs.sessionsEnabled ? 'on' : 'off'}, skew ${kyaOs.clockSkewSeconds} s (replay store: the line above)`
+        : 'off (set SERVICE_SIGNING_KEY)'
+    }`,
+  );
+  console.log(`  Discovery:   ${describeWellKnown(discovery)}`);
+  console.log(
+    `  Downstream:  ${downstream ? `forward_lookup_order to ${downstream.url}${downstream.advisoryHeaders ? ' (advisory headers on)' : ''}` : 'off (set KYAOS_DOWNSTREAM_URL)'}; forwards accepted from ${
+      describeForwarders(auth.inboundDelegation === false ? false : auth.inboundDelegation?.forwarders)
+    }`,
+  );
 });

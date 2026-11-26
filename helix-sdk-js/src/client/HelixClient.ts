@@ -1,4 +1,4 @@
-import { AuditEvents } from '../core/audit-events.js';
+import type { AuditProducerEvent, AuditSink } from '../audit/index.js';
 import { generateKeyPair, type KeyPair } from '../core/keys.js';
 import { SDKOnlyModeNoAPIError } from '../errors/index.js';
 import { verifyJWT } from '../core/jwt.js';
@@ -6,44 +6,7 @@ import type { HelixJWTPayload } from '../core/schemas/jwt.js';
 import type { DIDDocument, ServiceEndpoint } from '../core/did.js';
 import type { StatusListCredential } from '../core/status-list-schema.js';
 import type { SignedVC } from '../core/schemas/vc.js';
-import type { SignedVP } from '../core/schemas/vp.js';
-import type { VerifyVPOptions, VerifyVPResult } from '../core/verification-types.js';
 import { HttpAdapter } from '../http/HttpAdapter.js';
-
-/**
- * Full response from `POST /v1/vp/verify` — see the SDK-API-only design.
- * Superset of core's `VerifyVPResult` (same verification fields — parity is
- * enforced server-side, see helix-api's IVPService) plus the fields only the
- * API call itself can produce (targetService, verifiedAt, an optional
- * session). The server logs VP_VERIFIED/VP_REJECTED on every call, so unlike
- * the old local-verification path, the SDK does not need its own audit call
- * here.
- */
-export interface VerifyVPApiResult extends VerifyVPResult {
-  targetService: string;
-  verifiedAt: string;
-  userDid?: string;
-  session?: {
-    token: string;
-    expiresAt: string;
-    publicKeyEndpoint: string;
-  };
-}
-
-/**
- * Agent-side record of a consent grant landing in the wallet (spec §2a) — the
- * agent-side analogue of `VC_ISSUED`.
- */
-export interface ConsentGrantedAuditEntry {
-  vcId: string;
-  agentDid: string;
-  issuer?: string;
-  userDid?: string;
-  scopes?: string[];
-  durability?: string;
-  grantedAt: string;
-  source: 'sdk';
-}
 
 interface HttpAdapterLike {
   post<T>(path: string, body?: unknown): Promise<T>;
@@ -108,23 +71,41 @@ export interface VCSummary {
 }
 
 export interface AuditLogFilters {
+  /** One KYA-OS event type, e.g. `tool.call.completed`. */
   eventType?: string;
+  /** One detail family, e.g. `tool`. */
+  family?: string;
   since?: string;
+  /** The `nextCursor` of the previous page; absent for the first. */
+  cursor?: string;
   limit?: number;
 }
 
+/**
+ * One row of helix-core's `GET /v1/audit-log` (operator): the typed producer
+ * event as recorded, where the recorder placed it, and its signed receipt.
+ */
 export interface AuditLogEvent {
   id: string;
-  eventType: string;
-  timestamp: string;
-  subjectDid?: string;
-  vcId?: string;
-  targetService?: string;
-  result?: string;
-  delegatedFrom?: string;
-  delegatedTo?: string;
-  parentVcId?: string;
-  delegationDepth?: number;
+  recordedAt: string;
+  eventDigest: string;
+  event: AuditProducerEvent;
+  ledgerId: string;
+  ledgerEpochId: string;
+  sequence: string;
+  entryDigest: string;
+  receipt: { core: Record<string, unknown>; jws: string };
+}
+
+/**
+ * One page of `GET /v1/audit-log`, newest first. Pass `nextCursor` back as
+ * `cursor` for the next page; it is null on the last. A hosted deployment's
+ * account view answers the same shape with its own item type (the event at
+ * the account's tier): read it as `getAuditLog<ItsItem>()`.
+ */
+export interface AuditLogPage<Item = AuditLogEvent> {
+  items: Item[];
+  nextCursor: string | null;
 }
 
 export interface StatusListCredentialResponse {
@@ -147,9 +128,7 @@ export interface HelixClientOptions {
   /**
    * Enterprise (server-custody, account-scoped) mode: presence of this
    * option is what selects it. Every call then sends it as the bearer
-   * token (enterprise has no admin key), and signVP()/delegateAuthority()
-   * talk to /v1/custodial-agents/:did/... instead of core's
-   * /v1/agents/:did/.... See helix-server-enterprise's
+   * token (enterprise has no admin key). See helix-server-enterprise's
    * POST /v1/account/api-keys. No email/password, no login call -- an
    * agent process holds only this, the same way an OSS agent holds only
    * `adminApiKey`.
@@ -166,42 +145,6 @@ export interface CreateServiceInput {
   /** Origin the service is reachable at, e.g. https://sp.example. */
   verifiedDomain: string;
   apiEndpoint?: string;
-}
-
-export interface IssueServiceDelegationGrantInput {
-  /** The service granting on the user's behalf -- the grant's `issuer`. */
-  serviceDid: string;
-  /** The agent the user is delegating to -- the grant's subject. */
-  agentDid: string;
-  /** The consenting user, recorded as given (never resolved). */
-  userDid: string;
-  scopes: string[];
-  /** `standing` (default, ~10 years) or `session` (24 hours). */
-  durability?: 'standing' | 'session';
-  /**
-   * Also revoke every other grant this service holds for the same user and
-   * agent, so the new one is the only consent that stands. Off by default:
-   * a consent with a different scope set is added beside the existing ones,
-   * and consenting again to exactly the same scopes refreshes that grant.
-   */
-  revokeExisting?: boolean;
-  /**
-   * Whether the consent also covers agents this agent delegates to. Omitted,
-   * the grant carries no flag and verifiers treat it as allowed.
-   */
-  allowDelegation?: boolean;
-}
-
-export interface GetAgentScopesInput {
-  /** The service whose consent screen is asking; must be one the caller may grant for. */
-  serviceDid: string;
-  agentDid: string;
-}
-
-/** The scopes the agent holds as itself: the most any consent to it may grant. */
-export interface AgentScopesResult {
-  agentDid: string;
-  scopes: string[];
 }
 
 export interface CreateStatusListOptions {
@@ -250,8 +193,8 @@ export class HelixClient {
     }
 
     this.sdkOnlyMode = resolvedUrl === undefined;
-    // Enterprise's /v1/audit-log/consent-granted takes an account, so an
-    // API key enables the consent audit write just as the admin key does.
+    // POST /v1/audit-log/events takes an admin or account key, so an API key
+    // enables audit writes just as the admin key does.
     this.apiAuditEnabled = !this.sdkOnlyMode && Boolean(options?.adminApiKey || options?.apiKey);
     // The adapter sends whichever credential was given on every call, so
     // enterprise (apiKey) and core (adminApiKey) differ only in which routes
@@ -376,38 +319,14 @@ export class HelixClient {
   }
 
   // -- Service Providers ---------------------------------------------------
-  // Services hold no keys: the server mints the service DID, keeps its key,
-  // and signs consent grants on the service's behalf. Same custody model as
-  // agents (onboardAgent/signVP/delegateAuthority), so both are API calls.
+  // Consent is not a grant a service signs for its user any more: since
+  // KYA-OS story L3-H the user's own did:key signs the root hop on Helix's
+  // consent page (`kyaos.consent`).
 
   /** Enroll a service (self-hosted servers; hosted accounts enroll through the console/account API). */
   async createService(input: CreateServiceInput): Promise<{ serviceDid: string; serviceName: string }> {
     this.assertAPIConfigured();
     return this.http.post('/v1/services', input);
-  }
-
-  /**
-   * Issues a DelegationGrantCredential from `serviceDid` to `agentDid` on
-   * `userDid`'s behalf: built, signed with the service's server-held key
-   * and stored with a revocable status-list entry, in one call. Revoke it
-   * with {@link revokeVC}.
-   */
-  async issueServiceDelegationGrant(input: IssueServiceDelegationGrantInput): Promise<SignedVC> {
-    this.assertAPIConfigured();
-    const result = await this.http.post<{ grantVC: SignedVC }>('/v1/service-delegation-grants', input);
-    return result.grantVC;
-  }
-
-  /**
-   * The scopes `agentDid` holds as itself, from its own active onboarding
-   * credentials (never those delegated to it). Grant issuance refuses any
-   * scope outside this set, so a consent screen should offer no more.
-   */
-  async getAgentScopes(input: GetAgentScopesInput): Promise<AgentScopesResult> {
-    this.assertAPIConfigured();
-    if (!this.http.get) throw new Error('GET not implemented by adapter');
-    const query = new URLSearchParams({ serviceDid: input.serviceDid, agentDid: input.agentDid });
-    return this.http.get<AgentScopesResult>(`/v1/service-delegation-grants/agent-scopes?${query.toString()}`);
   }
 
   async getStatusList(listId: string): Promise<StatusListCredentialResponse> {
@@ -422,31 +341,18 @@ export class HelixClient {
     return this.http.post<StatusListCredential>('/v1/status-list', options);
   }
 
-  async getAuditLog(filters: AuditLogFilters = {}): Promise<AuditLogEvent[]> {
+  /** One page of the audit log, newest first; `nextCursor` fetches the next. */
+  async getAuditLog<Item = AuditLogEvent>(filters: AuditLogFilters = {}): Promise<AuditLogPage<Item>> {
     if (!this.http.get) throw new Error('GET not implemented by adapter');
-    return this.http.get(
+    return this.http.get<AuditLogPage<Item>>(
       `/v1/audit-log${toQueryString({
         eventType: filters.eventType,
+        family: filters.family,
         since: filters.since,
+        cursor: filters.cursor,
         limit: filters.limit,
       })}`,
     );
-  }
-
-  async verifyVP(vp: SignedVP, options: VerifyVPOptions = {}): Promise<VerifyVPApiResult> {
-    // Verification, audit logging (VP_VERIFIED/VP_REJECTED), and session
-    // issuance all happen server-side (see the SDK-API-only design) —
-    // no local verifyVP() call, no separate SDK-side audit write. Note
-    // `statusListResolver` isn't forwarded: it's a function (not
-    // serializable) and only ever used as helix-api's own internal
-    // same-origin-list fast path, never by an external caller.
-    return this.http.post<VerifyVPApiResult>('/v1/vp/verify', {
-      signedVP: vp,
-      ...(options.expectedTargetService !== undefined
-        ? { expectedTargetService: options.expectedTargetService }
-        : {}),
-      ...(options.allowSelfSigned !== undefined ? { allowSelfSigned: options.allowSelfSigned } : {}),
-    });
   }
 
   async checkVCStatus(vc: SignedVC): Promise<'active' | 'revoked' | 'expired'> {
@@ -483,89 +389,6 @@ export class HelixClient {
     return this.http.post('/v1/onboard', { enrollmentToken, domains });
   }
 
-  /**
-   * Signs a VP on behalf of a server-custody agent — the caller never has,
-   * and never can have, the private key, so this is an API call instead of
-   * local VPBuilder.sign(). The server picks the credentials from the DIDs
-   * alone: every active HelixAgentCredential the agent holds (its own, plus
-   * any delegated to it).
-   *
-   * `targetService` is the DID of the service the VP is for. With a
-   * `userDid` the agent is acting on that user's behalf, and the server
-   * attaches every active DelegationGrantCredential that service issued to
-   * this agent for that user; none at all fails with
-   * CONSENT_GRANT_NOT_FOUND, meaning the user has not consented yet.
-   */
-  async signVP(
-    did: string,
-    targetService: string,
-    options: { userDid?: string } = {},
-  ): Promise<SignedVP> {
-    this.assertAPIConfigured();
-    const body = {
-      targetService,
-      ...(options.userDid !== undefined ? { userDid: options.userDid } : {}),
-    };
-
-    // Enterprise mode (this.apiKey set): custodial signing is
-    // account-scoped, so it targets /v1/custodial-agents/:did/vp instead of
-    // core's admin-key-gated /v1/agents/:did/vp. The bearer token itself is
-    // sent by HttpAdapter, like every other call -- so errors map to typed
-    // HelixErrors here too, not a bare Error.
-    const result = await this.http.post<{ signedVP: SignedVP }>(
-      `/v1/${this.agentRoutePrefix()}/${encodeURIComponent(did)}/vp`,
-      body,
-    );
-    return result.signedVP;
-  }
-
-  /**
-   * Delegates a slice of a server-custody agent's authority to another DID —
-   * the custodial counterpart to the (now-defunct, see delegation.ts)
-   * wallet-based delegate(), which needed the delegator's own private key
-   * and so has had nothing legitimate to call since agent self-custody was
-   * retired. Same trust boundary as signVP(): the caller never has, and
-   * never can have, the delegator's private key, so this is an API call
-   * that authorizes HelixID to sign on the delegator's behalf, not a local
-   * signature.
-   *
-   * Mirrors signVP()'s two modes exactly: enterprise (this.apiKey set) hits
-   * the account-scoped custodial route; core/OSS hits the admin-key-gated
-   * route. Pass `vcId` to pin which of the delegator's active credentials to
-   * delegate from (e.g. it already holds more than one, ambiguous to the
-   * default subject-only lookup).
-   */
-  async delegateAuthority(
-    did: string,
-    to: string,
-    scopes: string[],
-    expiresIn: number,
-    options: { vcId?: string; revokeExisting?: boolean } = {},
-  ): Promise<SignedVC> {
-    this.assertAPIConfigured();
-    const body = {
-      to,
-      scopes,
-      expiresIn,
-      ...(options.vcId !== undefined ? { vcId: options.vcId } : {}),
-      // Same rule as every stored credential: the same scopes delegated
-      // again refresh the earlier delegation, other scopes stand beside it,
-      // revokeExisting clears the others.
-      ...(options.revokeExisting !== undefined ? { revokeExisting: options.revokeExisting } : {}),
-    };
-
-    const result = await this.http.post<{ delegatedVC: SignedVC }>(
-      `/v1/${this.agentRoutePrefix()}/${encodeURIComponent(did)}/delegate`,
-      body,
-    );
-    return result.delegatedVC;
-  }
-
-  /** Where custodial agent actions live: enterprise's account-scoped routes, or core's admin-key-gated ones. */
-  private agentRoutePrefix(): 'custodial-agents' | 'agents' {
-    return this.apiKey ? 'custodial-agents' : 'agents';
-  }
-
   async requestUserChallenge(
     userDid: string,
   ): Promise<{ challengeId: string; nonce: string; expiresAt: string }> {
@@ -584,24 +407,21 @@ export class HelixClient {
   }
 
   /**
-   * Best-effort consent-grant audit. Called by {@link AgentWallet} once a grant
-   * VC is safely stored; a failure here must never surface to the caller, since
-   * the credential is already in the wallet either way.
+   * Records one typed producer event (`POST /v1/audit-log/events`): the body is
+   * the event exactly as an `AuditTrail` built it, validated strictly by the
+   * API. A no-op without an API key (audit writes need one). Errors propagate:
+   * a producer that must not fail on an audit write (the wallet) catches them.
    */
-  async recordConsentGrantedAudit(entry: ConsentGrantedAuditEntry): Promise<void> {
+  async recordAuditEvent(event: AuditProducerEvent): Promise<void> {
     if (!this.apiAuditEnabled) {
       return;
     }
+    await this.http.post('/v1/audit-log/events', event);
+  }
 
-    try {
-      await this.http.post('/v1/audit-log/consent-granted', {
-        ...entry,
-        subjectDid: entry.agentDid,
-        eventType: AuditEvents.CONSENT_GRANTED,
-      });
-    } catch {
-      // Audit writes are best-effort. The stored credential remains authoritative.
-    }
+  /** An `AuditSink` for an `AuditTrail` whose events this client should report to the API. */
+  auditSink(): AuditSink {
+    return { append: (entry) => this.recordAuditEvent(entry.event) };
   }
 
   private assertAPIConfigured(): void {

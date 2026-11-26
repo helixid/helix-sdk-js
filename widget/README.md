@@ -1,5 +1,7 @@
 # `@helixid/widget`
 
+> **Superseded by KYA-OS story L3-H.** The consent page is Helix's (`authorizationUrl` of the signed `needs_authorization` challenge), where the user's own did:key signs the root hop; services use `createHelixConsent` in `@helixid/mcp-middleware`. The routes this widget's server half called (`/v1/service-delegation-grants` and its `agent-scopes`) are retired.
+
 Consent-screen building blocks for a Service Provider issuing
 `DelegationGrantCredential`s: an SP-side scope resolver and a headless
 consent-selection controller.
