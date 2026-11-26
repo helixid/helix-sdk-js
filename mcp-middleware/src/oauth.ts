@@ -19,6 +19,21 @@ export interface AuthResult {
   scopes?: string[];
   clientId?: string;
   claims?: Record<string, unknown>;
+  /**
+   * The token's RFC 9449 / RFC 7800 `cnf.jkt` when it is sender-constrained:
+   * fused with a KYA-OS request proof's `cnf.jkt` and its key for Card L3
+   * (story C-C, SPEC-ENTITY-CARD.md §8.6). Read from `claims.cnf.jkt` when a
+   * custom validator leaves it out.
+   */
+  cnfJkt?: string;
+}
+
+/** `cnf.jkt` of a token's claims (JWT or introspection response), when it is a non-empty string. */
+export function cnfJktOf(claims: Record<string, unknown> | undefined): string | undefined {
+  const cnf = claims?.['cnf'];
+  if (typeof cnf !== 'object' || cnf === null || Array.isArray(cnf)) return undefined;
+  const jkt = (cnf as Record<string, unknown>)['jkt'];
+  return typeof jkt === 'string' && jkt.length > 0 ? jkt : undefined;
 }
 
 /** RFC 7662 token introspection: how to ask the issuer whether an opaque (or JWT) token is active. */
@@ -223,10 +238,12 @@ function checkStandardClaims(
         ? clientId
         : undefined;
   if (sub === undefined) throw invalid('Token has no subject');
+  const cnfJkt = cnfJktOf(claims);
   return {
     sub,
     scopes: parseScopes(claims, options.scopeClaims),
     ...(typeof clientId === 'string' ? { clientId } : {}),
+    ...(cnfJkt === undefined ? {} : { cnfJkt }),
     claims,
   };
 }

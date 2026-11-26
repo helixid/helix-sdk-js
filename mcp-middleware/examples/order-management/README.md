@@ -9,7 +9,8 @@ A small MCP server with two tools behind `@helixid/mcp-middleware`:
 
 Any other tool name is denied before it runs. Callers come through either door:
 
-- **HelixID agents**: a signed VP in `Authorization: HelixVP <vp>` (or legacy `X-Helix-VP`, or MCP `params._meta["x-helix-vp"]`).
+- **KYA-OS agents**: a request proof in MCP `params._meta["org.kya-os/request-proof"]` and its delegation chain in
+  `params._meta["org.kya-os/delegation-chain"]`, verified in-process (story F-2): the Helix API is never on the request path.
 - **Standard MCP OAuth 2.1 clients**: `Authorization: Bearer <token>`, discovered through the RFC 9728 metadata at
   `/.well-known/oauth-protected-resource/mcp`.
 
@@ -48,25 +49,39 @@ curl "${H[@]}" -H 'authorization: Bearer demo-admin' $MCP -d '{"jsonrpc":"2.0","
 
 Orders live in memory (`ORD-1001`, `ORD-1002`) and reset on restart.
 
-## With HelixID: verify agent VPs and write the audit log
+## With HelixID: KYA-OS agents, verified locally
 
-Point the server at a HelixID API **you run locally** (for example `helix-server-enterprise` on port 3580, the port the
-console's dev proxy expects) and give it an account API key (`hak_…`) from that instance:
+Set `SERVICE_DID` to this server's DID and every tool call that carries a request proof is verified in-process
+(`createLocalVerifier` from `@helixid/mcp-middleware`): the proof's signature, audience (`SERVICE_DID`), request hash,
+lifetime and nonce; the carried chain's length (bounded before any entry is parsed), each hop's `eddsa-jcs-2022` proof by
+its own issuer, attenuation and status; the agent's Entity Card and its capability attestations. Only public DID
+documents, status lists and cards are fetched (https only), so calls are authorised with the Helix API unreachable.
 
 ```bash
-HELIX_API_URL=http://localhost:3580 \
-HELIX_API_KEY=hak_... \
-SERVICE_DID=did:web:orders.example \
-DEMO_MODE=1 \
-pnpm --filter @helixid/example-mcp-order-management start
+SERVICE_DID=did:web:orders.example pnpm --filter @helixid/example-mcp-order-management start
 ```
 
-- VPs are verified by that API (`POST /v1/vp/verify`): signature, delegation chain, expiry, target service and revocation.
-  `SERVICE_DID` rejects VPs signed for any other service.
-- Each decision is posted to `POST /v1/audit-log/events` and shows up under **Audit** in the console, with the agent DID or
-  the OAuth subject, the tool, and the scope that was missing on a denial.
-- `HELIX_API_URL` is required whenever `HELIX_API_KEY` is set. The SDK's `HelixClient` given only a key talks to the hosted
-  production API, so this sample refuses to start rather than fall back to it.
+- A caller's scopes are its verified attestations, intersected with the leaf hop's `allowedAction` and the tool scopes
+  here (`orders:read`, `orders:admin`). A refused proof answers 401 with the verifier's reason codes.
+- `KYAOS_TRUSTED_ISSUERS` (default `*`), `KYAOS_TRUSTED_ROOTS`, `KYAOS_MAX_CHAIN_LENGTH` (default 10) and
+  `KYAOS_CARDS_FILE` (agent DID to Entity Card, read before the card is fetched) tune the verifier;
+  `KYAOS_ALLOW_LOOPBACK_HTTP=1` reads loopback documents over http in development.
+- Status lists (story L3-C): each list's proof is verified before a bit is read, and an unreachable, unsigned, badly
+  signed, wrong-purpose or out-of-range list reads as revoked. Lists and verdicts are cached (`KYAOS_STATUS_CACHE_TTL`,
+  in Redis with `KYAOS_REDIS_URL`); `KYAOS_REVOCATION_EVENTS_URL` + `KYAOS_SIGNAL_ISSUERS` drop a cached verdict the moment
+  Helix signals the revocation.
+- The agent's own revocation (SPEC-ENTITY-CARD §10.3): a HelixID-hosted agent's card names its identity credential's
+  status entry, on the Helix issuer's list. That list counts only when its signer keeps the URL, which by default is
+  the card's DID, so bind it to the Helix issuer, or every such agent is refused (`status_list_mismatch`). Bind the
+  exact URL, not the origin (other lists there are their own issuers'):
+  `KYAOS_STATUS_LIST_ISSUERS='{"did:web:api.helixid.dev":["https://api.helixid.dev/v1/status-list/helix-status-list-1"]}'`.
+  A revoked agent is then refused with `status_revoked`.
+- Every tool demands Card level L3 by default (story C-C): a verified request proof, every capability on the
+  agent's card attested, status read live. `KYAOS_MINIMUM_LEVEL`, `KYAOS_TOOL_LEVELS` (`lookup_order=L2`) and
+  `KYAOS_L3_MINUS_SATISFIES_L3=0` change that; a call below a tool's minimum answers 401 with `derivedLevel`
+  and `requiredLevel`. The handshake tool accepts any verified level.
+- `HELIX_API_URL` + `HELIX_API_KEY` turn on the audit sink (`POST /v1/audit-log/events`); nothing else talks to the API.
+  `HELIX_API_URL` is required whenever `HELIX_API_KEY` is set, so the sink never falls back to the hosted production API.
 
 ## With a real authorization server
 
@@ -107,16 +122,25 @@ For credentials no standard describes (your own API keys presented as bearers), 
 
 ## How it is wired (`src/app.ts`)
 
-The gate runs at the HTTP layer, in front of the MCP transport, and only for `tools/call`:
+The gate is `@helixid/mcp-middleware`'s one-line `helixMcpGate`, in front of the MCP transport:
 
-1. Parse the JSON-RPC body. For each `tools/call`, call the middleware with the tool name, arguments, `params._meta` and
-   the HTTP headers.
-2. On failure, `toHttpErrorResponse()` turns the error into a 401 / 400 / 403 with `WWW-Authenticate`. A real HTTP 401 is
-   what makes an MCP OAuth client start discovery; a tool-level error would not.
-3. Otherwise hand the request to a stateless `StreamableHTTPServerTransport`.
+```ts
+const gate = helixMcpGate({ resource, resourceName, authorizationServers, ...auth, toolScopes, audit, kyaos });
+createServer((req, res) => gate(req, res, () => handleMcp(req, res)));
+```
 
-`initialize` and `tools/list` are not gated, so HelixID clients that carry the VP in `params._meta` keep working and a VP
-is verified once per tool call. The tools themselves (`src/orders.ts`) contain no auth code.
+1. The gate serves the RFC 9728 metadata, parses the JSON-RPC body and passes every request through the guard.
+2. On failure it answers 401 / 400 / 403 with `WWW-Authenticate` (503 with `Retry-After` when an authorization server is
+   down). A real HTTP 401 is what makes an MCP OAuth client start discovery; a tool-level error would not.
+3. Otherwise `handleMcp` hands `req.helixMcp.body` to a stateless `StreamableHTTPServerTransport`. Each tool is
+   registered through `req.helixMcp.wrapTool`, so it runs in the caller's delegation context, audited, with its KYA-OS
+   response proof signed.
+
+Every request goes through the guard, which decides: `initialize`, `notifications/initialized` and `tools/list` are open
+(the middleware's default open list, so clients can see what is offered); every other method needs a verified caller, and
+the middleware audits each refusal itself. The `_kyaos_handshake` tool is open to anonymous agents, so a handshake without
+a credential is not sent to the guard. A KYA-OS proof is verified once per call, over the JSON-RPC request as
+received. The tools themselves (`src/orders.ts`) contain no auth code.
 
 ## Configuration
 
@@ -124,11 +148,60 @@ is verified once per tool call. The tools themselves (`src/orders.ts`) contain n
 |---|---|---|
 | `PORT`, `HOST` | `3700`, `127.0.0.1` | Listen address |
 | `MCP_RESOURCE` | `http://localhost:$PORT/mcp` | Public URL of the MCP endpoint; the OAuth audience |
-| `HELIX_API_URL` | none | HelixID API for VP verification and audit |
+| `HELIX_API_URL` | none | HelixID API the audit sink writes to |
 | `HELIX_API_KEY` | none | Account API key; enables the audit sink |
-| `SERVICE_DID` | none | This server's DID |
+| `SERVICE_DID` | none | This server's DID: turns on in-process KYA-OS verification (proof audience and chain resource) |
+| `KYAOS_TRUSTED_ISSUERS`, `KYAOS_TRUSTED_ROOTS` | `*`, any | Attestation issuers and root-hop issuers the verifier trusts (comma-separated DIDs) |
+| `KYAOS_MAX_CHAIN_LENGTH` | `10` | Longest carried chain read |
+| `KYAOS_CARDS_FILE` | none | JSON map of agent DID to Entity Card |
+| `KYAOS_STATUS_CACHE_TTL` | `300` | Seconds a status list or verdict is cached (story L3-C), for tools at L2 or below; a cached read is not fresh (Card L3 → L2). A tool that demands L3 reads its lists live every call |
+| `KYAOS_HIGH_PRIVILEGE_SCOPES`, `KYAOS_HIGH_PRIVILEGE_TTL` | none, `60` | Scopes whose reads are cached at most that long (≤ 60 s) |
+| `KYAOS_MAX_STALE_SECONDS` | `60` | How long a list read inside its window may be served past its `validUntil` from the cache |
+| `KYAOS_STATUS_LIST_ISSUERS` | none | JSON: issuer DID to the status-list URLs or `https:` origins it keeps. Against HelixID, bind the Helix issuer to its own list's exact URL (see below) |
+| `KYAOS_SIGNAL_ISSUERS` | none | DIDs whose revocation SETs are honoured (the Helix issuer) |
+| `KYAOS_REVOCATION_EVENTS_URL` | none | Helix's `/v1/events/revocations`: one SSE connection, reconnecting |
+| `KYAOS_REVOCATION_WEBHOOK_PATH` | none | A path here that receives pushed SETs (RFC 8935) |
+| `KYAOS_REDIS_URL` | none | The status cache's Redis, shared by every instance (and the replay store's when `KYAOS_NONCE_STORE=redis`) |
+| `KYAOS_VERIFICATION_LOG` | off | `1`: each verification and signal as one JSON line on stdout; a path: appended there |
+| `KYAOS_MINIMUM_LEVEL` | `L3` | Card level every tool demands (story C-C): `L1`, `L2` or `L3` |
+| `KYAOS_TOOL_LEVELS` | none | Per-tool minimums, `tool=level,...`; `lookup_order=L2` accepts a chain without a proof there |
+| `KYAOS_L3_MINUS_SATISFIES_L3` | `1` | `0` refuses L3-minus (no token `cnf` to fuse) for L3 tools |
 | `OAUTH_ISSUER` | none | One authorization server; its keys are read from its metadata |
 | `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET` | none | With `OAUTH_ISSUER`: check tokens by RFC 7662 introspection (opaque tokens) |
 | `OAUTH_JWKS_URI`, `OAUTH_INTROSPECTION_URL` | from metadata | Give the endpoints explicitly and skip discovery |
 | `OAUTH_ISSUERS` | none | JSON array of trusted tenants: provider presets (`entra`, `auth0`, `okta`, `keycloak`) or `{ issuer, ... }` |
 | `DEMO_MODE` | off | `1` accepts `demo-reader` / `demo-admin`; loopback only |
+| `WELL_KNOWN_MCP` | on | KYA-OS discovery at `/.well-known/mcp`; `0` answers 404, `1` makes an unusable `SERVICE_DID` a startup error |
+| `STATUS_LIST_CREDENTIAL` | none | URL of this server's status list credential, advertised in the discovery document |
+
+## Calling another service on the agent's behalf (story L3-D)
+
+`KYAOS_DOWNSTREAM_URL` (with `SERVICE_DID` and `SERVICE_SIGNING_KEY`) adds `forward_lookup_order` (`orders:read`): it asks another order service's `lookup_order` for the order, through the middleware's `withDelegation` / `with_delegation`, which forwards the chain the agent presented here (`KYA-OS-Delegation-Credential`), a delegation proof this server signs for the target host (`KYA-OS-Delegation-Proof`, 60 s), the agent DID and the session id; `KYAOS_DELEGATION_ADVISORY=1` adds the advisory chain and scope headers. Each attachment is audited: `delegation.outbound_attached` on the typed trail, and a `outbound-delegation` line in `KYAOS_VERIFICATION_LOG`.
+
+The receiving sample accepts such calls from the services in `KYAOS_FORWARDERS` (`*`, the default, or DIDs; `none` for no forwarder) for chains that target them, and always for chains that target itself. `KYAOS_DELEGATION_AUDIENCE` is its host as forwarders name it (default the host of a did:web `SERVICE_DID`). A forwarded call carries no request proof of the agent's, so it comes to at most Card L2: lower the receiving tool's level (`KYAOS_TOOL_LEVELS=lookup_order=L2`). A revocation signal drops the cached verdict of a forwarded chain at once.
+
+## KYA-OS session and response proof (story L2-A)
+
+Set `SERVICE_SIGNING_KEY` (the Ed25519 private key, hex, that `SERVICE_DID`'s document lists as `key-1`) and the server registers the `_kyaos_handshake` tool, opens sessions and signs a detached proof into `_meta["org.kya-os/response-proof"]` on every tool call outcome (a refusal carries its `denied` proof in the 400/401/403 body). Optional: `KYAOS_PUBLIC_ORIGIN` (default: the origin of `MCP_RESOURCE`), `KYAOS_CLOCK_SKEW_SECONDS` (30 to 600, default 120), `KYAOS_SESSIONS=0`, and `KYAOS_SESSION_TTL_MINUTES` (default 30). The replay store is chosen by `KYAOS_NONCE_STORE` (`memory`, the default, covers this instance only; `redis` or `dynamo` is shared by every instance), which `@helixid/mcp-middleware` reads itself: see `.env.example` and the middleware README. `redis` needs the `ioredis` package, `dynamo` needs `@aws-sdk/client-dynamodb` and `@aws-sdk/lib-dynamodb`; a missing one stops the server at startup.
+
+```bash
+SERVICE_DID=did:web:orders.example SERVICE_SIGNING_KEY=<hex> DEMO_MODE=1 pnpm start
+# handshake
+curl -s localhost:3700/mcp -H 'content-type: application/json' -H 'accept: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"_kyaos_handshake","arguments":{"nonce":"k7Hy9mNpQrStUvWxYz01Aa","audience":"did:web:orders.example","timestamp":'$(date +%s)'}}}'
+# a call in that session: the result carries the proof
+curl -s localhost:3700/mcp -H 'authorization: Bearer demo-reader' -H 'content-type: application/json' -H 'accept: application/json' -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"lookup_order","arguments":{"orderId":"ORD-1001","_kyaos_session":"kyaos_<from the handshake>"}}}'
+```
+
+## KYA-OS `needs_authorization` and resume (story L3-E)
+
+Set `KYAOS_AUTHORIZATION_URL` (the consent page) and a caller whose scopes do not cover a tool gets the signed `needs_authorization` challenge as the call's result instead of a 403, with a resume token bound to the agent, tool and scopes (`KYAOS_RESUME_TTL_SECONDS`, default 600; the token store follows `KYAOS_NONCE_STORE`: Redis on `KYAOS_REDIS_URL` when the replay store is Redis, memory otherwise). The retry carries `_kyaos_resume` and the DelegationCredential as `_kyaos_delegation`. In `DEMO_MODE` the bearers `demo-agent` and `demo-agent-2` are agents with a DID and `orders:read` only, and the retry's credential is checked structurally by `src/demo-authorizer.ts` (invoker, invocationTarget, allowedAction, validUntil, a `proof` present; no signature verification, which stories F-2 and L3-H bring); outside demo mode every retry is refused until a verifier is wired in. `AUDIT_LOG_FILE` appends every audit event as a JSON line, which is how the e2e suite sees the challenges without a HelixID stack.
+
+## Discovery at `/.well-known/mcp` (story L1-D)
+
+Whenever `SERVICE_DID` is a `did:web` or `did:key`, the server answers `GET /.well-known/mcp` with the KYA-OS discovery document: the DID, `endpoints.tools` at `KYAOS_PUBLIC_ORIGIN` (default: the origin of `MCP_RESOURCE`), `endpoints.handshake` while the KYA-OS layer runs with sessions, `clockSkewSeconds` (the handshake's), `capabilities` (`proofs` true with `SERVICE_SIGNING_KEY`; the rest false, nothing else is on in this sample) and, with `STATUS_LIST_CREDENTIAL`, that URL. The document is validated against the schema at startup; `WELL_KNOWN_MCP=0` turns the route off (404). Behind a proxy, forward `/.well-known/mcp` at the origin root to this process and set `KYAOS_PUBLIC_ORIGIN` (see `mcp-middleware/docs/well-known.md`).
+
+```bash
+curl -s localhost:3700/.well-known/mcp | jq .
+```
+
+A `SERVICE_DID` of another method (a `did:hedera` from a Helix stack, say) cannot be the document's `serverDid`, so the route stays off and the startup line says why.

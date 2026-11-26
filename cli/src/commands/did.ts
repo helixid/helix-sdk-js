@@ -1,3 +1,4 @@
+import { didWebFor } from '@helixid/sdk-js';
 import { buildDIDDocument } from '../core/did.js';
 import { generateKeyPair } from '../core/keys.js';
 import { access } from 'node:fs/promises';
@@ -40,7 +41,13 @@ export async function runDidCreate(options: DidCreateOptions): Promise<void> {
     if (!options.domain) {
       error('--domain is required for --method web');
     }
-    const did = `did:web:${options.domain}`;
+    // --domain is the raw host[:port]; didWebFor percent-encodes it once (a port's ':' is %3A).
+    let did: string;
+    try {
+      did = didWebFor(options.domain);
+    } catch (problem) {
+      error(`--domain must be a host name, optionally with a port (issuer.example or localhost:3000): ${(problem as Error).message}`);
+    }
     const didDocument = buildDIDDocument(did, keyPair.publicKey);
     await saveNewWallet(options.wallet, passphrase, did, keyPair);
 

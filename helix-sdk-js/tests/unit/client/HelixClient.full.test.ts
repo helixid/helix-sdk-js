@@ -2,10 +2,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { HelixClient } from '../../../src/client/HelixClient.js';
 import { createStatusList } from '../../../src/core/status-list-schema.js';
-import { generateKeyPair, publicKeyToMultibase } from '../../../src/core/keys.js';
+import { generateKeyPair } from '../../../src/core/keys.js';
 import { issueJWT } from '../../../src/core/jwt.js';
-import { VPBuilder } from '../../../src/vp-builder.js';
-import type { SignedVC } from '../../../src/core/schemas/vc.js';
 
 describe('HelixClient Full Unit Tests', () => {
   let mockHttp: any;
@@ -117,68 +115,11 @@ describe('HelixClient Full Unit Tests', () => {
     expect(statusList.type).toContain('BitstringStatusListCredential');
   });
 
-  it('exposes API-backed VP verification but not delegation helpers', () => {
-    expect(typeof client.verifyVP).toBe('function');
+  it('has no VP helpers: no verifyVP, signVP or delegation templates (KYA-OS story C-C)', () => {
+    expect('verifyVP' in client).toBe(false);
+    expect('signVP' in client).toBe(false);
     expect('createVPTemplate' in client).toBe(false);
     expect('delegate' in client).toBe(false);
-  });
-
-  it('forwards VP verification to the API and returns its result as-is', async () => {
-    // Verification and VP_VERIFIED/VP_REJECTED audit logging both happen
-    // server-side now (see the SDK-API-only design) — the client makes
-    // exactly one POST and does not also write its own audit entry.
-    const wallet = generateKeyPair();
-    const did = `did:key:${publicKeyToMultibase(wallet.publicKey)}`;
-    // A structurally-shaped VC is enough here — this test only checks that
-    // verifyVP() forwards to the API and returns its result as-is; the VC's
-    // own proof is never independently checked (the mock stands in for
-    // whatever the API decides).
-    const vc = {
-      '@context': ['https://www.w3.org/ns/credentials/v2'],
-      id: 'vc:helix:test-1',
-      type: ['VerifiableCredential', 'HelixAgentCredential'],
-      issuer: did,
-      validFrom: new Date().toISOString(),
-      validUntil: new Date(Date.now() + 3_600_000).toISOString(),
-      credentialSubject: { id: did, type: 'HelixAgent', privilegeScopes: ['read:orders'] },
-      proof: { type: 'Ed25519Signature2020', proofValue: 'z' + 'a'.repeat(64) },
-    } as unknown as SignedVC;
-    const vp = await new VPBuilder({
-      credentials: [vc],
-      holderDid: did,
-      targetService: 'orders',
-      userDid: did,
-    }).sign(wallet.privateKey, `${did}#key-1`);
-
-    const apiResult = {
-      valid: true,
-      agentDid: did,
-      vpId: vp.id,
-      privilegeScopes: ['read:orders'],
-      effectiveScopes: ['read:orders'],
-      delegationChain: [],
-      targetService: 'orders',
-      verifiedAt: new Date().toISOString(),
-    };
-    mockHttp.post.mockResolvedValue(apiResult);
-
-    const result = await client.verifyVP(vp, { allowSelfSigned: true });
-
-    expect(mockHttp.post).toHaveBeenCalledWith('/v1/vp/verify', {
-      signedVP: vp,
-      allowSelfSigned: true,
-    });
-    expect(mockHttp.post).toHaveBeenCalledTimes(1);
-    expect(result).toBe(apiResult);
-  });
-
-  it('propagates the API rejection when VP verification fails', async () => {
-    mockHttp.post.mockRejectedValue(new Error('VP_REJECTED: signature invalid'));
-
-    await expect(
-      client.verifyVP({ id: 'vp:test', holder: 'did:key:abc' } as any),
-    ).rejects.toThrow('VP_REJECTED: signature invalid');
-    expect(mockHttp.post).toHaveBeenCalledTimes(1);
   });
 
   it('fetches and locally verifies JWT session tokens', async () => {
@@ -211,24 +152,19 @@ describe('HelixClient Full Unit Tests', () => {
     });
   });
 
-  it('gets audit log with filters', async () => {
-    mockHttp.get.mockResolvedValue([]);
-    await client.getAuditLog({ eventType: 'VC_ISSUED', since: '2026-07-03T00:00:00.000Z', limit: 10 });
+  it('gets one audit log page with filters and the cursor of the previous page', async () => {
+    mockHttp.get.mockResolvedValue({ items: [], nextCursor: null });
+    await expect(
+      client.getAuditLog({ eventType: 'tool.call.completed', family: 'tool', since: '2026-07-03T00:00:00.000Z', cursor: 'abc_-1', limit: 10 }),
+    ).resolves.toEqual({ items: [], nextCursor: null });
     expect(mockHttp.get).toHaveBeenCalledWith(
-      '/v1/audit-log?eventType=VC_ISSUED&since=2026-07-03T00%3A00%3A00.000Z&limit=10',
+      '/v1/audit-log?eventType=tool.call.completed&family=tool&since=2026-07-03T00%3A00%3A00.000Z&cursor=abc_-1&limit=10',
     );
   });
 
   it('throws SDK_ONLY_MODE_NO_API for onboarding calls without an API URL', async () => {
     const sdkOnly = new HelixClient();
     await expect(sdkOnly.onboardAgent('token')).rejects.toMatchObject({
-      code: 'SDK_ONLY_MODE_NO_API',
-    });
-  });
-
-  it('throws SDK_ONLY_MODE_NO_API for signVP calls without an API URL', async () => {
-    const sdkOnly = new HelixClient();
-    await expect(sdkOnly.signVP('did:key:zAgent', 'https://svc.example.com')).rejects.toMatchObject({
       code: 'SDK_ONLY_MODE_NO_API',
     });
   });

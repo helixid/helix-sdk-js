@@ -1,7 +1,7 @@
 {
   "name": "@helixid/mcp-middleware",
   "version": "0.4.0",
-  "description": "HelixID middleware for Model Context Protocol (MCP) servers \u2014 inbound VP verification with scope enforcement and outbound VP attachment for agent-to-tool calls.",
+  "description": "HelixID middleware for Model Context Protocol (MCP) servers: in-process KYA-OS request-proof and delegation-chain verification with scope enforcement, sessions, replay store and response proofs.",
   "type": "module",
   "license": "Apache-2.0",
   "author": "DgVerse <hello@dgverse.in>",
@@ -13,6 +13,7 @@
   },
   "files": [
     "dist/",
+    "schemas/",
     "README.md",
     "LICENSE"
   ],
@@ -37,21 +38,40 @@
     "test:non-live": "vitest run --passWithNoTests",
     "test:unit": "vitest run tests --passWithNoTests",
     "lint": "eslint src tests",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:coverage": "vitest run --coverage --passWithNoTests"
   },
   "dependencies": {
-    "@helixid/sdk-js": "workspace:^"
+    "@helixid/sdk-js": "workspace:^",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1"
   },
   "peerDependencies": {
-    "@modelcontextprotocol/sdk": "*"
+    "@modelcontextprotocol/sdk": "*",
+    "ioredis": "^5.0.0 || ^6.0.0",
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@aws-sdk/lib-dynamodb": "^3.0.0"
   },
   "peerDependenciesMeta": {
     "@modelcontextprotocol/sdk": {
       "optional": true
+    },
+    "ioredis": {
+      "optional": true
+    },
+    "@aws-sdk/client-dynamodb": {
+      "optional": true
+    },
+    "@aws-sdk/lib-dynamodb": {
+      "optional": true
     }
   },
   "devDependencies": {
+    "@aws-sdk/client-dynamodb": "3.1164.0",
+    "@aws-sdk/lib-dynamodb": "3.1164.0",
     "@types/node": "^20.0.0",
+    "@vitest/coverage-v8": "^4.1.8",
+    "ioredis": "6.0.0",
     "typescript": "^5.4.0",
     "vitest": "^4.1.8"
   }

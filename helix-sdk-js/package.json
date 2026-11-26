@@ -36,6 +36,7 @@
     "test": "vitest run --coverage --passWithNoTests && node ../scripts/check-coverage-thresholds.mjs coverage/coverage-final.json 95 95 85 95 90 90 80 90",
     "test:non-live": "vitest run --passWithNoTests",
     "test:unit": "vitest run tests/unit --passWithNoTests",
+    "test:conformance": "vitest run tests/unit/kyaos/conformance tests/unit/kyaos/verifier",
     "test:coverage": "vitest run --coverage --passWithNoTests && node ../scripts/check-coverage-thresholds.mjs coverage/coverage-final.json 95 95 85 95 90 90 80 90",
     "test:watch": "vitest",
     "test:security": "vitest run tests/security",

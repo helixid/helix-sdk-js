@@ -6,27 +6,33 @@ export type {
   StoredWalletData,
   PgQueryable,
 } from './wallet/AgentWallet.js';
-export { VPBuilder } from './vp-builder.js';
 
+// The Helix VP is gone (KYA-OS story C-C): no VPBuilder, signVP or verifyVP.
+// An agent's call carries its request proof and delegation chain in
+// params._meta (kyaos.withRequestProof); a service verifies it in-process
+// (kyaos.verifier.verify, or @helixid/mcp-middleware).
+export type { HeadersLike } from './http/headers.js';
+// KYA-OS story F-1: the credential split. The store holds identity,
+// capability attestations and delegation hops; presentChain() is what a
+// request carries; signAttestations() is the owner's self-custody path.
+export { CredentialStore, signAttestationDocument } from './core/credential-store.js';
+export type {
+  BitstringStatusEntry,
+  CapabilityAttestation,
+  CredentialSigner,
+  CredentialStoreData,
+  DataIntegrityProof,
+  DelegationHop,
+  PresentedChain,
+  SignAttestationsOptions,
+  StoredCredential,
+} from './core/credential-store.js';
 
-// Verifier
-export { verifyVP } from './verify.js';
-export {
-  HELIX_VP_HEADER,
-  HELIX_VP_META_KEY,
-  encodeHelixVP,
-  decodeHelixVP,
-  helixVPHeaders,
-  readHelixVPHeader,
-  readHelixVPMeta,
-  type HeadersLike,
-} from './vp-transport.js';
 // Local Ed25519 linked-data proof create/verify -- signing stays client-side
 // (see the SDK-API-only design); needed by issuers that aren't
 // registered with helix-api (e.g. independent did:web Service Providers)
 // to sign their own credentials directly.
 export { createEd25519Proof, verifyEd25519Proof, type LinkedDataProof } from './core/proof.js';
-export { checkScope, requireScope } from './scope.js';
 export { SessionManager } from './session/index.js';
 
 // Enrollment only / issuer API operations
@@ -34,10 +40,9 @@ export { HelixClient } from './client/HelixClient.js';
 export type {
   CreateStatusListOptions,
   CreateServiceInput,
-  IssueServiceDelegationGrantInput,
-  GetAgentScopesInput,
-  AgentScopesResult,
-  VerifyVPApiResult,
+  AuditLogFilters,
+  AuditLogEvent,
+  AuditLogPage,
 } from './client/HelixClient.js';
 
 export * from './errors/index.js';
@@ -50,10 +55,24 @@ export type {
   VerificationMethod,
 } from './core/did.js';
 export { buildDIDDocument } from './core/did.js';
-export type { DelegationLink, VerifyVPOptions, VerifyVPResult } from './core/verification-types.js';
+export type { DelegationLink } from './core/verification-types.js';
 export type { SignedVC } from './core/schemas/vc.js';
-export type { SignedVP } from './core/schemas/vp.js';
-export type { VPBuilderOptions } from './core/vp-builder-impl.js';
+// KYA-OS story L1-A: the agent's own Ed25519 key, generated client side; only
+// its public half (JWK, did:key) ever leaves the process.
+export {
+  generateAgentKey,
+  agentPublicKey,
+  toPublicKeyJwk,
+  toDidKey,
+  publicKeyFromDidKey,
+  publicKeyJwkBytes,
+  assertNoPrivateMaterial,
+  encodeBase58btc,
+  decodeBase58btc,
+  DEFAULT_AGENT_KEY_ID,
+  type AgentKey,
+  type AgentPublicKeyJwk,
+} from './core/agent-key.js';
 export {
   generateKeyPair,
   publicKeyToMultibase,
@@ -72,11 +91,11 @@ export { hashCanonicalPayload, base58btcEncode, base58btcDecode, toCanonicalJson
 // list credential itself has been fetched -- also needed for self-verification.
 export { getBit, buildStatusListCredential, createStatusList, type StatusListCredential } from './core/status-list-schema.js';
 
-// Activity-trail event-type catalog -- narrow duplicate of helix-api's own
-// (see the retire-core-package design); used by independent issuers
-// (e.g. e2e-consent-demo's Service Providers) that emit their own audit
-// trail rather than relying on helix-api's.
-export { AuditEvents, type AuditEvent, type AuditEventType } from './core/audit-events.js';
+// KYA-OS auditability (story A-1, AAP-1 Recorded): typed producer events,
+// the trail that emits them, references, digests and the evidence vault. The
+// legacy `AuditEvents` catalog is gone; producers record typed events through
+// an `AuditTrail` and `HelixClient.auditSink()`.
+export * from './audit/index.js';
 
 // See the file comment in local-did-cache.ts -- an intentional no-op now
 // that verification is always an API call, kept for test compatibility.
@@ -88,3 +107,72 @@ export type { SessionClaims, SessionIssueInput, SessionManagerOptions } from './
 // (session-bridge tokens come from POST /v1/vp/verify with session: true), so only
 // verification -- given the API's published session public key -- belongs here.
 export { verifyJWT } from './core/jwt.js';
+// KYA-OS story C-A: Entity Card discovery (did.json → KyaOsEntityCard → card.json)
+// through a SafeFetch, the strict card schema, and the server.json projection.
+export {
+  resolveEntityCard,
+  resolveEntityCardFromServerMeta,
+  fetchEntityCard,
+  parseEntityCard,
+  validateEntityCard,
+  buildEntityCard,
+  entityCardSummary,
+  serverCardMeta,
+  capabilityName,
+  createSafeFetch,
+  defaultOutboundFetch,
+  fetchTransport,
+  nodeTransport,
+  isPublicUnicastAddress,
+  parseDidWeb,
+  didWebFor,
+  isRawDidWebHost,
+  ownDidWebProblem,
+  didWebDocumentUrl,
+  didWebCardUrl,
+  isLoopbackHost,
+  normalizeDid,
+  sameDid,
+  cardEndpointOf,
+  kyaOsCardServiceEntry,
+  EntityCardError,
+  SafeFetchRefusedError,
+  ENTITY_TYPES,
+  KYA_OS_CARD_SERVICE_TYPE,
+  KYA_OS_CARD_SERVICE_ID,
+  KYA_OS_CARD_META_KEY,
+  KYA_OS_CARD_REF_KEY,
+  KYA_OS_CARD_WELL_KNOWN_PATH,
+  PROOF_PROFILE_V1,
+  SAFE_FETCH_MAX_BYTES,
+  SAFE_FETCH_TIMEOUT_MS,
+  SAFE_FETCH_MAX_REDIRECTS,
+  type EntityCard,
+  type EntityType,
+  type Capability,
+  type BitstringStatusListEntry,
+  type BuildEntityCardInput,
+  type EntityCardSummary,
+  type ServerCardMeta,
+  type ResolvedEntityCard,
+  type ResolveEntityCardOptions,
+  type SafeFetch,
+  type SafeFetchOptions,
+  type SafeFetchResponse,
+  type SafeFetchTransport,
+  type TransportRequest,
+  type DnsLookup,
+} from './core/entity-card.js';
+
+// KYA-OS story F-3: custody preference. `helix init` (self-custody onboarding),
+// HelixCustodialSigner (custodial agents sign through the API), the Signer the
+// agent runtime takes (a request proof: kyaos.verifier.signRequestProof), and the custody API client;
+// story C-E: rotateKey (a new self-custody key, only its public half registered).
+export * as custody from './core/custody/index.js';
+export { EnvSigner, HelixCustodialSigner, HelixCustodyClient, helixInit, activateAgent, checkOwnHosting, changeToSelfCustody, rotateKey, reissueHop, rotationProof } from './core/custody/index.js';
+export type { Signer, HelixInitOptions, HelixInitResult, HelixCustodialSignerOptions, KeyCustodyMode, DidHostingMode, CustodyLabel, RotateKeyOptions, HopReissueResult } from './core/custody/index.js';
+
+// KYA-OS (stories rule 24): canonical JSON hashing, EdDSA JWS and the Signer,
+// the session handshake and the client side of the detached response proof.
+// `InvalidJWSError`, `ResponseProofError` and `NeedsAuthorizationError` come with the errors above.
+export * as kyaos from './core/kyaos/index.js';

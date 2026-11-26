@@ -42,6 +42,12 @@ describe('mcp-server operations', () => {
     ).rejects.toThrow('HELIX_WALLET_PASSPHRASE environment variable is required');
   });
 
+  it('did_create method web percent-encodes a port once and refuses an encoded domain', async () => {
+    const result = await didCreate({ method: 'web', domain: 'localhost:3680', wallet: join(tempDir, 'local.enc'), statusList: false });
+    expect(result.did).toBe('did:web:localhost%3A3680');
+    await expect(didCreate({ method: 'web', domain: 'localhost%3A3680', wallet: join(tempDir, 'bad.enc') })).rejects.toThrow(/raw host/);
+  });
+
   it('did_create method web creates a wallet, DID document, and a status list by default', async () => {
     const walletPath = join(tempDir, 'issuer.enc');
 
