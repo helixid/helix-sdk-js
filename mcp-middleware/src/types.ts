@@ -17,6 +17,14 @@ export interface InboundDelegationSettings {
 }
 
 export interface MCPToolCall {
+  /**
+   * The JSON-RPC method (`tools/call`, `resources/read`, `prompts/get`, `tools/list`, ...).
+   * Default: the received request's method, else `tools/call`. Pass every
+   * request through the guard: it decides which methods are open
+   * (`openMethods`) and checks the rest.
+   */
+  method?: string;
+  /** What the call acts on: the tool name (`tools/call`), resource URI (`resources/read`) or prompt name (`prompts/get`); default from the request's params. */
   name?: string;
   input?: Record<string, unknown>;
   /**
@@ -33,6 +41,8 @@ export interface MCPToolCall {
    * it the request is rebuilt from `name`, `input` and `_meta`.
    */
   request?: kyaos.verifier.ProofRequest;
+  /** The caller's network address as the host sees it (behind a proxy: the address the host trusts). Recorded in audit events only. */
+  clientIp?: string;
   [key: string]: unknown;
 }
 
@@ -56,6 +66,22 @@ export interface MCPMiddlewareOptions {
   /** Fallback applied to every tool when `toolScopes` is not set. */
   requiredScopes?: string[];
   /**
+   * The JSON-RPC methods let through without a caller; default
+   * `DEFAULT_OPEN_METHODS` (`initialize`, `notifications/initialized`,
+   * `tools/list`), so clients can see what is available. Every other method
+   * needs a verified caller. `[]` opens nothing.
+   */
+  openMethods?: readonly string[];
+  /**
+   * Per-resource required scopes, keyed by URI, for `resources/read`,
+   * `resources/subscribe` and `resources/unsubscribe`. Deny by default: a URI
+   * that is not a key (or any URI when this is not set) is refused.
+   * `resources/list` and `resources/templates/list` need a verified caller only.
+   */
+  resourceScopes?: Record<string, string[]>;
+  /** Per-prompt required scopes for `prompts/get`, deny by default like `resourceScopes`. `prompts/list` needs a verified caller only. */
+  promptScopes?: Record<string, string[]>;
+  /**
    * The Card level every tool demands of a KYA-OS caller (story C-C): `L3`
    * by default, a verified request proof plus a fully attested card read
    * live. Checked after the scopes; a call below it is refused with
@@ -63,8 +89,13 @@ export interface MCPMiddlewareOptions {
    * carry no level and are not checked.
    */
   minimumLevel?: MinimumLevel;
-  /** Per-tool settings: `tools.lookup_order.minimumLevel = 'L2'` accepts a chain without a proof there. */
-  tools?: Record<string, { minimumLevel?: MinimumLevel }>;
+  /**
+   * Per-tool settings: `tools.lookup_order.minimumLevel = 'L2'` accepts a chain without a proof there.
+   * `requireDelegation: true` keeps the tool out of an agent's own authority (`allowOwnAuthority`):
+   * the call needs a chain, such as the user's consent, and with `needsAuthorization` a call without
+   * one is answered with the consent challenge.
+   */
+  tools?: Record<string, { minimumLevel?: MinimumLevel; requireDelegation?: boolean }>;
   /** Whether L3-minus (a proof with no token `cnf` to fuse with, §8.6) satisfies an `L3` minimum; default true. */
   l3MinusSatisfiesL3?: boolean;
   /** This server's own DID: the proof audience. `serviceDid` is the same setting under its current name. */
@@ -81,7 +112,12 @@ export interface MCPMiddlewareOptions {
    * with the caller, or throw to reject. Mutually exclusive with `oauth`.
    */
   validateOAuthToken?: (token: string) => Promise<AuthResult>;
-  /** Receives an event for every decision about an identified caller. See `createHelixAuditSink`. */
+  /**
+   * Receives an event for every decision: allowed and refused, for an
+   * identified caller and for one the guard could not identify (no
+   * credential, a bad token, a refused proof naming no DID, a replay, ...).
+   * Open methods are not audited. See `createHelixAuditSink`.
+   */
   auditSink?: AuditSink;
   /** Called when `auditSink` throws. Audit failures never block or fail a tool call. */
   onAuditError?: (error: unknown) => void;

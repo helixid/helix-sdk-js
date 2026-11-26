@@ -81,6 +81,12 @@ export interface LocalVerifierOptions {
   maxClockSkewMs?: number | undefined;
   /** The scopes this service offers; `effectiveScopes` is intersected with it. Default: the leaf's own. */
   catalog?: readonly string[] | undefined;
+  /**
+   * Own authority (default false): a call with no chain, from an agent whose
+   * card names no `responsibleParty`, gets its attested capabilities that are
+   * in `catalog`. The middleware passes the scopes its `toolScopes`, `resourceScopes` and `promptScopes` name as the catalog.
+   */
+  allowOwnAuthority?: boolean | undefined;
   /** The replay store; default a `MemoryNonceStore` (this instance only). Share the runtime's store across instances. */
   nonceStore?: NonceStore | undefined;
   /**
@@ -142,10 +148,14 @@ export interface LocalVerifierCall {
   requireProof?: boolean | undefined;
   /** Read every status list live, past the status cache: the guard sets it for a tool whose minimum level is L3 (story L3-C). */
   liveStatus?: boolean | undefined;
+  /** The service's scopes for this call, when the verifier has no `catalog` of its own (the middleware's `toolScopes`). */
+  catalog?: readonly string[] | undefined;
 }
 
 export interface LocalVerifier {
   readonly serviceDid: string;
+  /** Whether the service opted in to own authority (`allowOwnAuthority`). */
+  readonly allowOwnAuthority?: boolean;
   readonly seams: kyaos.verifier.VerifierSeams;
   readonly nonceStore: NonceStore;
   /** The status cache the revocation checker reads; a `RevocationSignalClient` invalidates it. */
@@ -293,6 +303,7 @@ export function createLocalVerifier(options: LocalVerifierOptions): LocalVerifie
     ...(options.skewSeconds === undefined ? {} : { skewSeconds: options.skewSeconds }),
     ...(options.maxClockSkewMs === undefined ? {} : { maxClockSkewMs: options.maxClockSkewMs }),
     ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
+    ...(options.allowOwnAuthority === true ? { allowOwnAuthority: true } : {}),
   };
 
   const verify = (input: kyaos.verifier.VerifierInput, overrides: Partial<kyaos.verifier.VerifierOptions> = {}): Promise<kyaos.verifier.VerifierResult> =>
@@ -309,6 +320,7 @@ export function createLocalVerifier(options: LocalVerifierOptions): LocalVerifie
         ...(call.tokenCnfJkt === undefined ? {} : { tokenCnfJkt: call.tokenCnfJkt }),
         ...(call.requireProof === undefined ? {} : { requireProof: call.requireProof }),
         ...(call.liveStatus === true ? { liveStatus: true } : {}),
+        ...(call.catalog !== undefined && options.catalog === undefined ? { catalog: call.catalog } : {}),
       },
     );
     const entry: VerificationReport = {
@@ -335,5 +347,5 @@ export function createLocalVerifier(options: LocalVerifierOptions): LocalVerifie
     return result;
   };
 
-  return { serviceDid: options.serviceDid, seams, nonceStore, statusCache, verifyCall, verify };
+  return { serviceDid: options.serviceDid, allowOwnAuthority: options.allowOwnAuthority === true, seams, nonceStore, statusCache, verifyCall, verify };
 }

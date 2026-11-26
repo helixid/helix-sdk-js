@@ -191,6 +191,8 @@ export class HelixCustodyClient {
    * DID document. `maxDelegationDepth` (0 to 5, default 0) stays on Helix's custody record, never on a
    * credential: how many hops may sit below the agent in a chain. Helix enforces it on the hops it signs
    * (`POST /v1/grants`, `/v1/grants/:id/hops`); 0 means the agent cannot delegate.
+   * `discoverable` (default true, the Console's "Make discoverable") lists the agent in the Helix agent
+   * registry once it is active; false keeps it out. It can still be called and delegated to by its DID.
    */
   async createAgent(input: {
     name: string;
@@ -202,6 +204,7 @@ export class HelixCustodyClient {
     expiry?: number;
     requestedDomains?: string[];
     maxDelegationDepth?: number;
+    discoverable?: boolean;
   }): Promise<OnboardingResult> {
     assertOwnDid(input);
     return this.request('POST', '/v1/agents', input);

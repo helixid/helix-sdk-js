@@ -56,3 +56,32 @@ export async function challengeFor(
     fresh: caller.fresh,
   });
 }
+
+/**
+ * Helix error codes that refuse a consent request because of the caller, not
+ * the service: the agent is not attested for the scope (or for any scope the
+ * request names), or Helix does not know it as an agent it may ask consent for.
+ */
+export const CALLER_CONSENT_REFUSALS: ReadonlySet<string> = new Set(['CONSENT_GRANT_SCOPE_NOT_ALLOWED', 'CONSENT_NO_GRANTABLE_SCOPES', 'DID_NOT_FOUND']);
+
+/** What a failed consent request (thrown while building the challenge) means for the call. */
+export type ConsentFailure = { kind: 'refused'; helixCode: string; message: string } | { kind: 'unavailable'; message: string };
+
+/**
+ * Sorts an error thrown while the challenge's consent request was made at
+ * Helix (a `ConsentFlowError`, matched by its code):
+ * - `refused`: Helix refused it because of the caller (CALLER_CONSENT_REFUSALS);
+ * - `unavailable`: Helix could not be reached, or failed (5xx, 408, 429, or no usable answer);
+ * - undefined: anything else (the service's own setup, say), left to the host as a server error.
+ */
+export function consentFailureOf(error: unknown): ConsentFailure | undefined {
+  const e = error as { code?: unknown; reason?: unknown; httpStatus?: unknown; helixCode?: unknown; message?: unknown } | null;
+  if (e === null || typeof e !== 'object' || e.code !== 'CONSENT_FLOW_FAILED') return undefined;
+  const message = typeof e.message === 'string' ? e.message : 'consent flow failed';
+  const status = typeof e.httpStatus === 'number' ? e.httpStatus : 0;
+  if (e.reason === 'consent_unreachable' || status >= 500 || status === 408 || status === 429) return { kind: 'unavailable', message };
+  if (e.reason === 'consent_request_refused' && typeof e.helixCode === 'string' && CALLER_CONSENT_REFUSALS.has(e.helixCode)) {
+    return { kind: 'refused', helixCode: e.helixCode, message };
+  }
+  return undefined;
+}

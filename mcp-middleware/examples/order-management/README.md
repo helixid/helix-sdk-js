@@ -122,15 +122,24 @@ For credentials no standard describes (your own API keys presented as bearers), 
 
 ## How it is wired (`src/app.ts`)
 
-The gate runs at the HTTP layer, in front of the MCP transport, and only for `tools/call`:
+The gate is `@helixid/mcp-middleware`'s one-line `helixMcpGate`, in front of the MCP transport:
 
-1. Parse the JSON-RPC body. For each `tools/call`, call the middleware with the tool name, arguments, `params._meta` and
-   the HTTP headers.
-2. On failure, `toHttpErrorResponse()` turns the error into a 401 / 400 / 403 with `WWW-Authenticate`. A real HTTP 401 is
-   what makes an MCP OAuth client start discovery; a tool-level error would not.
-3. Otherwise hand the request to a stateless `StreamableHTTPServerTransport`.
+```ts
+const gate = helixMcpGate({ resource, resourceName, authorizationServers, ...auth, toolScopes, audit, kyaos });
+createServer((req, res) => gate(req, res, () => handleMcp(req, res)));
+```
 
-`initialize` and `tools/list` are not gated. A KYA-OS proof is verified once per tool call, over the JSON-RPC request as
+1. The gate serves the RFC 9728 metadata, parses the JSON-RPC body and passes every request through the guard.
+2. On failure it answers 401 / 400 / 403 with `WWW-Authenticate` (503 with `Retry-After` when an authorization server is
+   down). A real HTTP 401 is what makes an MCP OAuth client start discovery; a tool-level error would not.
+3. Otherwise `handleMcp` hands `req.helixMcp.body` to a stateless `StreamableHTTPServerTransport`. Each tool is
+   registered through `req.helixMcp.wrapTool`, so it runs in the caller's delegation context, audited, with its KYA-OS
+   response proof signed.
+
+Every request goes through the guard, which decides: `initialize`, `notifications/initialized` and `tools/list` are open
+(the middleware's default open list, so clients can see what is offered); every other method needs a verified caller, and
+the middleware audits each refusal itself. The `_kyaos_handshake` tool is open to anonymous agents, so a handshake without
+a credential is not sent to the guard. A KYA-OS proof is verified once per call, over the JSON-RPC request as
 received. The tools themselves (`src/orders.ts`) contain no auth code.
 
 ## Configuration

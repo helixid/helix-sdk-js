@@ -1,4 +1,8 @@
 export { helixidMCPMiddleware } from './middleware.js';
+export { DEFAULT_OPEN_METHODS, RESOURCE_METHODS, PROMPT_METHODS } from './gate.js';
+// The one-line HTTP gate: app.use(helixMcpGate({...})).
+export { helixMcpGate } from './http-gate.js';
+export type { HelixMcpGate, HelixMcpGateOptions, HelixMcpRequestState, GatedRequest, GateNext } from './http-gate.js';
 export type { MCPMiddleware, AuthorizedCaller as MiddlewareCaller } from './middleware.js';
 export { createJwtValidator, createIntrospectionValidator, createOAuthValidator, cnfJktOf } from './oauth.js';
 export { createHelixAuditSink, createHelixAuditReporter, createMcpAuditTrail, McpAuditTrail, ToolCallAudit } from './audit.js';

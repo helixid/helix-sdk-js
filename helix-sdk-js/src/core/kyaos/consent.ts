@@ -67,6 +67,8 @@ export const ConsentReasons = {
   RENEWAL_REFUSED: 'consent_renewal_refused',
   WITHDRAWAL_REFUSED: 'consent_withdrawal_refused',
   URL_INVALID: 'consent_url_invalid',
+  /** Helix could not be reached (the request never got an answer). */
+  UNREACHABLE: 'consent_unreachable',
 } as const;
 export type ConsentReason = (typeof ConsentReasons)[keyof typeof ConsentReasons];
 
@@ -120,7 +122,13 @@ interface HelixErrorBody {
 }
 
 async function post(fetch: ConsentFetch, url: string, request: string): Promise<{ ok: boolean; status: number; body: unknown }> {
-  const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ request }) });
+  let response: Awaited<ReturnType<ConsentFetch>>;
+  try {
+    response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ request }) });
+  } catch (error) {
+    // No answer at all: an outage, never a refusal.
+    throw new ConsentFlowError(ConsentReasons.UNREACHABLE, `Helix could not be reached: ${error instanceof Error ? error.message : String(error)}`, 503);
+  }
   let body: unknown;
   try {
     body = await response.json();
@@ -132,7 +140,7 @@ async function post(fetch: ConsentFetch, url: string, request: string): Promise<
 
 function refusal(reason: ConsentReason, what: string, status: number, body: unknown): ConsentFlowError {
   const error = (body as HelixErrorBody | undefined)?.error;
-  return new ConsentFlowError(reason, `${what}: ${error?.code ?? status} ${error?.message ?? ''}`.trim(), status);
+  return new ConsentFlowError(reason, `${what}: ${error?.code ?? status} ${error?.message ?? ''}`.trim(), status, typeof error?.code === 'string' ? error.code : undefined);
 }
 
 export interface CreateConsentRequestOptions {

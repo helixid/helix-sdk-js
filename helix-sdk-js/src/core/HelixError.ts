@@ -452,10 +452,13 @@ export class NeedsAuthorizationError extends HelixError {
  */
 export class ConsentFlowError extends HelixError {
   public readonly reason: string;
-  constructor(reason: string, message = 'consent flow failed', status = 400) {
-    super('CONSENT_FLOW_FAILED', message, status, { reason });
+  /** The error code Helix answered with (`CONSENT_GRANT_SCOPE_NOT_ALLOWED`, say), when it answered with one. */
+  public readonly helixCode: string | undefined;
+  constructor(reason: string, message = 'consent flow failed', status = 400, helixCode?: string) {
+    super('CONSENT_FLOW_FAILED', message, status, { reason, ...(helixCode === undefined ? {} : { helixCode }) });
     this.name = 'ConsentFlowError';
     this.reason = reason;
+    this.helixCode = helixCode;
   }
 }
 

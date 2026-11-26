@@ -84,6 +84,8 @@ const MAPPED: Record<string, { status: number; error: string }> = {
   CREDENTIAL_CONFLICT: { status: 400, error: 'invalid_request' },
   INSUFFICIENT_SCOPE: { status: 403, error: 'insufficient_scope' },
   TOOL_NOT_PERMITTED: { status: 403, error: 'insufficient_scope' },
+  RESOURCE_NOT_PERMITTED: { status: 403, error: 'insufficient_scope' },
+  PROMPT_NOT_PERMITTED: { status: 403, error: 'insufficient_scope' },
   // KYA-OS session layer (story L2-A): a session id that is unknown, expired, malformed or another agent's.
   KYAOS_REJECTED: { status: 400, error: 'invalid_request' },
   // KYA-OS story L3-E: the challenge (hosts without the signing runtime answer it here, unsigned) and a refused retry.

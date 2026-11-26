@@ -56,7 +56,26 @@ export interface ToolAuditEvent {
   event: 'AUTHZ_GRANTED' | 'AUTHZ_DENIED';
   result: 'allowed' | 'denied';
   timestamp: string;
-  authMethod: 'kyaos' | 'oauth';
+  /** `none`: a refusal of a caller the guard could not identify (no credential, a bad token, a refused proof naming no DID). */
+  authMethod: 'kyaos' | 'oauth' | 'none';
+  /** The JSON-RPC method (`tools/call`, `resources/read`, ...). */
+  method?: string;
+  /** `resources/*`: the resource URI. */
+  resourceUri?: string;
+  /** `prompts/get`: the prompt name. */
+  promptName?: string;
+  /** The refusal's code: `proof_missing`, `oauth_token_invalid`, `credential_conflict`, the verifier's first reason (`nonce_replayed`, ...), `resource_not_permitted`, ... */
+  reasonCode?: string;
+  /** The caller's address, when the host passed `clientIp`. */
+  clientIp?: string;
+  /** The request's User-Agent header, when there is one. */
+  userAgent?: string;
+  /** A refused bearer JWT's `iss`, unverified. */
+  oauthIssuer?: string;
+  /** The DID a refused request proof says it is from: never verified, so never the actor. */
+  claimedDid?: string;
+  /** Always false when set: `claimedDid` and `oauthIssuer` are what the caller said, not what was checked. */
+  claimedVerified?: false;
   /** KYA-OS callers: the agent DID the request proof verified as. */
   agentDid?: string;
   /** KYA-OS callers: the level the local verifier derived (story F-2) and whether every status was read live. */
@@ -177,7 +196,7 @@ interface ToolCallState {
 const OAUTH_SUBJECT_KEY_ID = 'oauth-subject-v1';
 
 /** The guard's own denials of an identified caller; any other reason a KYA-OS caller is denied with is the local verifier's. */
-const GUARD_REASONS: ReadonlySet<string> = new Set(['tool is not in toolScopes', 'insufficient scope', 'needs_authorization']);
+const GUARD_REASONS: ReadonlySet<string> = new Set(['tool is not in toolScopes', 'resource is not in resourceScopes', 'prompt is not in promptScopes', 'insufficient scope', 'needs_authorization']);
 
 /**
  * `KYAOS_PROOF_<level>`, with `_CACHED` when the verifier did not read every
@@ -486,6 +505,11 @@ export class McpAuditTrail {
       const allowed = event.result === 'allowed';
       const kyaos = event.authMethod === 'kyaos';
       const levelRefused = kyaos && !allowed && event.requiredLevel !== undefined;
+      if (event.authMethod === 'none') {
+        // A caller the guard could not identify: the refusal, with no actor (what it claimed stays in the sink's event only).
+        await this.authorization('denied', { outcome: 'denied', reasonCode: event.reasonCode ?? 'unidentified', context: base, ...(toolName !== undefined ? { toolName } : {}) });
+        return;
+      }
       if (kyaos && !allowed && !levelRefused && scopeId === undefined && event.reason !== undefined && !GUARD_REASONS.has(event.reason)) {
         // The local verifier refused the request proof: its reasons are codes, the first one names the refusal.
         await this.proof('rejected', { outcome: 'denied', reasonCode: event.reason.split(',')[0]!.trim() || 'proof_invalid', context: base });
@@ -509,6 +533,8 @@ export class McpAuditTrail {
           // KYA-OS story L3-E: a signed needs_authorization challenge keeps its reason; story C-C: a level refusal is its own code.
           reasonCode: levelRefused
             ? LEVEL_INSUFFICIENT_REASON
+            : event.reasonCode !== undefined
+              ? event.reasonCode
             : event.reason === 'needs_authorization'
               ? 'needs_authorization'
               : scopeId !== undefined

@@ -138,6 +138,14 @@ export interface VerifierOptions {
    * cache serves, and a cached read is not fresh, so at most L2.
    */
   liveStatus?: boolean | undefined;
+  /**
+   * Own authority (the service's opt-in; default false): a call carrying no
+   * chain, from an agent whose card names no `responsibleParty`, acts on
+   * what the agent is attested for, intersected with `catalog` (none without
+   * one). A card naming a `responsibleParty` still needs its chain
+   * (SPEC-ENTITY-CARD §11.1 step 6), so it gets no scopes this way.
+   */
+  allowOwnAuthority?: boolean | undefined;
 }
 
 export interface ChainSummary {
@@ -441,7 +449,11 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
   }
 
   // 8. Authority and level (story F-1 point 4; §9.4): the proof floor holds only when a proof verified.
-  const effectiveScopes = deriveEffectiveScopes(capabilities.verified, leafAllowedAction, options.catalog ?? leafAllowedAction);
+  // Own authority (allowOwnAuthority): no chain, a proven key and a card that names no responsible party.
+  const ownAuthority = options.allowOwnAuthority === true && hops === undefined && proofDid !== undefined && card !== undefined && card.responsibleParty === undefined;
+  const effectiveScopes = ownAuthority
+    ? deriveEffectiveScopes(capabilities.verified, options.catalog ?? [], options.catalog ?? [])
+    : deriveEffectiveScopes(capabilities.verified, leafAllowedAction, options.catalog ?? leafAllowedAction);
   const fresh = chainFresh && capabilitiesFresh && cardFresh;
   const proofFloor = proofDid !== undefined;
   const level = deriveConformanceLevel(capabilities, proofFloor, fresh);

@@ -6,12 +6,16 @@ import { InsufficientScopeError } from '@helixid/sdk-js';
 export type MCPAuthErrorCode =
   | 'CREDENTIAL_CONFLICT'
   | 'OAUTH_TOKEN_INVALID'
-  | 'TOOL_NOT_PERMITTED';
+  | 'TOOL_NOT_PERMITTED'
+  | 'RESOURCE_NOT_PERMITTED'
+  | 'PROMPT_NOT_PERMITTED';
 
 const STATUS: Record<MCPAuthErrorCode, number> = {
   CREDENTIAL_CONFLICT: 400,
   OAUTH_TOKEN_INVALID: 401,
   TOOL_NOT_PERMITTED: 403,
+  RESOURCE_NOT_PERMITTED: 403,
+  PROMPT_NOT_PERMITTED: 403,
 };
 
 /**
@@ -83,10 +87,12 @@ export class ToolScopeError extends InsufficientScopeError {
   /** Everything the tool requires: what the RFC 6750 `scope` challenge lists, so one retry can fix it. */
   public readonly requiredScopes: readonly string[];
 
-  constructor(requiredScope: string, requiredScopes: readonly string[] = [requiredScope]) {
+  /** `message` replaces the default "Required scope: …" (a refused consent request says why, say). */
+  constructor(requiredScope: string, requiredScopes: readonly string[] = [requiredScope], message?: string) {
     super(requiredScope);
     this.requiredScope = requiredScope;
     this.requiredScopes = requiredScopes;
+    if (message !== undefined) this.message = message;
   }
 }
 

@@ -21,6 +21,43 @@ const requireHelix = helixidMCPMiddleware({ verifier, toolScopes: { lookup_order
 await requireHelix({ name, input: args, _meta: request.params._meta, request, headers: req.headers });
 ```
 
+## The one-line HTTP gate: `helixMcpGate`
+
+For an MCP server over Streamable HTTP (stateless, JSON responses), the whole HTTP side of the check is one middleware, for Express, Connect or `node:http`:
+
+```ts
+import { helixMcpGate } from '@helixid/mcp-middleware';
+
+app.use(helixMcpGate({ resource: 'https://orders.example/mcp', verifier, toolScopes, audit, kyaos }));
+// node:http: createServer((req, res) => gate(req, res, () => handleMcp(req, res)))
+```
+
+The options are the guard's (`MCPMiddlewareOptions`: `verifier`, `toolScopes`, `openMethods`, `resourceScopes`, `promptScopes`, `oauth`, `auditSink`, `needsAuthorization`, ...) plus:
+- `resource`, `authorizationServers`, `resourceName`, `scopesSupported` for the RFC 9728 metadata;
+- `audit`, an `McpAuditTrail` whose `toolAuditSink()` becomes the `auditSink` unless you give one;
+- `kyaos`, the L2-A runtime;
+- `env`, `maxBodyBytes`, `trustProxy`, `onServerError`.
+
+They are the same names as `HelixMcpGate` in helix_mcp_middleware (Python).
+
+What the gate does:
+- serves the RFC 9728 metadata at `/.well-known/oauth-protected-resource<path>`;
+- reads each POST to the MCP path, using `req.body` when a framework parsed it already;
+- passes every JSON-RPC request through the guard (open methods pass, every other needs a verified caller, every refusal is audited);
+- answers a refusal with 401 / 403 / 400 and `WWW-Authenticate`, carrying the KYA-OS `denied` proof when `kyaos` is set; an authorization server that is down gets 503 with `Retry-After`;
+- runs the KYA-OS handshake, sessions and `needs_authorization`;
+- builds the verifier's replay store from `KYAOS_NONCE_STORE` (or takes the runtime's) when you give verifier settings without one;
+- answers anything but POST on the MCP path with 405;
+- passes every other path to `next()`.
+
+The handler behind it gets `req.helixMcp`:
+- `body`: give it to the transport;
+- `wrapTool(name, handler)`: wrap each tool with it, so the tool runs in the caller's delegation context, audited (A-2), with its KYA-OS response proof signed over the result;
+- `handshake(args)`: the handshake tool's result;
+- `callers`: who each allowed call came from.
+
+[`examples/order-management`](./examples/order-management) is built this way.
+
 A caller's scopes are the three-way intersection of its verified capability attestations (from its Entity Card), the leaf hop's `allowedAction` and the tool scopes this server offers; the caller's level is derived per SPEC-ENTITY-CARD §9.4. A refused proof is a `ProofError` (`PROOF_INVALID`, 401) whose `reasons` are the verifier's codes (`nonce_replayed`, `audience_mismatch`, `request_hash_mismatch`, `attenuation_violation`, `status_revoked`, `chain_too_long`, ...); no proof and no bearer token is `PROOF_MISSING` (401). A carried chain that fails is refused as is: nothing is looked up in its place. The verifier itself is `kyaos.verifier.verify()` in `@helixid/sdk-js`, mirrored by `helix_sdk.verifier` in helix-sdk-py.
 
 ## Per-request holder-of-key proof and the minimum Card level (story C-C)
@@ -49,6 +86,12 @@ The agent side is `kyaos.withRequestProof(call, signer, { audience, chain, cnfJk
 
 A runnable sample, an order-management MCP server with a 5-minute quickstart, is in
 [`examples/order-management`](./examples/order-management) (repository only; not part of the npm package).
+
+**Pass every JSON-RPC request through the guard; it decides which need a caller.** Give it the request's `method` (or the `request` as received) and, over HTTP, its `headers` and the caller's `clientIp`:
+
+- **Open methods** pass unchecked and unaudited: `DEFAULT_OPEN_METHODS` = `initialize`, `notifications/initialized`, `tools/list`. They are open on purpose, so any client can see what the server offers before it presents a credential. Change the list with `openMethods` (`[]` opens nothing).
+- **Every other method needs a verified caller.** `tools/call` is checked against `toolScopes`. `resources/read`, `resources/subscribe` and `resources/unsubscribe` are checked against `resourceScopes` (keyed by URI), and `prompts/get` against `promptScopes` (keyed by name). Both maps are deny by default: an unlisted URI or prompt, or any one when the map is not set, is refused with `RESOURCE_NOT_PERMITTED` / `PROMPT_NOT_PERMITTED` (403). List methods (`resources/list`, `prompts/list`, ...) and anything else (`ping`, ...) need the verified caller only.
+- **Every refusal is audited**, including those of a caller the guard could not identify: no credential, a bad or expired bearer, a proof that names no verified DID, a replayed proof, `CREDENTIAL_CONFLICT`. Such an event has `authMethod: 'none'` and no actor. It records what is known: the method and its target, `reasonCode`, the time, `clientIp` and `userAgent`, and, marked `claimedVerified: false`, the bearer's `iss` (`oauthIssuer`) and the DID the proof claims (`claimedDid`). In the typed trail it is `authorization.denied` with that reason code and no actor. The address, user agent and claims stay in the `auditSink` event, since the typed schema has no member for them. A server fault (an unreachable authorization server) is not a refusal and is not audited.
 
 Credentials: a KYA-OS request proof in `_meta` (above), or `Authorization: Bearer <token>` for OAuth 2.1 clients. Two `Authorization` headers, or a proof together with a bearer token, are rejected with `CREDENTIAL_CONFLICT` rather than picking one.
 
@@ -103,7 +146,7 @@ Introspection needs this server's own client credentials at the authorization se
 
 OAuth: a JWT is routed to its issuer by the (unverified) `iss` claim and verified there, so an issuer not in the list is refused with no network call; a token that is not a JWT is opaque and names no issuer, so it goes to the one issuer configured for introspection. Only one issuer may be (construction throws otherwise): with two, every opaque token would have to be shown to both. An issuer with both `jwksUri` and `introspection` verifies JWTs by its keys alone unless `introspectJwts: true`, which also asks the issuer, so a revoked JWT is refused before it expires. `requireAccessTokenType: true` on an issuer refuses JWTs whose header `typ` is not `at+jwt` (RFC 9068). An authorization server that cannot be reached throws `AuthorizationServerUnavailableError`, which `toHttpErrorResponse` leaves unmapped: answer 5xx, never 401, because the caller's token was not shown to be bad. A 403 for a missing scope names it in the challenge (`scope="orders:admin"`, RFC 6750) so a client can request that scope and retry.
 
-Audit: every decision about an identified caller (KYA-OS agent or OAuth subject) is passed to `auditSink` and awaited before the tool runs. Unidentified callers are not logged, and a failing sink never blocks a call. OAuth callers have no agent DID, so set `serviceDid`.
+Audit: every decision is passed to `auditSink` and awaited before the tool runs: allowed and refused, for an identified caller (KYA-OS agent or OAuth subject) and, anonymously, for one the guard could not identify (see above). A failing sink never blocks a call. OAuth callers have no agent DID, so set `serviceDid`.
 
 Since KYA-OS story A-1 the audit log holds typed producer events (AAP-1 Recorded). `createHelixAuditSink` keeps its call shape and now records each decision as typed events: a KYA-OS caller (story F-2) as `proof.verified` (verification code `KYAOS_PROOF_<level>`, with `_CACHED` when a status was not read live) then `authorization.approved` / `authorization.denied`, a request proof the local verifier refused as `proof.rejected` by its first reason code, an OAuth caller as the authorization event alone; each strictly validated (an unknown member is refused), sequenced per source with `previousSourceEventDigest`, digested, and posted to `POST /v1/audit-log/events`. For the full lifecycle of a tool call (`session.established`, then `tool.call.started` / `completed` / `failed` / `denied` under one correlation id) build an `McpAuditTrail` with `createMcpAuditTrail({ reporter: createHelixAuditReporter({ baseUrl, apiKey }), serviceDid })`, pass `audit.toolAuditSink()` as `auditSink`, and wrap each call in `audit.beginToolCall({ toolName }).run(...)`, as `examples/order-management` does. No event ever holds tool arguments, a response, a bearer token or a credential; an OAuth subject is recorded as a keyed commitment; tool names are withheld unless `includeToolNames` is set.
 
