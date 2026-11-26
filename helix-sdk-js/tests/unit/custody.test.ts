@@ -347,7 +347,25 @@ describe('helix init (self-custody onboarding)', () => {
     expect(again.resolution).toBeUndefined();
   });
 
-  it('own hosting: on activation card.json is rewritten with what the credentials put on the card, to republish (F-3 parity)', async () => {
+  it('own hosting: a Helix that issues the credentials at enrollment returns the same card on activation, so card.json is final and not rewritten', async () => {
+    const out = await tempDir();
+    const did = 'did:web:owner.example:agents:final';
+    const origin = 'https://owner.example/agents/final';
+    const served = new Map<string, unknown>();
+    const resolveFetch = async (url: string) => (served.has(url) ? { ok: true, status: 200, json: async () => served.get(url) } : { ok: false, status: 404, json: async () => ({}) });
+    await helixInit({ apiUrl: 'https://helix.example', enrollmentToken: 'enroll:t', outDir: out, did, fetch: initApi(did, 'own', origin, 'pending_resolution').fetch, resolveFetch, generateKey: agentKeyFrom(SEED_HEX) });
+    const written = JSON.parse(await readFile(join(out, 'card.json'), 'utf8')) as Record<string, unknown>;
+    const before = (await stat(join(out, 'card.json'))).mtimeMs;
+    served.set(`${origin}/did.json`, JSON.parse(await readFile(join(out, 'did.json'), 'utf8')));
+    served.set(`${origin}/card.json`, written);
+    const active = await activateAgent({ apiUrl: 'https://helix.example', enrollmentToken: 'enroll:t', outDir: out, fetch: initApi(did, 'own', origin, 'pending_resolution', written).fetch, resolveFetch });
+    expect(active).toMatchObject({ status: 'active', resolution: { ok: true } });
+    expect(active.cardUpdated).toBeUndefined();
+    expect((await stat(join(out, 'card.json'))).mtimeMs).toBe(before);
+    expect(JSON.parse(await readFile(join(out, 'card.json'), 'utf8'))).toEqual(written);
+  });
+
+  it('own hosting, an older Helix: on activation card.json is rewritten with what the credentials put on the card, to republish (F-3 parity)', async () => {
     const out = await tempDir();
     const did = 'did:web:owner.example:agents:carded';
     const origin = 'https://owner.example/agents/carded';

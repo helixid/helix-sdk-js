@@ -89,7 +89,9 @@ export interface HelixInitResult {
   /**
    * Own hosting, on activation: `card.json` was rewritten with what the
    * agent's credentials put on its card (attestations, responsible party,
-   * revocation entry; F-3 parity). Republish it at `cardUrl`.
+   * revocation entry; F-3 parity); republish it at `cardUrl`. Only with a
+   * Helix that issues them at activation: a current one issues them at
+   * enrollment, so the first card is final and this stays unset.
    */
   cardUpdated?: boolean | undefined;
 }
@@ -214,10 +216,22 @@ async function activateOwnHosted(
   const resolution = await checkOwnHosting(result.did, { kid: result.kid, publicKeyJwk: result.publicKeyJwk }, resolveFetch ? { fetch: resolveFetch } : {});
   if (!resolution.ok) return { ...result, resolution };
   const active = await client.activate(result.did, { enrollmentToken });
-  // The card now carries the agent's attestations; the owner republishes it.
+  // Helix issues an own-hosted agent's credentials at enrollment, so the card
+  // written then is final and activation returns the same one. An older Helix
+  // issues them only now: the card changes and the owner republishes it.
   const card = active.documents?.card;
-  if (card !== undefined) await writeJson(result.files.card, card);
-  return { ...result, status: active.status, resolution, ...(active.vcId ? { vcId: active.vcId } : {}), ...(card !== undefined ? { cardUpdated: true } : {}) };
+  const cardUpdated = card !== undefined && !(await sameJsonFile(result.files.card, card));
+  if (cardUpdated) await writeJson(result.files.card, card);
+  return { ...result, status: active.status, resolution, ...(active.vcId ? { vcId: active.vcId } : {}), ...(cardUpdated ? { cardUpdated: true } : {}) };
+}
+
+/** Whether the JSON file at `path` holds `value` (false when it cannot be read). */
+async function sameJsonFile(path: string, value: unknown): Promise<boolean> {
+  try {
+    return JSON.stringify(JSON.parse(await readFile(path, 'utf8'))) === JSON.stringify(value);
+  } catch {
+    return false;
+  }
 }
 
 export interface ActivateOptions {
