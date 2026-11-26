@@ -55,11 +55,12 @@ export async function runInit(options: InitOptions): Promise<HelixInitResult> {
   republishNotice(result);
   if (result.status === 'pending_resolution') {
     console.log('');
-    console.log('Publish the two documents, then activate:');
+    console.log('Publish the two documents on your domain:');
     console.log(`  ${result.files.didDocument}  ->  ${result.didDocumentUrl}`);
     console.log(`  ${result.files.card}  ->  ${result.cardUrl}`);
     if (result.resolution && !result.resolution.ok) console.log(`  (not resolving yet: ${result.resolution.reason})`);
-    console.log(`  helix activate --token <token> --out ${options.out}`);
+    console.log('Helix activates the agent once both resolve: it checks in the background, and in the console when the agent is open.');
+    console.log(`To check now: helix activate --token <token> --out ${options.out}`);
   }
   return result;
 }

@@ -110,7 +110,9 @@ describe('helix init', () => {
   it('own hosting: pending until published, then helix activate checks the domain and activates', async () => {
     mode = { didHosting: 'own', did: `did:web:${host}:agents:bot` };
     await run('init', '--token', 'enroll:t', '--out', out, '--api-url', origin, '--did', mode.did);
-    expect(stdout.join('\n')).toMatch(/Publish the two documents/);
+    expect(stdout.join('\n')).toMatch(/Publish the two documents on your domain/);
+    expect(stdout.join('\n')).toMatch(/Helix activates the agent once both resolve/);
+    expect(stdout.join('\n')).not.toMatch(/then activate/);
     expect(requests.some((request) => request.path.endsWith('/activate'))).toBe(false);
     published.set('/agents/bot/did.json', JSON.parse(await readFile(join(out, 'did.json'), 'utf8')));
     published.set('/agents/bot/card.json', JSON.parse(await readFile(join(out, 'card.json'), 'utf8')));
