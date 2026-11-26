@@ -27,7 +27,7 @@ function stubVerifier(attested: string[], allowOwnAuthority = true): LocalVerifi
     },
     verifyCall: async (call) => {
       calls.push(call);
-      const effectiveScopes = attested.filter((scope) => call.catalog?.includes(scope));
+      const effectiveScopes = attested.filter((scope) => call.ownAuthorityCatalog?.includes(scope));
       return { ok: true, reasons: [], warnings: [], agentDid: AGENT, effectiveScopes, level: 'L3', fresh: true, proofFloor: false } as unknown as Awaited<
         ReturnType<LocalVerifier['verifyCall']>
       >;
@@ -47,7 +47,7 @@ describe('own authority across tools, resources and prompts', () => {
       promptScopes: { summarize: ['prompts:use'] },
     });
     await mw.authorize({ method: 'tools/call', name: 'lookup_order', _meta: META });
-    expect(verifier.calls[0]?.catalog).toEqual(['orders:read', 'ledger:read', 'prompts:use']);
+    expect(verifier.calls[0]?.ownAuthorityCatalog).toEqual(['orders:read', 'ledger:read', 'prompts:use']);
   });
 
   it('lets an agent read a resource and get a prompt on its attested capabilities alone', async () => {
@@ -75,17 +75,17 @@ describe('own authority across tools, resources and prompts', () => {
       name: 'orders://ledger',
       _meta: META,
     });
-    expect(onlyResources.calls[0]?.catalog).toEqual(['ledger:read']);
+    expect(onlyResources.calls[0]?.ownAuthorityCatalog).toEqual(['ledger:read']);
     const none = stubVerifier([]);
     await helixidMCPMiddleware({ verifier: none, serviceDid: SERVICE, inboundDelegation: false }).authorize({ method: 'ping', _meta: META });
-    expect(none.calls[0]?.catalog).toBeUndefined();
+    expect(none.calls[0]?.ownAuthorityCatalog).toBeUndefined();
   });
 
   it('passes no catalog when the service did not opt in to own authority', async () => {
     const verifier = stubVerifier(['orders:read'], false);
     const mw = helixidMCPMiddleware({ verifier, serviceDid: SERVICE, inboundDelegation: false, toolScopes: { lookup_order: ['orders:read'] } });
     await expect(mw.authorize({ method: 'tools/call', name: 'lookup_order', _meta: META })).rejects.toMatchObject({ code: 'INSUFFICIENT_SCOPE' });
-    expect(verifier.calls[0]?.catalog).toBeUndefined();
+    expect(verifier.calls[0]?.ownAuthorityCatalog).toBeUndefined();
   });
 
   it('keeps a requireDelegation tool out of own authority', async () => {

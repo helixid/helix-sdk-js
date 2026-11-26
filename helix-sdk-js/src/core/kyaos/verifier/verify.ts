@@ -146,6 +146,8 @@ export interface VerifierOptions {
    * (SPEC-ENTITY-CARD §11.1 step 6), so it gets no scopes this way.
    */
   allowOwnAuthority?: boolean | undefined;
+  /** The scopes own authority may grant, in place of `catalog`; a call with a chain still uses `catalog`. */
+  ownAuthorityCatalog?: readonly string[] | undefined;
 }
 
 export interface ChainSummary {
@@ -452,7 +454,7 @@ export async function verify(input: VerifierInput, seams: VerifierSeams, options
   // Own authority (allowOwnAuthority): no chain, a proven key and a card that names no responsible party.
   const ownAuthority = options.allowOwnAuthority === true && hops === undefined && proofDid !== undefined && card !== undefined && card.responsibleParty === undefined;
   const effectiveScopes = ownAuthority
-    ? deriveEffectiveScopes(capabilities.verified, options.catalog ?? [], options.catalog ?? [])
+    ? deriveEffectiveScopes(capabilities.verified, options.ownAuthorityCatalog ?? options.catalog ?? [], options.ownAuthorityCatalog ?? options.catalog ?? [])
     : deriveEffectiveScopes(capabilities.verified, leafAllowedAction, options.catalog ?? leafAllowedAction);
   const fresh = chainFresh && capabilitiesFresh && cardFresh;
   const proofFloor = proofDid !== undefined;

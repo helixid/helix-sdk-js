@@ -82,9 +82,10 @@ export interface LocalVerifierOptions {
   /** The scopes this service offers; `effectiveScopes` is intersected with it. Default: the leaf's own. */
   catalog?: readonly string[] | undefined;
   /**
-   * Own authority (default false): a call with no chain, from an agent whose
+   * Own authority (default true): a call with no chain, from an agent whose
    * card names no `responsibleParty`, gets its attested capabilities that are
    * in `catalog`. The middleware passes the scopes its `toolScopes`, `resourceScopes` and `promptScopes` name as the catalog.
+   * A tool that needs the user's consent sets `requireDelegation`; `false` here makes every scoped call need a chain.
    */
   allowOwnAuthority?: boolean | undefined;
   /** The replay store; default a `MemoryNonceStore` (this instance only). Share the runtime's store across instances. */
@@ -150,11 +151,13 @@ export interface LocalVerifierCall {
   liveStatus?: boolean | undefined;
   /** The service's scopes for this call, when the verifier has no `catalog` of its own (the middleware's `toolScopes`). */
   catalog?: readonly string[] | undefined;
+  /** The scopes own authority may grant for this call, when the verifier has no `catalog` of its own; a call with a chain is not narrowed by it. */
+  ownAuthorityCatalog?: readonly string[] | undefined;
 }
 
 export interface LocalVerifier {
   readonly serviceDid: string;
-  /** Whether the service opted in to own authority (`allowOwnAuthority`). */
+  /** Whether own authority is on (`allowOwnAuthority`, default true). */
   readonly allowOwnAuthority?: boolean;
   readonly seams: kyaos.verifier.VerifierSeams;
   readonly nonceStore: NonceStore;
@@ -303,7 +306,7 @@ export function createLocalVerifier(options: LocalVerifierOptions): LocalVerifie
     ...(options.skewSeconds === undefined ? {} : { skewSeconds: options.skewSeconds }),
     ...(options.maxClockSkewMs === undefined ? {} : { maxClockSkewMs: options.maxClockSkewMs }),
     ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
-    ...(options.allowOwnAuthority === true ? { allowOwnAuthority: true } : {}),
+    ...(options.allowOwnAuthority === false ? {} : { allowOwnAuthority: true }),
   };
 
   const verify = (input: kyaos.verifier.VerifierInput, overrides: Partial<kyaos.verifier.VerifierOptions> = {}): Promise<kyaos.verifier.VerifierResult> =>
@@ -321,6 +324,7 @@ export function createLocalVerifier(options: LocalVerifierOptions): LocalVerifie
         ...(call.requireProof === undefined ? {} : { requireProof: call.requireProof }),
         ...(call.liveStatus === true ? { liveStatus: true } : {}),
         ...(call.catalog !== undefined && options.catalog === undefined ? { catalog: call.catalog } : {}),
+        ...(call.ownAuthorityCatalog !== undefined && options.catalog === undefined ? { ownAuthorityCatalog: call.ownAuthorityCatalog } : {}),
       },
     );
     const entry: VerificationReport = {
@@ -347,5 +351,5 @@ export function createLocalVerifier(options: LocalVerifierOptions): LocalVerifie
     return result;
   };
 
-  return { serviceDid: options.serviceDid, allowOwnAuthority: options.allowOwnAuthority === true, seams, nonceStore, statusCache, verifyCall, verify };
+  return { serviceDid: options.serviceDid, allowOwnAuthority: options.allowOwnAuthority !== false, seams, nonceStore, statusCache, verifyCall, verify };
 }

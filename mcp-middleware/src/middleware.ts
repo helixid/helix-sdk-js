@@ -290,7 +290,7 @@ export function helixidMCPMiddleware(options: MCPMiddlewareOptions): MCPMiddlewa
         ...(tokenCnfJkt === undefined ? {} : { tokenCnfJkt }),
         requireProof: false,
         ...(liveStatus ? { liveStatus } : {}),
-        ...(localVerifier.allowOwnAuthority === true && ownAuthorityCatalog !== undefined ? { catalog: ownAuthorityCatalog } : {}),
+        ...(localVerifier.allowOwnAuthority === true && ownAuthorityCatalog !== undefined ? { ownAuthorityCatalog } : {}),
       });
       /* c8 ignore next */
       if (result === undefined) throw new ProofError('PROOF_MISSING', 'The request carries no KYA-OS request proof');

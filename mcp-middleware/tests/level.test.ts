@@ -261,6 +261,20 @@ describe.skipIf(!haveVerifierFixtures)('the guard: levels over the shared fixtur
     await expect(wrongParty({ ...lookup, _meta: await proofMeta(agentSigner, service, lookup, fresh) })).rejects.toMatchObject({ reasons: ['root_not_responsible_party'] });
   });
 
+  it('own authority is on by default: no chain, a card naming no responsibleParty → its attested scopes the service offers', async () => {
+    const { responsibleParty: _rp, ...ownCard } = env.cards['attested'] as Record<string, unknown>;
+    const own = (options: Partial<Parameters<typeof fixtureVerifier>[1]> = {}) =>
+      helixidMCPMiddleware({ verifier: fixtureVerifier(service, { env, cards: { [agentDid]: ownCard }, ...options }), toolScopes });
+    const caller = await own().authorize({ ...lookup, _meta: await proofMeta(agentSigner, service, lookup) });
+    expect(caller).toMatchObject({ agentDid, level: 'L3', scopes: ['read:orders'] });
+    // Opted out: a scoped call needs a chain.
+    await expect(own({ allowOwnAuthority: false })({ ...lookup, _meta: await proofMeta(agentSigner, service, lookup) })).rejects.toMatchObject({ code: 'INSUFFICIENT_SCOPE' });
+    // A card naming a responsibleParty still needs its chain.
+    await expect(guard('attested')({ ...lookup, _meta: await proofMeta(agentSigner, service, lookup) })).rejects.toMatchObject({ code: 'INSUFFICIENT_SCOPE' });
+    // A chain call is not narrowed to the service's scopes by own authority.
+    expect((await own().authorize({ ...lookup, _meta: await proofMeta(agentSigner, service, lookup, fresh) })).scopes).toEqual(['read:orders', 'write:orders']);
+  });
+
   it('reports the level, the proof floor, L3-minus and the cnf diagnostics to the verification hook', async () => {
     const reports: unknown[] = [];
     const verifier = fixtureVerifier(service, { env, cards: { [agentDid]: env.cards['attested'] }, reportVerification: (r) => void reports.push(r) });
