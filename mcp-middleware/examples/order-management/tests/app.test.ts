@@ -129,23 +129,42 @@ describe('order-management sample server', () => {
     expect(sink.eventTypes).toEqual([]);
   });
 
+  it('gates every other method (gap 1): resources and prompts need a caller, refused without one and audited by the middleware', async () => {
+    for (const method of ['resources/list', 'prompts/list', 'ping']) {
+      const res = await rpc(method, {});
+      expect(res.status, method).toBe(401);
+      expect(res.headers.get('www-authenticate')).toContain('resource_metadata=');
+    }
+    expect(sink.eventTypes).toEqual(['authorization.denied', 'authorization.denied', 'authorization.denied']);
+    expect(sink.events.every((event) => event.reason?.code === 'proof_missing' && event.actor === undefined)).toBe(true);
+    // A verified caller gets through the gate; this sample serves no resources, so the MCP server answers "method not found".
+    const listed = await rpc('resources/list', {}, bearer('reader'));
+    expect(listed.status).toBe(200);
+    expect(listed.body.error.code).toBe(-32601);
+    expect(sink.eventTypes.slice(3)).toEqual(['authorization.approved']);
+  });
+
   it('answers a tool call with no credentials with 401 and both challenges, audited as a denied call', async () => {
     const res = await callTool('lookup_order', { orderId: 'ORD-1001' });
     expect(res.status).toBe(401);
     const challenge = res.headers.get('www-authenticate') ?? '';
     expect(challenge).toContain('Bearer resource_metadata="http://localhost/.well-known/oauth-protected-resource/mcp"');
     expect(challenge).toContain('KyaOS resource_metadata=');
-    expect(sink.eventTypes).toEqual(['session.established', 'tool.call.denied']);
-    expect(sink.events[1]).toMatchObject({ outcome: 'denied', reason: { code: 'proof_missing' }, details: { family: 'tool', phase: 'denied', attempt: '1' } });
+    // The middleware audits the refusal itself (gap 2), anonymously; the sample's trail records the denied call.
+    expect(sink.eventTypes).toEqual(['session.established', 'authorization.denied', 'tool.call.denied']);
+    expect(sink.events[1]).toMatchObject({ outcome: 'denied', reason: { code: 'proof_missing' } });
     expect(sink.events[1]!.actor).toBeUndefined();
+    expect(sink.events[2]).toMatchObject({ outcome: 'denied', reason: { code: 'proof_missing' }, details: { family: 'tool', phase: 'denied', attempt: '1' } });
+    expect(sink.events[2]!.actor).toBeUndefined();
   });
 
   it('answers an unknown bearer token with 401 invalid_token, audited by code, never by message', async () => {
     const res = await callTool('lookup_order', { orderId: 'ORD-1001' }, bearer('nope'));
     expect(res.status).toBe(401);
     expect(res.headers.get('www-authenticate')).toContain('error="invalid_token"');
-    expect(sink.eventTypes).toEqual(['session.established', 'tool.call.denied']);
+    expect(sink.eventTypes).toEqual(['session.established', 'authorization.denied', 'tool.call.denied']);
     expect(sink.events[1]!.reason).toEqual({ code: 'oauth_token_invalid' });
+    expect(sink.events[2]!.reason).toEqual({ code: 'oauth_token_invalid' });
     expectNothingLeaked(['nope', 'unknown token', 'rejected']);
   });
 
@@ -249,17 +268,19 @@ describe('order-management sample server', () => {
     expect(replay.status).toBe(401);
     expect(replay.body.error_description).toContain('nonce_replayed');
     // Story C-C: §11.2 checks the nonce before the signature, so a replay names no verified DID and is never attributed.
-    expect(typesFrom(4)).toEqual(['session.established', 'tool.call.denied']);
-    expect(eventsFrom(4)[1]).toMatchObject({ outcome: 'denied', reason: { code: 'proof_invalid' } });
-    expect(eventsFrom(4)[1]!.actor).toBeUndefined();
+    expect(typesFrom(4)).toEqual(['session.established', 'authorization.denied', 'tool.call.denied']);
+    expect(eventsFrom(4)[1]).toMatchObject({ outcome: 'denied', reason: { code: 'nonce_replayed' } });
+    expect(eventsFrom(4)[2]).toMatchObject({ outcome: 'denied', reason: { code: 'proof_invalid' } });
+    expect(eventsFrom(4).slice(1).every((event) => event.actor === undefined)).toBe(true);
 
     const tampered = await callTool('lookup_order', { orderId: 'ORD-1002' }, {}, await proofMeta('lookup_order', { orderId: 'ORD-1001' }));
     expect(tampered.status).toBe(401);
     expect(tampered.body.error_description).toContain('request_hash_mismatch');
     // A proof that names no verified DID is never attributed: only the call is recorded, denied by its code.
-    expect(typesFrom(6)).toEqual(['session.established', 'tool.call.denied']);
-    expect(eventsFrom(6)[1]).toMatchObject({ reason: { code: 'proof_invalid' } });
-    expect(eventsFrom(6)[1]!.actor).toBeUndefined();
+    expect(typesFrom(7)).toEqual(['session.established', 'authorization.denied', 'tool.call.denied']);
+    expect(eventsFrom(7)[1]).toMatchObject({ reason: { code: 'request_hash_mismatch' } });
+    expect(eventsFrom(7)[2]).toMatchObject({ reason: { code: 'proof_invalid' } });
+    expect(eventsFrom(7).slice(1).every((event) => event.actor === undefined)).toBe(true);
     const elsewhere = await callTool('lookup_order', { orderId: 'ORD-1001' }, {}, await proofMeta('lookup_order', { orderId: 'ORD-1001' }, 'did:web:other.example'));
     expect(elsewhere.status).toBe(401);
     expect(elsewhere.body.error_description).toContain('audience_mismatch');
@@ -276,8 +297,9 @@ describe('order-management sample server', () => {
     // A chain without a proof and a bearer token are two callers: refused with 400, audited as credential_conflict.
     const both = await callTool('lookup_order', { orderId: 'ORD-1001' }, bearer('reader'), { 'org.kya-os/delegation-chain': [{}] });
     expect(both.status).toBe(400);
-    expect(typesFrom(4)).toEqual(['session.established', 'tool.call.denied']);
+    expect(typesFrom(4)).toEqual(['session.established', 'authorization.denied', 'tool.call.denied']);
     expect(eventsFrom(4)[1]!.reason).toEqual({ code: 'credential_conflict' });
+    expect(eventsFrom(4)[2]!.reason).toEqual({ code: 'credential_conflict' });
   });
 
   it('records tool names only when the trail is told to', async () => {

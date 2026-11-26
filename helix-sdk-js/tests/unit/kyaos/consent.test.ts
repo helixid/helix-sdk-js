@@ -96,11 +96,16 @@ describe('service side', () => {
   it('surfaces a refusal and a malformed answer', async () => {
     const grant = consent.unsignedRootGrant({ agentDid: AGENT, serviceDid: SERVICE, scopes: ['x'], validUntil: new Date(Date.now() + 1000) });
     const refused = helix({ [`POST ${HELIX}/v1/consent/requests`]: () => ({ status: 403, body: { error: { code: 'CONSENT_SERVICE_UNKNOWN', message: 'unknown' } } }) });
-    await expect(consent.createConsentRequest({ helixUrl: HELIX, signer: serviceSigner, serviceUserId: 'u', grant, fetch: refused.fetch })).rejects.toMatchObject({ reason: 'consent_request_refused', httpStatus: 403, message: expect.stringContaining('CONSENT_SERVICE_UNKNOWN') });
+    await expect(consent.createConsentRequest({ helixUrl: HELIX, signer: serviceSigner, serviceUserId: 'u', grant, fetch: refused.fetch })).rejects.toMatchObject({ reason: 'consent_request_refused', httpStatus: 403, helixCode: 'CONSENT_SERVICE_UNKNOWN', message: expect.stringContaining('CONSENT_SERVICE_UNKNOWN') });
     const odd = helix({ [`POST ${HELIX}/v1/consent/requests`]: () => ({ status: 201, body: {} }) });
     await expect(consent.createConsentRequest({ helixUrl: HELIX, signer: serviceSigner, serviceUserId: 'u', grant, fetch: odd.fetch })).rejects.toMatchObject({ httpStatus: 502 });
     const broken: consent.ConsentFetch = async () => ({ ok: false, status: 500, json: async () => { throw new Error('not json'); } });
-    await expect(consent.createConsentRequest({ helixUrl: HELIX, signer: serviceSigner, serviceUserId: 'u', grant, fetch: broken })).rejects.toMatchObject({ message: expect.stringContaining('500') });
+    await expect(consent.createConsentRequest({ helixUrl: HELIX, signer: serviceSigner, serviceUserId: 'u', grant, fetch: broken })).rejects.toMatchObject({ message: expect.stringContaining('500'), helixCode: undefined });
+    // No answer at all: an outage (503, consent_unreachable), whatever the transport threw.
+    const down: consent.ConsentFetch = async () => { throw new TypeError('fetch failed'); };
+    await expect(consent.createConsentRequest({ helixUrl: HELIX, signer: serviceSigner, serviceUserId: 'u', grant, fetch: down })).rejects.toMatchObject({ reason: 'consent_unreachable', httpStatus: 503, message: 'Helix could not be reached: fetch failed' });
+    const odder: consent.ConsentFetch = async () => { throw 'socket closed'; };
+    await expect(consent.createConsentRequest({ helixUrl: HELIX, signer: serviceSigner, serviceUserId: 'u', grant, fetch: odder })).rejects.toMatchObject({ reason: 'consent_unreachable', message: 'Helix could not be reached: socket closed' });
   });
 
   it('withdraws in a request the service signs', async () => {

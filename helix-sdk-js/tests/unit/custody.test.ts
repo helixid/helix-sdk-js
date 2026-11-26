@@ -189,6 +189,9 @@ describe('HelixCustodyClient', () => {
     const client = new HelixCustodyClient({ apiUrl: 'https://helix.example', adminApiKey: 'admin', fetch: api.fetch });
     await client.createAgent({ name: 'Router', keyCustody: 'helix', requestedDomains: ['orders.example'], maxDelegationDepth: 2 });
     expect(JSON.parse(api.calls[0]!.body!)).toEqual({ name: 'Router', keyCustody: 'helix', requestedDomains: ['orders.example'], maxDelegationDepth: 2 });
+    // Registry v3: "Make discoverable" (default true on the server) is sent only when given.
+    await client.createAgent({ name: 'Hidden', discoverable: false });
+    expect(JSON.parse(api.calls[1]!.body!)).toEqual({ name: 'Hidden', discoverable: false });
   });
 
   it('reaches every custody endpoint by subject kind', async () => {

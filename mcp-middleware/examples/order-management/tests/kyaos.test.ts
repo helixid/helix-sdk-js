@@ -300,8 +300,9 @@ describe('order-management sample with KYA-OS and the typed audit trail together
     sink.entries.length = 0;
     const replayed = await auditedCall('lookup_order', args, {}, meta);
     expect(replayed.status).toBe(401);
-    expect(sink.eventTypes).toEqual(['session.established', 'tool.call.denied']);
-    expect(sink.events[1]).toMatchObject({ outcome: 'denied', reason: { code: 'proof_invalid' } });
-    expect(sink.events[1]!.actor).toBeUndefined();
+    expect(sink.eventTypes).toEqual(['session.established', 'authorization.denied', 'tool.call.denied']);
+    expect(sink.events[1]).toMatchObject({ outcome: 'denied', reason: { code: 'nonce_replayed' } });
+    expect(sink.events[2]).toMatchObject({ outcome: 'denied', reason: { code: 'proof_invalid' } });
+    expect(sink.events.slice(1).every((event) => event.actor === undefined)).toBe(true);
   });
 });

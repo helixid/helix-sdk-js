@@ -72,7 +72,7 @@ describe('helixidMCPMiddleware (proof path)', () => {
     await expect(middleware(call)).resolves.toBe(call);
   });
 
-  it('audits a refused call whose signer was identified, with the reasons; a replay names no principal', async () => {
+  it('audits a refused call whose signer was identified, with the reasons; a replay names no principal, only the DID it claimed', async () => {
     const events: unknown[] = [];
     const verifier = fixtureVerifier(SERVICE, { documents: { [agent.did]: agent.document } });
     const middleware = helixidMCPMiddleware({ verifier, auditSink: (e) => void events.push(e), serviceDid: SERVICE, minimumLevel: 'L1' });
@@ -82,9 +82,12 @@ describe('helixidMCPMiddleware (proof path)', () => {
     await middleware({ name: 't', _meta: meta }).catch(() => undefined);
     // A malformed chain is refused after the proof held: that refusal names the agent.
     await middleware({ name: 't', _meta: await proofMeta(agent.signer, SERVICE, { name: 't' }, [{ id: 'x' }]) }).catch(() => undefined);
-    expect(events).toHaveLength(2);
+    expect(events).toHaveLength(3);
     expect(events[0]).toMatchObject({ event: 'AUTHZ_GRANTED', authMethod: 'kyaos', agentDid: agent.did, level: 'L1', fresh: true, serviceDid: SERVICE, proofAssurance: 'L3-minus', l3Minus: false });
-    expect(events[1]).toMatchObject({ event: 'AUTHZ_DENIED', agentDid: agent.did });
+    // Gap 2: the replay is audited too, anonymously, with the DID the proof claims marked unverified.
+    expect(events[1]).toMatchObject({ event: 'AUTHZ_DENIED', authMethod: 'none', reasonCode: 'nonce_replayed', claimedDid: agent.did, claimedVerified: false });
+    expect(events[1]).not.toHaveProperty('agentDid');
+    expect(events[2]).toMatchObject({ event: 'AUTHZ_DENIED', agentDid: agent.did });
   });
 
   it('takes verifier settings and builds the verifier with the service DID and the tool scopes as the catalog', async () => {

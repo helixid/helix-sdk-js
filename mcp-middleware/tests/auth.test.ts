@@ -293,7 +293,7 @@ describe('audit', () => {
     expect(events[0]?.agentDid).toBeUndefined();
   });
 
-  it('does not log unidentified callers, and survives a failing sink', async () => {
+  it('logs unidentified callers as anonymous refusals (gap 2), and survives a failing sink', async () => {
     const sink = vi.fn(async () => {
       throw new Error('audit down');
     });
@@ -304,10 +304,10 @@ describe('audit', () => {
       onAuditError,
     });
     await mw({ name: 't' }).catch(() => undefined);
-    expect(sink).not.toHaveBeenCalled();
+    expect(sink).toHaveBeenCalledWith(expect.objectContaining({ event: 'AUTHZ_DENIED', authMethod: 'none', method: 'tools/call', toolName: 't', reasonCode: 'proof_missing' }));
     const call = { name: 't', headers: { authorization: 'Bearer x' } };
     await expect(mw(call)).resolves.toBe(call);
-    expect(onAuditError).toHaveBeenCalledTimes(1);
+    expect(onAuditError).toHaveBeenCalledTimes(2);
   });
 
   it('createHelixAuditSink posts typed events to /v1/audit-log/events with the account key', async () => {
