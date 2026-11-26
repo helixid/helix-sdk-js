@@ -1,5 +1,32 @@
 # @helixid/cli
 
+## 0.4.0
+
+### Minor Changes
+
+- 0040d7b: KYA-OS story F-3: `helix init` (self-custody onboarding with an enrollment token), `helix activate` (own hosting, once the documents are published) and `helix custody take` (change a custodial agent, service or owner to self-custody).
+- 3728b59: KYA-OS story F-3 follow-up: an own-hosted agent's card carries what its credentials say. On activation Helix returns the card with the agent's capability attestations, responsible party and revocation entry; `activateAgent()` (and `helixInit()` when it activates) rewrites `card.json` in the output directory and reports `cardUpdated: true`. `helix init` and `helix activate` tell the owner to republish it at the card URL.
+
+### Patch Changes
+
+- f69bb66: KYA-OS story C-C: the Helix VP format is removed with no backward compatibility. Gone from `@helixid/sdk-js`: `HelixClient.signVP()` and `HelixClient.verifyVP()`, `VPBuilder` and `VPBuilderOptions`, the local `verifyVP()`, `checkScope()` / `requireScope()` (they read a VP verification result), the types `SignedVP`, `VerifyVPOptions`, `VerifyVPResult` and `VerifyVPApiResult`, `VPMissingError` and the `VP_MISSING` code, and the `vp-builder.json` golden vector. An agent signs each request with `kyaos.withRequestProof(call, signer, {audience})`; a service verifies it in-process with `kyaos.verifier.verify()` or `@helixid/mcp-middleware`. `@helixid/langchain`: `encodeBase64UrlJson` (the VP header encoder) is removed. `@helixid/cli` and `@helixid/did-hedera`: their copies of the error catalog drop `VPMissingError` / `VP_MISSING`, and the CLI no longer points to `signVP()`.
+- b921272: DID format: `helix did create --method web` and `did_create` build the issuer DID through `didWebFor`, so a `--domain` with a port gives `did:web:host%3Aport`.
+- Updated dependencies [f69bb66]
+- Updated dependencies [8d0823d]
+- Updated dependencies [973ae0f]
+- Updated dependencies [b921272]
+- Updated dependencies [086670b]
+- Updated dependencies [7049359]
+- Updated dependencies [7a0f7b0]
+- Updated dependencies [0040d7b]
+- Updated dependencies [3728b59]
+- Updated dependencies [1068d5d]
+- Updated dependencies [1b596b1]
+- Updated dependencies [f22cd08]
+- Updated dependencies [dac99e5]
+- Updated dependencies [f38dca2]
+  - @helixid/sdk-js@1.0.0
+
 ## 0.3.1
 
 ### Patch Changes

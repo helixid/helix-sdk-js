@@ -1,5 +1,29 @@
 # @helixid/mcp-server
 
+## 0.2.3
+
+### Patch Changes
+
+- b921272: DID format: `helix did create --method web` and `did_create` build the issuer DID through `didWebFor`, so a `--domain` with a port gives `did:web:host%3Aport`.
+- Updated dependencies [f69bb66]
+- Updated dependencies [8d0823d]
+- Updated dependencies [973ae0f]
+- Updated dependencies [b921272]
+- Updated dependencies [b921272]
+- Updated dependencies [086670b]
+- Updated dependencies [7049359]
+- Updated dependencies [7a0f7b0]
+- Updated dependencies [0040d7b]
+- Updated dependencies [0040d7b]
+- Updated dependencies [3728b59]
+- Updated dependencies [1068d5d]
+- Updated dependencies [1b596b1]
+- Updated dependencies [f22cd08]
+- Updated dependencies [dac99e5]
+- Updated dependencies [f38dca2]
+  - @helixid/sdk-js@1.0.0
+  - @helixid/cli@0.4.0
+
 ## 0.2.2
 
 ### Patch Changes
